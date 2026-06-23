@@ -1,0 +1,18 @@
+{
+  "editor.fontFamily": "'BIZ UDゴシック', Consolas, 'Courier New', monospace",
+  "editor.tabSize": 2,
+  "editor.detectIndentation": false,
+  "editor.insertSpaces": true,
+  "editor.renderWhitespace": "all",
+  "files.trimTrailingWhitespace": true,
+  "files.insertFinalNewline": true,
+  "files.trimFinalNewlines": true,
+  "files.eol": "\n",
+  "files.autoGuessEncoding": false,
+  "workbench.startupEditor": "none",
+  "workbench.editor.enablePreview": false,
+  "workbench.editor.empty.hint": "hidden",
+  "explorer.compactFolders": false,
+  "git.confirmSync": false,
+  "diffEditor.ignoreTrimWhitespace": false
+}

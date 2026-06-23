@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: ["18", "20"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - run: npm ci
+
+      # Check that production dependencies have no high-severity vulnerabilities.
+      - name: Audit (prod deps)
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      # Enforce English-only source (no CJK in src/test).
+      - name: Lint language
+        run: npm run lint:lang
+
+      - name: Build
+        run: npm run build
+
+      # The ubuntu runner ships with Docker, so testcontainers integration tests can run too.
+      - name: Test (with coverage)
+        run: npm run test:coverage
+
+      # Validate that the published package's exports / type resolution are correct for both ESM and CJS.
+      - name: Validate package publish surface
+        run: npm run lint:publish
+
+      # Verify the public d.ts surface matches etc/relaybox.api.md (breaking-change detection).
+      - name: Verify public API surface
+        run: npm run api:check
+
+  # Mutation testing is heavy, so run it as a separate job (core only).
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci
+      - name: Mutation testing (core only)
+        run: npm run test:mutation

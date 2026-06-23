@@ -1,0 +1,105 @@
+{
+  "name": "relaybox",
+  "version": "0.0.0",
+  "description": "Transactional Outbound Webhook delivery for Node.js/TypeScript, backed by your existing PostgreSQL.",
+  "license": "MIT",
+  "author": "",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js",
+      "require": "./dist/core/index.cjs"
+    },
+    "./store/pg": {
+      "types": "./dist/store/pg.d.ts",
+      "import": "./dist/store/pg.js",
+      "require": "./dist/store/pg.cjs"
+    },
+    "./store/knex": {
+      "types": "./dist/store/knex.d.ts",
+      "import": "./dist/store/knex.js",
+      "require": "./dist/store/knex.cjs"
+    }
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "lint:lang": "node scripts/check-no-cjk.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:coverage": "vitest run --coverage",
+    "test:types": "vitest --typecheck --run --project unit",
+    "test:mutation": "stryker run",
+    "test:watch": "vitest",
+    "lint:publish": "publint && attw --pack .",
+    "api:check": "api-extractor run --verify",
+    "api:update": "api-extractor run --local",
+    "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run test:unit"
+  },
+  "dependencies": {
+    "p-limit": "^6.2.0",
+    "undici": "^7.0.0"
+  },
+  "peerDependencies": {
+    "knex": ">=3",
+    "pg": ">=8"
+  },
+  "peerDependenciesMeta": {
+    "knex": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.17.0",
+    "@eslint/js": "^9.39.2",
+    "@microsoft/api-extractor": "^7.48.0",
+    "@stryker-mutator/core": "^8.7.0",
+    "@stryker-mutator/vitest-runner": "^8.7.0",
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "@vitest/coverage-v8": "^3.0.0",
+    "eslint": "^9.39.2",
+    "eslint-config-prettier": "^10.0.0",
+    "eslint-import-resolver-typescript": "^3.7.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-tsdoc": "^0.4.0",
+    "knex": "^3.1.0",
+    "pg": "^8.13.1",
+    "prettier": "^3.4.2",
+    "publint": "^0.3.0",
+    "testcontainers": "^10.16.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.7.2",
+    "typescript-eslint": "^8.18.0",
+    "vitest": "^3.0.0"
+  },
+  "keywords": [
+    "webhook",
+    "outbox",
+    "transactional-outbox",
+    "postgres",
+    "standard-webhooks",
+    "delivery",
+    "ssrf"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "_comment": "Standard Webhooks-compatible signature regression vectors. Assert that signing.sign output matches these (01-core section 5 / 06-testing). Source: the well-known Standard Webhooks / Svix official test vector.",
+  "vectors": [
+    {
+      "name": "standard-webhooks-reference",
+      "secret": "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw",
+      "id": "msg_p5jXN8AQM9LWM0D4loKWxJek",
+      "timestampSec": 1614265330,
+      "payload": "{\"test\": 2432232314}",
+      "expectedSignature": "v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE="
+    },
+    {
+      "name": "raw-utf8-secret-no-prefix",
+      "secret": "raw-secret-key-123",
+      "id": "msg_raw_0001",
+      "timestampSec": 1700000000,
+      "payload": "{\"event\":\"order.created\",\"n\":7}",
+      "expectedSignature": "v1,fBUHfKlZFdXZ00UdzKUFfhQcV38z7N1wO/wv+hh+4XI="
+    }
+  ]
+}
