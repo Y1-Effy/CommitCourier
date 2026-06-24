@@ -7,6 +7,7 @@
  * {@link sign} is async (delivery is already async, so the impact is minimal).
  */
 import { base64ToBytes, bytesToBase64, utf8ToBytes } from "./encoding";
+import { RelayError } from "./errors";
 
 /** Standard Webhooks signature headers. */
 export interface SignatureHeaders {
@@ -20,10 +21,30 @@ export interface SignatureHeaders {
 const WHSEC_PREFIX = "whsec_";
 
 /**
+ * Derive the raw HMAC key bytes from the secret. A `whsec_`-prefixed secret is Base64-decoded;
+ * otherwise the raw UTF-8 bytes are used. A malformed Base64 key is a misconfiguration, so the
+ * underlying decode error is normalised to a {@link RelayError} rather than a raw `DOMException`.
+ */
+function decodeSecret(secret: string): Uint8Array {
+  if (!secret.startsWith(WHSEC_PREFIX)) {
+    return utf8ToBytes(secret);
+  }
+  try {
+    return base64ToBytes(secret.slice(WHSEC_PREFIX.length));
+  } catch (cause) {
+    throw new RelayError(
+      "CONFIG_INVALID",
+      "signing secret is not valid base64 (expected a whsec_-prefixed base64 key)",
+      cause,
+    );
+  }
+}
+
+/**
  * Sign a webhook per the Standard Webhooks convention.
  *
- * Per convention the secret is `"whsec_" + base64`; when prefixed with `whsec_` the
- * remainder is Base64-decoded for the HMAC key, otherwise the raw UTF-8 bytes are used.
+ * Per convention the secret is `"whsec_" + base64` (decoded by {@link decodeSecret}). Rejects
+ * with `RelayError("CONFIG_INVALID")` when a `whsec_` secret is not valid Base64.
  */
 export async function sign(opts: {
   id: string;
@@ -31,9 +52,7 @@ export async function sign(opts: {
   body: string;
   secret: string;
 }): Promise<SignatureHeaders> {
-  const keyBytes = opts.secret.startsWith(WHSEC_PREFIX)
-    ? base64ToBytes(opts.secret.slice(WHSEC_PREFIX.length))
-    : utf8ToBytes(opts.secret);
+  const keyBytes = decodeSecret(opts.secret);
   const key = await crypto.subtle.importKey(
     "raw",
     keyBytes,

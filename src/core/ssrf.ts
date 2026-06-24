@@ -66,7 +66,30 @@ function parseIpv4(s: string): bigint | null {
   return value;
 }
 
-function parseIpv6(s: string): bigint | null {
+/**
+ * Rewrite a trailing dotted-quad (e.g. "::ffff:1.2.3.4") into two hex groups so the IPv6
+ * group math stays purely 16-bit based. Returns the input unchanged when there is no
+ * embedded IPv4, or `null` when the dotted-quad tail is malformed.
+ */
+function rewriteEmbeddedV4Tail(s: string): string | null {
+  if (!s.includes(".")) {
+    return s;
+  }
+  const lastColon = s.lastIndexOf(":");
+  const v4 = parseIpv4(s.slice(lastColon + 1));
+  if (v4 === null) {
+    return null;
+  }
+  const hi = ((v4 >> 16n) & 0xffffn).toString(16);
+  const lo = (v4 & 0xffffn).toString(16);
+  return `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
+}
+
+function parseIpv6(input: string): bigint | null {
+  const s = rewriteEmbeddedV4Tail(input);
+  if (s === null) {
+    return null;
+  }
   const halves = s.split("::");
   if (halves.length > 2) {
     return null;
@@ -111,11 +134,38 @@ function parseIp(s: string): ParsedIp | null {
   return null;
 }
 
+/** IPv6 prefixes that embed an IPv4 destination in their low 32 bits. */
+const V6_EMBEDDED_V4: ReadonlyArray<string> = [
+  "::ffff:0:0/96", // IPv4-mapped (e.g. ::ffff:169.254.169.254)
+  "64:ff9b::/96", // NAT64 well-known prefix
+];
+
+/**
+ * If `parsed` is an IPv4-mapped or NAT64-translated IPv6 address, return the embedded
+ * IPv4 so the SSRF range rules apply to the real destination; otherwise return `parsed`
+ * unchanged. Without this, `::ffff:127.0.0.1` / `64:ff9b::a9fe:a9fe` would slip past the
+ * IPv4 blocked ranges and reach loopback / metadata endpoints.
+ */
+function unwrapEmbeddedV4(parsed: ParsedIp): ParsedIp {
+  if (parsed.version !== 6) {
+    return parsed;
+  }
+  for (const cidr of V6_EMBEDDED_V4) {
+    if (cidrContains(parsed, cidr)) {
+      return { version: 4, value: parsed.value & V4_MAX, bits: 32 };
+    }
+  }
+  return parsed;
+}
+
 function cidrContains(ip: ParsedIp, cidr: string): boolean {
   const [addr, prefixStr] = cidr.split("/");
   const base = parseIp(addr ?? "");
   if (!base || base.version !== ip.version) {
     return false;
+  }
+  if (prefixStr === "") {
+    return false; // malformed "addr/" with an empty prefix must not match everything
   }
   const prefix = prefixStr === undefined ? base.bits : Number(prefixStr);
   if (!Number.isInteger(prefix) || prefix < 0 || prefix > base.bits) {
@@ -164,8 +214,9 @@ export function evaluateIp(ip: string, cfg: SsrfConfig): SsrfDecision {
   if (cfg.blockPrivateRanges) {
     const parsed = parseIp(ip);
     if (parsed) {
+      const effective = unwrapEmbeddedV4(parsed);
       for (const [cidr, reason] of BLOCKED) {
-        if (cidrContains(parsed, cidr)) {
+        if (cidrContains(effective, cidr)) {
           return { allowed: false, reason };
         }
       }

@@ -24,6 +24,12 @@ describe("retry.backoffMs", () => {
     expect(backoffMs(11, noJitter, () => 0.5)).toBe(5_000);
   });
 
+  it("stays at capMs when 2^(attempts-1) overflows to Infinity", () => {
+    // 2 ** 1099 is Infinity; Math.min(Infinity, capMs) must collapse to capMs (no NaN/crash).
+    const noJitter: RetryConfig = { ...cfg, jitter: 0 };
+    expect(backoffMs(1_100, noJitter, () => 0.5)).toBe(cfg.capMs);
+  });
+
   it("applies the full negative jitter at rnd()=0", () => {
     // attempts=1 -> capped=1000, span=200, delta=(0*2-1)*200=-200 -> 800
     expect(backoffMs(1, cfg, () => 0)).toBe(800);

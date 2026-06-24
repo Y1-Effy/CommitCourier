@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { RelayError } from "../../src/core/errors";
 import { sign } from "../../src/core/signing";
 import vectors from "../fixtures/standard-webhooks-vectors.json" with { type: "json" };
 
@@ -28,5 +29,17 @@ describe("signing.sign", () => {
     const decoded = await sign({ ...opts, secret: "whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw" });
     const raw = await sign({ ...opts, secret: "MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw" });
     expect(decoded["webhook-signature"]).not.toBe(raw["webhook-signature"]);
+  });
+
+  it("rejects a whsec_ secret that is not valid base64 with RelayError(CONFIG_INVALID)", async () => {
+    const promise = sign({ id: "msg_x", timestampSec: 1, body: "hello", secret: "whsec_@@@" });
+    await expect(promise).rejects.toBeInstanceOf(RelayError);
+    await expect(promise).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("treats a non-prefixed secret as raw bytes even if it is not base64", async () => {
+    // Without the whsec_ prefix the secret is used verbatim, so "@@@" is a valid raw key.
+    const headers = await sign({ id: "msg_x", timestampSec: 1, body: "hello", secret: "@@@" });
+    expect(headers["webhook-signature"]).toMatch(/^v1,/);
   });
 });

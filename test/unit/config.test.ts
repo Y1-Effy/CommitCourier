@@ -60,7 +60,9 @@ describe("config.resolveConfig validation (fail-fast)", () => {
     ["jitter above 1", { retry: { jitter: 1.5 } }],
     ["jitter below 0", { retry: { jitter: -0.1 } }],
     ["baseMs <= 0", { retry: { baseMs: 0 } }],
+    ["baseMs NaN", { retry: { baseMs: Number.NaN } }],
     ["capMs <= 0", { retry: { capMs: 0 } }],
+    ["capMs below baseMs", { retry: { baseMs: 5_000, capMs: 1_000 } }],
     ["timeoutMs <= 0", { delivery: { timeoutMs: 0 } }],
     ["bodySnippetBytes <= 0", { delivery: { bodySnippetBytes: 0 } }],
   ])("throws CONFIG_INVALID for %s", (_label, input) => {
@@ -77,6 +79,21 @@ describe("config.resolveConfig validation (fail-fast)", () => {
     // The type forbids this, but config can be built from untyped runtime input.
     const bad = { signing: { scheme: "hmac-custom" } } as unknown as Record<string, never>;
     expect(() => resolveConfig(bad)).toThrow(RelayError);
+  });
+
+  it("rejects an unknown mode", () => {
+    const bad = { mode: "dry-run" } as unknown as Record<string, never>;
+    expect(() => resolveConfig(bad)).toThrow(RelayError);
+  });
+
+  it("rejects an unsupported backoff strategy", () => {
+    const bad = { retry: { backoff: "linear" } } as unknown as Record<string, never>;
+    expect(() => resolveConfig(bad)).toThrow(RelayError);
+  });
+
+  it("accepts the inclusive jitter boundaries 0 and 1", () => {
+    expect(resolveConfig({ retry: { jitter: 0 } }).retry.jitter).toBe(0);
+    expect(resolveConfig({ retry: { jitter: 1 } }).retry.jitter).toBe(1);
   });
 });
 

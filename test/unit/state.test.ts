@@ -60,6 +60,13 @@ describe("state transitions", () => {
     expect(t.availableAt).toBeUndefined();
   });
 
+  it("onFailure goes straight to dead on the first failure when maxAttempts is 1", () => {
+    const t = onFailure({ attempts: 0 }, { ...cfg, maxAttempts: 1 }, NOW, "boom", 5_000);
+    expect(t.status).toBe("dead");
+    expect(t.attempts).toBe(1);
+    expect(t.availableAt).toBeUndefined();
+  });
+
   it("onReclaim returns a stuck row to pending and clears the lock", () => {
     expect(onReclaim()).toEqual({ status: "pending", lockedAt: null, lockedBy: null });
   });

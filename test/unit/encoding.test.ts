@@ -22,4 +22,9 @@ describe("encoding", () => {
     expect(bytesToBase64(new Uint8Array())).toBe("");
     expect(base64ToBytes("")).toEqual(new Uint8Array());
   });
+
+  it("throws on base64 containing characters outside the alphabet", () => {
+    // atob rejects "@" (not a base64 character); the contract is to surface that, not silently truncate.
+    expect(() => base64ToBytes("@@@@")).toThrow();
+  });
 });

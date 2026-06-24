@@ -40,13 +40,12 @@ function fail(message: string): never {
   throw new RelayError("CONFIG_INVALID", message);
 }
 
-/** Validate hard constraints; throws `RelayError("CONFIG_INVALID")` on violation. */
-function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
-  // scheme is typed to a single literal but can be anything from untyped runtime input.
-  if ((cfg.signing.scheme as string) !== "standard-webhooks") {
-    fail(`Unsupported signing scheme: ${cfg.signing.scheme}`);
+/** Validate the retry policy; `backoff` is typed to a literal but may be untyped at runtime. */
+function validateRetry(retry: RelayConfig["retry"]): void {
+  const { maxAttempts, backoff, baseMs, capMs, jitter } = retry;
+  if ((backoff as string) !== "exponential") {
+    fail(`retry.backoff must be "exponential", got ${backoff}`);
   }
-  const { maxAttempts, baseMs, capMs, jitter } = cfg.retry;
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     fail(`retry.maxAttempts must be an integer >= 1, got ${String(maxAttempts)}`);
   }
@@ -56,9 +55,26 @@ function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
   if (!(capMs > 0)) {
     fail(`retry.capMs must be > 0, got ${String(capMs)}`);
   }
+  if (!(capMs >= baseMs)) {
+    fail(
+      `retry.capMs must be >= retry.baseMs, got capMs=${String(capMs)}, baseMs=${String(baseMs)}`,
+    );
+  }
   if (!(jitter >= 0 && jitter <= 1)) {
     fail(`retry.jitter must be within 0..1, got ${String(jitter)}`);
   }
+}
+
+/** Validate hard constraints; throws `RelayError("CONFIG_INVALID")` on violation. */
+function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
+  // mode/scheme are typed to literals but can be anything from untyped runtime input.
+  if ((cfg.mode as string) !== "observe" && (cfg.mode as string) !== "active") {
+    fail(`mode must be "observe" or "active", got ${cfg.mode}`);
+  }
+  if ((cfg.signing.scheme as string) !== "standard-webhooks") {
+    fail(`Unsupported signing scheme: ${cfg.signing.scheme}`);
+  }
+  validateRetry(cfg.retry);
   if (!(cfg.delivery.timeoutMs > 0)) {
     fail(`delivery.timeoutMs must be > 0, got ${String(cfg.delivery.timeoutMs)}`);
   }

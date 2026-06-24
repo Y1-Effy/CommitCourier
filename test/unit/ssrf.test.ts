@@ -50,6 +50,33 @@ describe("ssrf.evaluateIp blocked ranges", () => {
     expect(evaluateIp("172.15.255.255", base).allowed).toBe(true);
     expect(evaluateIp("172.32.0.0", base).allowed).toBe(true);
   });
+
+  it.each([
+    ["::ffff:127.0.0.1", "loopback"], // IPv4-mapped, dotted-quad tail
+    ["::ffff:7f00:1", "loopback"], // IPv4-mapped, all-hex form of 127.0.0.1
+    ["::ffff:169.254.169.254", "metadata"], // IPv4-mapped metadata endpoint
+    ["::ffff:a9fe:a9fe", "metadata"], // all-hex form of 169.254.169.254
+    ["::ffff:10.0.0.5", "private"], // IPv4-mapped private range
+    ["64:ff9b::a9fe:a9fe", "metadata"], // NAT64-translated metadata endpoint
+    ["64:ff9b::7f00:1", "loopback"], // NAT64-translated loopback
+  ])("unwraps embedded IPv4 %s and blocks it as %s", (ip, reason) => {
+    const d = evaluateIp(ip, base);
+    if (d.allowed) {
+      expect.unreachable(`${ip} should be blocked`);
+    } else {
+      expect(d.reason).toBe(reason);
+    }
+  });
+
+  it("still allows an IPv4-mapped public address", () => {
+    expect(evaluateIp("::ffff:93.184.216.34", base).allowed).toBe(true);
+  });
+
+  it("blocks the upper boundary of fe80::/10 as link-local", () => {
+    // febf:: shares the same top 10 bits as fe80::, so it is still link-local.
+    const d = evaluateIp("febf::1", base);
+    expect(d).toEqual({ allowed: false, reason: "link-local" });
+  });
 });
 
 describe("ssrf precedence", () => {
@@ -107,6 +134,20 @@ describe("ssrf.matchHostList", () => {
   it("rejects malformed addresses", () => {
     expect(matchHostList("999.1.1.1", ["999.1.1.1/8"])).toBe(false);
     expect(matchHostList("1.2.3.4", ["1.2.3.4/40"])).toBe(false);
+  });
+
+  it("does not let an empty-prefix CIDR match everything", () => {
+    // "10.0.0.0/" must not collapse to /0 (which would match any address).
+    expect(matchHostList("8.8.8.8", ["10.0.0.0/"])).toBe(false);
+    expect(matchHostList("10.1.2.3", ["10.0.0.0/"])).toBe(false);
+  });
+
+  it("matches a dotted-quad IPv4-mapped IPv6 inside a CIDR", () => {
+    expect(matchHostList("::ffff:192.168.5.5", ["::ffff:0:0/96"])).toBe(true);
+  });
+
+  it("rejects an IPv6 CIDR whose prefix exceeds 128", () => {
+    expect(matchHostList("::1", ["::1/129"])).toBe(false);
   });
 
   it.each([
