@@ -10,7 +10,7 @@
 
 CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeScript app — framework-agnostic, with **no extra infrastructure** (just the Postgres you already run). You `enqueue` a webhook **inside your own business transaction**, so it commits or rolls back atomically with your business write. The background dispatcher then delivers it with Standard Webhooks signing, retries, a DLQ, a full delivery ledger, SSRF protection, and single-delivery across instances.
 
-> ⚠️ **Pre-release** (`v0.0.0`). The API and the package name may still change before `1.0.0`.
+> ⚠️ **Pre-release** (`v0.1.0`). The API and the package name may still change before `1.0.0`.
 
 ---
 

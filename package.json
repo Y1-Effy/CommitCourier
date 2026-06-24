@@ -1,6 +1,6 @@
 {
   "name": "commitcourier",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Transactional Outbound Webhook delivery for Node.js/TypeScript, backed by your existing PostgreSQL.",
   "license": "MIT",
   "author": "Y1-Effy",
