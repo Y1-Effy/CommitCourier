@@ -90,7 +90,7 @@
     "prepublishOnly": "npm run check && npm run build && npm run lint:publish && npm run api:check"
   },
   "dependencies": {
-    "p-limit": "^6.2.0",
+    "p-limit": "^7.3.0",
     "undici": "^7.0.0"
   },
   "peerDependencies": {
