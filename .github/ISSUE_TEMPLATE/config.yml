@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability / セキュリティ脆弱性
+    url: https://github.com/Y1-Effy/CommitCourier/security/advisories/new
+    about: Please report security issues privately via GitHub Security Advisories, not public issues. / セキュリティ問題は公開 Issue ではなく GitHub Security Advisories から非公開で報告してください。

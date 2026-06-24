@@ -19,10 +19,10 @@ We will coordinate a fix and a [coordinated disclosure](https://www.cisa.gov/coo
 
 CommitCourier is pre-release. Until `1.0.0`, only the latest `0.x` release receives security fixes.
 
-| Version | Supported |
-|---|---|
-| latest `0.x` | ✅ |
-| older `0.x` | ❌ |
+| Version      | Supported |
+| ------------ | --------- |
+| latest `0.x` | ✅        |
+| older `0.x`  | ❌        |
 
 ## Response Expectations
 
@@ -34,7 +34,7 @@ CommitCourier handles security-sensitive concerns, so it helps to be explicit ab
 
 ### What CommitCourier protects
 
-- **Outbound SSRF.** The SSRF guard is on by default and blocks private, loopback, link-local, and cloud-metadata destinations. The destination is re-validated against the *resolved* IP to defend against DNS rebinding.
+- **Outbound SSRF.** The SSRF guard is on by default and blocks private, loopback, link-local, and cloud-metadata destinations. The destination is re-validated against the _resolved_ IP to defend against DNS rebinding.
 - **Tamper / spoof detection.** Deliveries are signed with Standard Webhooks (HMAC-SHA256 over `{id}.{timestamp}.{body}`), so receivers can verify authenticity and integrity.
 - **Secret hygiene in the ledger.** The delivery ledger records request headers but **never stores the signing secret itself**; response bodies are truncated to a configurable snippet size.
 - **Fail-closed enqueue.** The outbox row is written inside your transaction, so a webhook can never be emitted for a business write that rolled back.
@@ -50,7 +50,7 @@ CommitCourier handles security-sensitive concerns, so it helps to be explicit ab
 
 The following are documented design decisions, not security flaws (see the **Guarantees & non-goals** section of the [README](./README.md)):
 
-- The absence of exactly-once *effects* at the receiver (delivery is at-least-once by design).
+- The absence of exactly-once _effects_ at the receiver (delivery is at-least-once by design).
 - The absence of cross-endpoint total ordering (delivery is unordered by default).
 - Internal destinations being reachable after you explicitly disable the SSRF guard.
 - Behavior under loads beyond the small-to-medium scale this library targets.

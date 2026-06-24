@@ -211,29 +211,29 @@ observe モードで enqueue ─▶ observed   （記録のみ・送信しない
 
 すべての設定は任意で、安全な既定値にマージされます。不正な値は起動時に `RelayError("CONFIG_INVALID")` で拒否され、危険だが有効な値（例：SSRF 防御の無効化）は許容されつつ logger で警告されます。
 
-| グループ | オプション | 既定値 | 補足 |
-|---|---|---|---|
-| | `mode` | `"active"` | `"observe"` は行を `observed` として記録し、送信しない。 |
-| `signing` | `scheme` | `"standard-webhooks"` | Standard Webhooks のみ対応。 |
-| `retry` | `maxAttempts` | `12` | 1 以上の整数。 |
-| `retry` | `backoff` | `"exponential"` | `baseMs * 2^(attempts-1)`、上限あり。 |
-| `retry` | `baseMs` | `1000` | |
-| `retry` | `capMs` | `3600000` | `baseMs` 以上であること。 |
-| `retry` | `jitter` | `0.2` | `0..1` の割合。thundering herd 回避のため既定 ON。 |
-| `delivery` | `timeoutMs` | `15000` | リクエストごとの HTTP タイムアウト。 |
-| `delivery` | `bodySnippetBytes` | `4096` | 台帳に保存する応答本文の先頭バイト数。 |
-| `ssrf` | `blockPrivateRanges` | `true` | プライベート／ループバック／リンクローカル／メタデータ IP を遮断。 |
-| `ssrf` | `allowlist` | `[]` | 許可するホストパターン。 |
-| `ssrf` | `blocklist` | `[]` | 拒否するホストパターン。 |
+| グループ   | オプション           | 既定値                | 補足                                                               |
+| ---------- | -------------------- | --------------------- | ------------------------------------------------------------------ |
+|            | `mode`               | `"active"`            | `"observe"` は行を `observed` として記録し、送信しない。           |
+| `signing`  | `scheme`             | `"standard-webhooks"` | Standard Webhooks のみ対応。                                       |
+| `retry`    | `maxAttempts`        | `12`                  | 1 以上の整数。                                                     |
+| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`、上限あり。                              |
+| `retry`    | `baseMs`             | `1000`                |                                                                    |
+| `retry`    | `capMs`              | `3600000`             | `baseMs` 以上であること。                                          |
+| `retry`    | `jitter`             | `0.2`                 | `0..1` の割合。thundering herd 回避のため既定 ON。                 |
+| `delivery` | `timeoutMs`          | `15000`               | リクエストごとの HTTP タイムアウト。                               |
+| `delivery` | `bodySnippetBytes`   | `4096`                | 台帳に保存する応答本文の先頭バイト数。                             |
+| `ssrf`     | `blockPrivateRanges` | `true`                | プライベート／ループバック／リンクローカル／メタデータ IP を遮断。 |
+| `ssrf`     | `allowlist`          | `[]`                  | 許可するホストパターン。                                           |
+| `ssrf`     | `blocklist`          | `[]`                  | 拒否するホストパターン。                                           |
 
 dispatcher のオプション（`relay.createDispatcher({ … })`）：
 
-| オプション | 既定値 | 補足 |
-|---|---|---|
-| `concurrency` | `8` | 最大同時配信数。 |
-| `pollIntervalMs` | `1000` | アイドル時のポーリング間隔。満杯バッチ時は即座に再 tick。 |
-| `reclaimAfterMs` | `300000` | 可視性タイムアウト。これを超えた `in_flight` 行を回収。 |
-| `batchSize` | `concurrency * 2` | 1 tick で確保する行数。 |
+| オプション       | 既定値            | 補足                                                      |
+| ---------------- | ----------------- | --------------------------------------------------------- |
+| `concurrency`    | `8`               | 最大同時配信数。                                          |
+| `pollIntervalMs` | `1000`            | アイドル時のポーリング間隔。満杯バッチ時は即座に再 tick。 |
+| `reclaimAfterMs` | `300000`          | 可視性タイムアウト。これを超えた `in_flight` 行を回収。   |
+| `batchSize`      | `concurrency * 2` | 1 tick で確保する行数。                                   |
 
 **段階導入**：まず `mode: "observe"` で「送るはず」の量と宛先を記録し、想定と差分確認してから `"active"` に切り替えます。
 
@@ -294,28 +294,29 @@ ORDER BY created_at DESC;
 
 ライブラリが throw するエラーはすべて `RelayError` で、安定した機械可読の `code` を持ちます。
 
-| code | 発生元 | 意味 |
-|---|---|---|
-| `CONFIG_INVALID` | `createRelay`（起動時） | 設定が不正（fail-fast）。 |
-| `MISSING_TABLES` | `createRelay`（起動時） | コアテーブルが存在しない。`store.migrate()` を実行。 |
-| `ENQUEUE_NO_TARGET` | `enqueue` / `enqueueUnsafe` | `{ url, secret }` も `{ endpointId }` も指定されていない。 |
-| `SSRF_BLOCKED` | dispatch（throw せず台帳記録） | 宛先が遮断レンジに解決された。 |
-| `ENDPOINT_NOT_FOUND` | dispatch（throw せず台帳記録） | `endpointId` が未登録。 |
-| `ENDPOINT_DISABLED` | dispatch（throw せず台帳記録） | 登録済みエンドポイントが無効化されている。 |
+| code                 | 発生元                         | 意味                                                       |
+| -------------------- | ------------------------------ | ---------------------------------------------------------- |
+| `CONFIG_INVALID`     | `createRelay`（起動時）        | 設定が不正（fail-fast）。                                  |
+| `MISSING_TABLES`     | `createRelay`（起動時）        | コアテーブルが存在しない。`store.migrate()` を実行。       |
+| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`    | `{ url, secret }` も `{ endpointId }` も指定されていない。 |
+| `SSRF_BLOCKED`       | dispatch（throw せず台帳記録） | 宛先が遮断レンジに解決された。                             |
+| `ENDPOINT_NOT_FOUND` | dispatch（throw せず台帳記録） | `endpointId` が未登録。                                    |
+| `ENDPOINT_DISABLED`  | dispatch（throw せず台帳記録） | 登録済みエンドポイントが無効化されている。                 |
+| `MISSING_SECRET`     | dispatch（throw せず台帳記録） | inline 宛先に署名用の secret スナップショットが無い。      |
 
-この区別はアーキテクチャを反映しています。**enqueue 経路**のエラーは *throw* され、トランザクションを rollback させます（fail-closed）。一方 **dispatch 経路**の失敗は *配信台帳に記録*されてリトライされ、アプリには throw されません（fail-open）。後者は `relay.attempts({ outboxId })` で確認します。
+この区別はアーキテクチャを反映しています。**enqueue 経路**のエラーは _throw_ され、トランザクションを rollback させます（fail-closed）。一方 **dispatch 経路**の失敗は *配信台帳に記録*されてリトライされ、アプリには throw されません（fail-open）。後者は `relay.attempts({ outboxId })` で確認します。
 
 ## 署名の検証（受信側）
 
 各配信は次のヘッダを付けて JSON を POST します。
 
-| ヘッダ | 値 |
-|---|---|
-| `webhook-id` | outbox 行の id（署名のメッセージ ID）。 |
-| `webhook-timestamp` | Unix 秒。 |
+| ヘッダ              | 値                                                             |
+| ------------------- | -------------------------------------------------------------- |
+| `webhook-id`        | outbox 行の id（署名のメッセージ ID）。                        |
+| `webhook-timestamp` | Unix 秒。                                                      |
 | `webhook-signature` | `{id}.{timestamp}.{body}` に対する `v1,<base64 HMAC-SHA256>`。 |
-| `content-type` | `application/json`。 |
-| `idempotency-key` | enqueue 時に指定した場合のみ付与。 |
+| `content-type`      | `application/json`。                                           |
+| `idempotency-key`   | enqueue 時に指定した場合のみ付与。                             |
 
 これは [Standard Webhooks](https://www.standardwebhooks.com/) の慣例なので、受信側は互換の検証ライブラリでそのまま検証できます。CommitCourier は独自署名方式を作りません。
 
@@ -343,12 +344,12 @@ CommitCourier は非侵襲かつ可逆です。すべては 3 つの専用テー
 
 ## 公開 API
 
-| import | エクスポート |
-|---|---|
-| `commitcourier` | `createRelay`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。 |
-| `commitcourier/core` | 純粋・依存ゼロのドメイン層（`sign`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
-| `commitcourier/store/pg` | `postgresStore({ pool })` — `Store<PoolClient>`。 |
-| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`。 |
+| import                     | エクスポート                                                                                                                                                             |
+| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `commitcourier`            | `createRelay`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                                                    |
+| `commitcourier/core`       | 純粋・依存ゼロのドメイン層（`sign`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
+| `commitcourier/store/pg`   | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                        |
+| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                      |
 
 主要シグネチャ：
 

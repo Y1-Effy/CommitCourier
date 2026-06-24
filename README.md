@@ -23,7 +23,7 @@ Updating business state and sending a webhook are two separate actions. If a cra
 
 Existing tools can't fix this structurally: SaaS senders (Svix, Outpost) and Redis-backed queues (BullMQ) enqueue to a remote system that **can't join your local DB transaction**, and broker-outbox libraries ride your transaction but only deliver to a **message broker** — no HTTP webhook delivery, no signing, no SSRF guard, no delivery ledger.
 
-CommitCourier is the one embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible *by construction*.
+CommitCourier is the one embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible _by construction_.
 
 ## Features
 
@@ -35,7 +35,7 @@ CommitCourier is the one embedded library that rides **your own DB transaction**
 - **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time).
 - **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
-- **Observe mode** — record what *would* be sent without sending, for safe phased rollout.
+- **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
 
 ## Install
 
@@ -211,31 +211,31 @@ If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` excee
 
 All config is optional and merged over safe defaults. Invalid values are rejected at startup with `RelayError("CONFIG_INVALID")`; dangerous-but-valid ones (e.g. disabling the SSRF guard) are allowed but warned via the logger.
 
-| Group | Option | Default | Notes |
-|---|---|---|---|
-| | `mode` | `"active"` | `"observe"` records rows as `observed` and never sends. |
-| `signing` | `scheme` | `"standard-webhooks"` | Only Standard Webhooks is supported. |
-| `retry` | `maxAttempts` | `12` | Integer ≥ 1. |
-| `retry` | `backoff` | `"exponential"` | `baseMs * 2^(attempts-1)`, capped. |
-| `retry` | `baseMs` | `1000` | |
-| `retry` | `capMs` | `3600000` | Must be ≥ `baseMs`. |
-| `retry` | `jitter` | `0.2` | Fraction in `0..1`, on by default to avoid thundering herds. |
-| `delivery` | `timeoutMs` | `15000` | Per-request HTTP timeout. |
-| `delivery` | `bodySnippetBytes` | `4096` | How much of the response body is stored in the ledger. |
-| `ssrf` | `blockPrivateRanges` | `true` | Blocks private / loopback / link-local / metadata IPs. |
-| `ssrf` | `allowlist` | `[]` | Host patterns to permit. |
-| `ssrf` | `blocklist` | `[]` | Host patterns to deny. |
+| Group      | Option               | Default               | Notes                                                        |
+| ---------- | -------------------- | --------------------- | ------------------------------------------------------------ |
+|            | `mode`               | `"active"`            | `"observe"` records rows as `observed` and never sends.      |
+| `signing`  | `scheme`             | `"standard-webhooks"` | Only Standard Webhooks is supported.                         |
+| `retry`    | `maxAttempts`        | `12`                  | Integer ≥ 1.                                                 |
+| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`, capped.                           |
+| `retry`    | `baseMs`             | `1000`                |                                                              |
+| `retry`    | `capMs`              | `3600000`             | Must be ≥ `baseMs`.                                          |
+| `retry`    | `jitter`             | `0.2`                 | Fraction in `0..1`, on by default to avoid thundering herds. |
+| `delivery` | `timeoutMs`          | `15000`               | Per-request HTTP timeout.                                    |
+| `delivery` | `bodySnippetBytes`   | `4096`                | How much of the response body is stored in the ledger.       |
+| `ssrf`     | `blockPrivateRanges` | `true`                | Blocks private / loopback / link-local / metadata IPs.       |
+| `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                     |
+| `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                       |
 
 Dispatcher options (`relay.createDispatcher({ … })`):
 
-| Option | Default | Notes |
-|---|---|---|
-| `concurrency` | `8` | Max concurrent deliveries. |
-| `pollIntervalMs` | `1000` | Idle poll interval; a full batch ticks again immediately. |
-| `reclaimAfterMs` | `300000` | Visibility timeout: reclaim `in_flight` rows older than this. |
-| `batchSize` | `concurrency * 2` | Rows claimed per tick. |
+| Option           | Default           | Notes                                                         |
+| ---------------- | ----------------- | ------------------------------------------------------------- |
+| `concurrency`    | `8`               | Max concurrent deliveries.                                    |
+| `pollIntervalMs` | `1000`            | Idle poll interval; a full batch ticks again immediately.     |
+| `reclaimAfterMs` | `300000`          | Visibility timeout: reclaim `in_flight` rows older than this. |
+| `batchSize`      | `concurrency * 2` | Rows claimed per tick.                                        |
 
-**Phased rollout:** start in `mode: "observe"` to record the volume and destinations of what *would* be sent, diff it against expectations, then switch to `"active"`.
+**Phased rollout:** start in `mode: "observe"` to record the volume and destinations of what _would_ be sent, diff it against expectations, then switch to `"active"`.
 
 **Signing secret format:** a `whsec_`-prefixed secret is treated as Base64 per the Standard Webhooks convention and decoded to raw key bytes; any other string is used as raw UTF-8 bytes.
 
@@ -294,28 +294,29 @@ ORDER BY created_at DESC;
 
 Every error the library throws is a `RelayError` with a stable, machine-readable `code`:
 
-| Code | Thrown by | Meaning |
-|---|---|---|
-| `CONFIG_INVALID` | `createRelay` (startup) | Invalid configuration (fail-fast). |
-| `MISSING_TABLES` | `createRelay` (startup) | Core tables are absent — run `store.migrate()`. |
-| `ENQUEUE_NO_TARGET` | `enqueue` / `enqueueUnsafe` | Neither `{ url, secret }` nor `{ endpointId }` was provided. |
-| `SSRF_BLOCKED` | dispatch (recorded, not thrown) | Destination resolved to a blocked range. |
-| `ENDPOINT_NOT_FOUND` | dispatch (recorded, not thrown) | `endpointId` is not registered. |
-| `ENDPOINT_DISABLED` | dispatch (recorded, not thrown) | The registered endpoint is disabled. |
+| Code                 | Thrown by                       | Meaning                                                      |
+| -------------------- | ------------------------------- | ------------------------------------------------------------ |
+| `CONFIG_INVALID`     | `createRelay` (startup)         | Invalid configuration (fail-fast).                           |
+| `MISSING_TABLES`     | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.              |
+| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided. |
+| `SSRF_BLOCKED`       | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                     |
+| `ENDPOINT_NOT_FOUND` | dispatch (recorded, not thrown) | `endpointId` is not registered.                              |
+| `ENDPOINT_DISABLED`  | dispatch (recorded, not thrown) | The registered endpoint is disabled.                         |
+| `MISSING_SECRET`     | dispatch (recorded, not thrown) | An inline destination has no stored secret to sign with.     |
 
-The split mirrors the architecture: **enqueue-path** errors are *thrown* so they roll back your transaction (fail-closed), while **dispatch-path** failures are *recorded in the ledger* and retried, never thrown into your app (fail-open). Inspect the latter with `relay.attempts({ outboxId })`.
+The split mirrors the architecture: **enqueue-path** errors are _thrown_ so they roll back your transaction (fail-closed), while **dispatch-path** failures are _recorded in the ledger_ and retried, never thrown into your app (fail-open). Inspect the latter with `relay.attempts({ outboxId })`.
 
 ## Verifying signatures (receiver side)
 
 Each delivery POSTs JSON with these headers:
 
-| Header | Value |
-|---|---|
-| `webhook-id` | The outbox row id (the signature's message id). |
-| `webhook-timestamp` | Unix seconds. |
+| Header              | Value                                                     |
+| ------------------- | --------------------------------------------------------- |
+| `webhook-id`        | The outbox row id (the signature's message id).           |
+| `webhook-timestamp` | Unix seconds.                                             |
 | `webhook-signature` | `v1,<base64 HMAC-SHA256>` over `{id}.{timestamp}.{body}`. |
-| `content-type` | `application/json`. |
-| `idempotency-key` | Present only if you supplied one at enqueue time. |
+| `content-type`      | `application/json`.                                       |
+| `idempotency-key`   | Present only if you supplied one at enqueue time.         |
 
 Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) convention, your receiver can verify it with any compatible verification library — CommitCourier does not invent its own scheme.
 
@@ -331,7 +332,7 @@ Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) conve
 
 **Non-goals** (called out honestly)
 
-- **Exactly-once *effects*** at the receiver. CommitCourier provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
+- **Exactly-once _effects_** at the receiver. CommitCourier provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
 - **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is a planned optional feature).
 - **Unbounded scale.** This targets small-to-medium volume on your existing Postgres, not billions/sec.
 - **At-rest secret encryption.** That's your DB's responsibility (optional encrypted-column support is future work).
@@ -343,12 +344,12 @@ CommitCourier is non-invasive and reversible. Everything lives in three dedicate
 
 ## API surface
 
-| Import | Exports |
-|---|---|
-| `commitcourier` | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types. |
-| `commitcourier/core` | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
-| `commitcourier/store/pg` | `postgresStore({ pool })` — `Store<PoolClient>`. |
-| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`. |
+| Import                     | Exports                                                                                                                                                                                       |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commitcourier`            | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                         |
+| `commitcourier/core`       | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
+| `commitcourier/store/pg`   | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                              |
+| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                            |
 
 Key signatures:
 
