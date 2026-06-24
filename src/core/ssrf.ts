@@ -85,6 +85,12 @@ function rewriteEmbeddedV4Tail(s: string): string | null {
   return `${s.slice(0, lastColon + 1)}${hi}:${lo}`;
 }
 
+/**
+ * Parse an IPv6 literal into its 128-bit value, or `null` if malformed. Steps: (1) rewrite a
+ * trailing embedded IPv4 (`::ffff:1.2.3.4`) into two hex groups; (2) split on `::` (at most one,
+ * which stands in for a run of zero groups); (3) expand head/tail around `::` to exactly eight
+ * 16-bit groups; (4) fold the hex groups into a single bigint.
+ */
 function parseIpv6(input: string): bigint | null {
   const s = rewriteEmbeddedV4Tail(input);
   if (s === null) {

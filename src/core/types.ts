@@ -95,7 +95,7 @@ export interface SigningConfig {
   scheme: "standard-webhooks";
 }
 
-/** Fully-resolved relay configuration (output of {@link "./config".resolveConfig}). */
+/** Fully-resolved relay configuration (output of {@link resolveConfig}). */
 export interface RelayConfig {
   mode: Mode;
   signing: SigningConfig;

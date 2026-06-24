@@ -12,6 +12,7 @@ export type RelayErrorCode =
   | "SSRF_BLOCKED" // destination is in a blocked range
   | "ENDPOINT_NOT_FOUND" // endpointId not registered
   | "ENDPOINT_DISABLED" // endpoint is disabled
+  | "MISSING_SECRET" // inline target has no secret snapshot to sign with
   | "ENQUEUE_NO_TARGET"; // neither url nor endpointId provided
 
 /** Base error for all library failures. */

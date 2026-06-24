@@ -70,7 +70,13 @@ async function withTx<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Pr
     await client.query("COMMIT");
     return result;
   } catch (err) {
-    await client.query("ROLLBACK");
+    // A failed COMMIT already aborts the TX, so ROLLBACK may itself throw; never let that
+    // mask the original error.
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+      // ignore: surface the original failure below.
+    }
     throw err;
   } finally {
     client.release();
@@ -81,6 +87,14 @@ async function insertOutboxWith(client: PoolClient, row: NewOutboxRow): Promise<
   await client.query(INSERT_OUTBOX_SQL, outboxValues(row));
 }
 
+/**
+ * Build a {@link Store} backed by node-postgres (`pg`). `enqueue(trx, …)` takes a `PoolClient` so
+ * the outbox write rides the caller's transaction (fail-closed); dispatch-path methods acquire
+ * their own connection from the injected pool.
+ *
+ * @param opts - Holds the `pg.Pool` (the `pg` peer dependency must be installed).
+ * @returns A `Store<PoolClient>` to pass to `createRelay`.
+ */
 export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
   const { pool } = opts;
 

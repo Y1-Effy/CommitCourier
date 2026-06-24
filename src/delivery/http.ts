@@ -12,6 +12,7 @@ import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
 import { evaluateIp, matchHostList } from "../core/index";
 import type { SsrfConfig, DeliveryConfig } from "../core/index";
+import { errorCode, secretFreeSummary } from "./_error";
 
 /** Outcome of one POST attempt. `status === null` means no response (network/timeout/SSRF). */
 export interface HttpResult {
@@ -86,18 +87,20 @@ function findSsrf(err: unknown): SsrfBlockedError | null {
   return null;
 }
 
-/** Reduce a thrown value to a stable, secret-free summary string. */
+/**
+ * Reduce a thrown value to a stable, secret-free summary. SSRF blocks and timeouts get specific
+ * labels; everything else falls back to the shared {@link secretFreeSummary}.
+ */
 function summarize(err: unknown): string {
   const ssrf = findSsrf(err);
   if (ssrf) return ssrf.message;
   if (err instanceof Error) {
-    const code = (err as { code?: string }).code;
+    const code = errorCode(err);
     if (err.name === "AbortError" || code === "UND_ERR_ABORTED" || code?.includes("TIMEOUT")) {
       return "TIMEOUT";
     }
-    return code ?? err.message;
   }
-  return String(err);
+  return secretFreeSummary(err);
 }
 
 /** Read up to `maxBytes` of the response body, discarding the rest, trimmed UTF-8-safe. */

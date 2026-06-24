@@ -38,6 +38,14 @@ function applyReplayFilter(q: Knex.QueryBuilder, filter: ReplayFilter): Knex.Que
   return out;
 }
 
+/**
+ * Build a {@link Store} backed by Knex. `enqueue(trx, …)` takes a `Knex.Transaction` so the
+ * outbox write rides the caller's transaction (fail-closed); dispatch-path methods open their
+ * own transaction off the injected `knex` instance.
+ *
+ * @param opts - Holds the configured Knex instance (the `knex` peer dependency must be installed).
+ * @returns A `Store<Knex.Transaction>` to pass to `createRelay`.
+ */
 export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
   const { knex } = opts;
 

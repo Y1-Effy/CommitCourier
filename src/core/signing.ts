@@ -43,7 +43,8 @@ function decodeSecret(secret: string): Uint8Array {
 /**
  * Sign a webhook per the Standard Webhooks convention.
  *
- * Per convention the secret is `"whsec_" + base64` (decoded by {@link decodeSecret}). Rejects
+ * Per convention the secret is `"whsec_" + base64` (decoded by the internal `decodeSecret`).
+ * Rejects
  * with `RelayError("CONFIG_INVALID")` when a `whsec_` secret is not valid Base64.
  */
 export async function sign(opts: {

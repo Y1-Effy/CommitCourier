@@ -9,6 +9,7 @@ import { sign, backoffMs, onSuccess, onFailure } from "../core/index";
 import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/index";
 import type { Store, NewDeliveryAttempt } from "../store/store";
 import type { createHttpClient } from "./http";
+import { secretFreeSummary } from "./_error";
 
 export interface DeliverDeps {
   store: Store;
@@ -63,15 +64,6 @@ function noHttpAttempt(row: OutboxRow, error: string): NewDeliveryAttempt {
     durationMs: 0,
     error,
   };
-}
-
-/** Reduce a thrown value to a short, secret-free summary. */
-function describeError(err: unknown): string {
-  if (err instanceof Error) {
-    const code = (err as { code?: string }).code;
-    return typeof code === "string" ? code : err.message;
-  }
-  return String(err);
 }
 
 /** Record the ledger row, then move the outbox row to delivered or schedule the next retry. */
@@ -136,14 +128,14 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
     }
     await deliverHttp(ctx, resolved.url, resolved.secret);
   } catch (err) {
-    deps.config.logger.error("deliverOne failed", { id: row.id, error: describeError(err) });
+    deps.config.logger.error("deliverOne failed", { id: row.id, error: secretFreeSummary(err) });
     try {
-      await applyOutcome(ctx, noHttpAttempt(row, describeError(err)), false);
+      await applyOutcome(ctx, noHttpAttempt(row, secretFreeSummary(err)), false);
     } catch (inner) {
       // Even the failover record failed; swallow so the dispatcher loop keeps running.
       deps.config.logger.error("deliverOne failover record failed", {
         id: row.id,
-        error: describeError(inner),
+        error: secretFreeSummary(inner),
       });
     }
   }
