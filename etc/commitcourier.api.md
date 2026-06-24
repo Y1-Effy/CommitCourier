@@ -53,6 +53,22 @@ export interface DeliveryConfig {
     timeoutMs: number;
 }
 
+// @public (undocumented)
+export interface Dispatcher {
+    // (undocumented)
+    isRunning(): boolean;
+    start(): Promise<void>;
+    stop(): Promise<void>;
+}
+
+// @public (undocumented)
+export interface DispatcherOptions {
+    batchSize?: number;
+    concurrency?: number;
+    pollIntervalMs?: number;
+    reclaimAfterMs?: number;
+}
+
 // @public
 export interface EndpointRow {
     consecutiveFailures: number;
@@ -201,8 +217,6 @@ export interface Relay<TTx> {
     attempts(opts: {
         outboxId: string;
     }): Promise<DeliveryAttempt[]>;
-    // Warning: (ae-forgotten-export) The symbol "DispatcherOptions" needs to be exported by the entry point index.d.ts
-    // Warning: (ae-forgotten-export) The symbol "Dispatcher" needs to be exported by the entry point index.d.ts
     createDispatcher(options?: DispatcherOptions): Dispatcher;
     // (undocumented)
     endpoints: {

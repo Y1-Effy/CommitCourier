@@ -10,3 +10,4 @@ export type { Store, NewOutboxRow, NewDeliveryAttempt, ReplayFilter } from "./st
 
 export { createRelay } from "./relay";
 export type { Relay, RelayInit } from "./relay";
+export type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
