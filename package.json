@@ -4,6 +4,14 @@
   "description": "Transactional Outbound Webhook delivery for Node.js/TypeScript, backed by your existing PostgreSQL.",
   "license": "MIT",
   "author": "",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Y1-Effy/RelayBox.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Y1-Effy/RelayBox/issues"
+  },
+  "homepage": "https://github.com/Y1-Effy/RelayBox#readme",
   "type": "module",
   "engines": {
     "node": ">=18"
