@@ -44,6 +44,7 @@ export default defineConfig({
             "test/integration/**/*.test.ts",
             "test/concurrency/**/*.test.ts",
             "test/fault/**/*.test.ts",
+            "test/perf/**/*.test.ts",
           ],
           environment: "node",
           // Longer timeouts to account for testcontainers startup.
