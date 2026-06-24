@@ -9,6 +9,7 @@ export type {
   OutboxRow,
   EnqueueInput,
   DeliveryAttempt,
+  EndpointRow,
   RetryConfig,
   DeliveryConfig,
   SsrfConfig,

@@ -52,6 +52,21 @@ export interface DeliveryAttempt {
   attemptedAt: Date;
 }
 
+/** A registered endpoint row (basic design section 6.3). Optional registered-endpoint workflow. */
+export interface EndpointRow {
+  id: string;
+  url: string;
+  /** Signing secret. At-rest encryption is the DB's responsibility (encrypted-column support is future). */
+  secret: string;
+  status: "active" | "disabled";
+  description: string | null;
+  /** Auto-disable counter; only the registered-endpoint workflow tracks this. */
+  consecutiveFailures: number;
+  disabledAt: Date | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
 /** Retry/backoff policy (basic design section 10). */
 export interface RetryConfig {
   maxAttempts: number;
