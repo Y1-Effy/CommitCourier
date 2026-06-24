@@ -18,6 +18,9 @@ tmp/
 .stryker-tmp/
 reports/
 
+# API Extractor working directory
+temp/
+
 # Environment
 .env
 .env.*

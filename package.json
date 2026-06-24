@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "description": "Transactional Outbound Webhook delivery for Node.js/TypeScript, backed by your existing PostgreSQL.",
   "license": "MIT",
-  "author": "",
+  "author": "Y1-Effy",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/Y1-Effy/CommitCourier.git"
@@ -13,32 +13,59 @@
   },
   "homepage": "https://github.com/Y1-Effy/CommitCourier#readme",
   "type": "module",
+  "sideEffects": false,
   "engines": {
     "node": ">=18"
   },
   "files": [
     "dist"
   ],
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "publishConfig": {
+    "access": "public"
+  },
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "require": "./dist/index.cjs"
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
     },
     "./core": {
-      "types": "./dist/core/index.d.ts",
-      "import": "./dist/core/index.js",
-      "require": "./dist/core/index.cjs"
+      "import": {
+        "types": "./dist/core/index.d.ts",
+        "default": "./dist/core/index.js"
+      },
+      "require": {
+        "types": "./dist/core/index.d.cts",
+        "default": "./dist/core/index.cjs"
+      }
     },
     "./store/pg": {
-      "types": "./dist/store/pg.d.ts",
-      "import": "./dist/store/pg.js",
-      "require": "./dist/store/pg.cjs"
+      "import": {
+        "types": "./dist/store/pg.d.ts",
+        "default": "./dist/store/pg.js"
+      },
+      "require": {
+        "types": "./dist/store/pg.d.cts",
+        "default": "./dist/store/pg.cjs"
+      }
     },
     "./store/knex": {
-      "types": "./dist/store/knex.d.ts",
-      "import": "./dist/store/knex.js",
-      "require": "./dist/store/knex.cjs"
+      "import": {
+        "types": "./dist/store/knex.d.ts",
+        "default": "./dist/store/knex.js"
+      },
+      "require": {
+        "types": "./dist/store/knex.d.cts",
+        "default": "./dist/store/knex.cjs"
+      }
     }
   },
   "scripts": {
@@ -57,9 +84,10 @@
     "test:mutation": "stryker run",
     "test:watch": "vitest",
     "lint:publish": "publint && attw --pack .",
-    "api:check": "api-extractor run --verify",
+    "api:check": "api-extractor run",
     "api:update": "api-extractor run --local",
-    "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run test:unit"
+    "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run test:unit",
+    "prepublishOnly": "npm run check && npm run build && npm run lint:publish && npm run api:check"
   },
   "dependencies": {
     "p-limit": "^6.2.0",

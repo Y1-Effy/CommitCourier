@@ -25,7 +25,9 @@
     "extractorMessageReporting": {
       // Warn when internal types leak into the public API (catch it before release).
       "ae-forgotten-export": { "logLevel": "warning" },
-      "ae-incompatible-release-tags": { "logLevel": "warning" }
+      "ae-incompatible-release-tags": { "logLevel": "warning" },
+      // This package exposes a single public surface and does not use release tags.
+      "ae-missing-release-tag": { "logLevel": "none" }
     },
     "tsdocMessageReporting": {
       "default": { "logLevel": "warning" }
