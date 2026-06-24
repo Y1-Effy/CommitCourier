@@ -7,3 +7,6 @@
  */
 export * from "./core/index";
 export type { Store, NewOutboxRow, NewDeliveryAttempt, ReplayFilter } from "./store/store";
+
+export { createRelay } from "./relay";
+export type { Relay, RelayInit } from "./relay";
