@@ -47,7 +47,7 @@ jobs:
       - name: Validate package publish surface
         run: npm run lint:publish
 
-      # Verify the public d.ts surface matches etc/relaybox.api.md (breaking-change detection).
+      # Verify the public d.ts surface matches etc/commitcourier.api.md (breaking-change detection).
       - name: Verify public API surface
         run: npm run api:check
 

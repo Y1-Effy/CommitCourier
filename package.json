@@ -1,17 +1,17 @@
 {
-  "name": "relaybox",
+  "name": "commitcourier",
   "version": "0.0.0",
   "description": "Transactional Outbound Webhook delivery for Node.js/TypeScript, backed by your existing PostgreSQL.",
   "license": "MIT",
   "author": "",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Y1-Effy/RelayBox.git"
+    "url": "git+https://github.com/Y1-Effy/CommitCourier.git"
   },
   "bugs": {
-    "url": "https://github.com/Y1-Effy/RelayBox/issues"
+    "url": "https://github.com/Y1-Effy/CommitCourier/issues"
   },
-  "homepage": "https://github.com/Y1-Effy/RelayBox#readme",
+  "homepage": "https://github.com/Y1-Effy/CommitCourier#readme",
   "type": "module",
   "engines": {
     "node": ">=18"

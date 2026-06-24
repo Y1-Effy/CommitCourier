@@ -1,5 +1,5 @@
 /**
- * `relaybox/core` — the I/O-independent, cross-runtime, dependency-free domain layer.
+ * `commitcourier/core` — the I/O-independent, cross-runtime, dependency-free domain layer.
  *
  * Aggregated public API of the pure core (per 01-core section 1). Importing this entry
  * never pulls in `undici` / `p-limit` or any `node:*` builtin.

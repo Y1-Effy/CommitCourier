@@ -1,14 +1,14 @@
-# Relaybox
+# CommitCourier
 
 > Transactional Outbound Webhook delivery for Node.js / TypeScript, backed by your **existing PostgreSQL**.
 
-[![npm version](https://img.shields.io/npm/v/relaybox.svg)](https://www.npmjs.com/package/relaybox)
-[![license](https://img.shields.io/npm/l/relaybox.svg)](./LICENSE)
-[![node](https://img.shields.io/node/v/relaybox.svg)](https://nodejs.org)
+[![npm version](https://img.shields.io/npm/v/commitcourier.svg)](https://www.npmjs.com/package/commitcourier)
+[![license](https://img.shields.io/npm/l/commitcourier.svg)](./LICENSE)
+[![node](https://img.shields.io/node/v/commitcourier.svg)](https://nodejs.org)
 
 🇯🇵 日本語版: **[README.ja.md](./README.ja.md)** · 🔒 [Security policy](./SECURITY.md)
 
-Relaybox bolts reliable outbound webhooks onto an existing Node.js / TypeScript app — framework-agnostic, with **no extra infrastructure** (just the Postgres you already run). You `enqueue` a webhook **inside your own business transaction**, so it commits or rolls back atomically with your business write. The background dispatcher then delivers it with Standard Webhooks signing, retries, a DLQ, a full delivery ledger, SSRF protection, and single-delivery across instances.
+CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeScript app — framework-agnostic, with **no extra infrastructure** (just the Postgres you already run). You `enqueue` a webhook **inside your own business transaction**, so it commits or rolls back atomically with your business write. The background dispatcher then delivers it with Standard Webhooks signing, retries, a DLQ, a full delivery ledger, SSRF protection, and single-delivery across instances.
 
 > ⚠️ **Pre-release** (`v0.0.0`). The API and the package name may still change before `1.0.0`.
 
@@ -23,7 +23,7 @@ Updating business state and sending a webhook are two separate actions. If a cra
 
 Existing tools can't fix this structurally: SaaS senders (Svix, Outpost) and Redis-backed queues (BullMQ) enqueue to a remote system that **can't join your local DB transaction**, and broker-outbox libraries ride your transaction but only deliver to a **message broker** — no HTTP webhook delivery, no signing, no SSRF guard, no delivery ledger.
 
-Relaybox is the one embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible *by construction*.
+CommitCourier is the one embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible *by construction*.
 
 ## Features
 
@@ -40,7 +40,7 @@ Relaybox is the one embedded library that rides **your own DB transaction** and 
 ## Install
 
 ```bash
-npm install relaybox
+npm install commitcourier
 # plus the driver you use (optional peer dependency):
 npm install pg      # or: npm install knex
 ```
@@ -55,7 +55,7 @@ npm install pg      # or: npm install knex
 
 ```ts
 import { Pool } from "pg";
-import { postgresStore } from "relaybox/store/pg";
+import { postgresStore } from "commitcourier/store/pg";
 
 const pool = new Pool({ connectionString: process.env.DATABASE_URL });
 const store = postgresStore({ pool });
@@ -68,7 +68,7 @@ await store.migrate();
 `createRelay` is async: it validates config and fails fast if the tables are missing.
 
 ```ts
-import { createRelay } from "relaybox";
+import { createRelay } from "commitcourier";
 
 const relay = await createRelay({
   store,
@@ -134,7 +134,7 @@ process.on("SIGTERM", () => void dispatcher.stop());
 ### Using Knex instead of pg
 
 ```ts
-import { knexStore } from "relaybox/store/knex";
+import { knexStore } from "commitcourier/store/knex";
 
 const store = knexStore({ knex });
 await store.migrate();
@@ -205,7 +205,7 @@ enqueue in observe mode ─▶ observed   (recorded, never sent)
 manual cancel           ─▶ cancelled
 ```
 
-If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` exceeds the visibility timeout (`reclaimAfterMs`, default 5 min); the next tick reclaims it back to `pending`. That's how Relaybox guarantees **at-least-once**.
+If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` exceeds the visibility timeout (`reclaimAfterMs`, default 5 min); the next tick reclaims it back to `pending`. That's how CommitCourier guarantees **at-least-once**.
 
 ## Configuration
 
@@ -277,7 +277,7 @@ The logger also surfaces startup warnings for dangerous-but-valid config (e.g. a
 
 ### Data retention
 
-Relaybox never deletes rows on its own. `webhook_outbox` (including `delivered`/`dead` rows) and `webhook_delivery_attempts` grow over time, so schedule your own pruning — for example, delete `delivered` outbox rows older than your retention window. Deleting an outbox row cascades to its ledger attempts (`ON DELETE CASCADE`).
+CommitCourier never deletes rows on its own. `webhook_outbox` (including `delivered`/`dead` rows) and `webhook_delivery_attempts` grow over time, so schedule your own pruning — for example, delete `delivered` outbox rows older than your retention window. Deleting an outbox row cascades to its ledger attempts (`ON DELETE CASCADE`).
 
 ### Inspecting the DLQ (`dead` rows)
 
@@ -317,7 +317,7 @@ Each delivery POSTs JSON with these headers:
 | `content-type` | `application/json`. |
 | `idempotency-key` | Present only if you supplied one at enqueue time. |
 
-Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) convention, your receiver can verify it with any compatible verification library — Relaybox does not invent its own scheme.
+Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) convention, your receiver can verify it with any compatible verification library — CommitCourier does not invent its own scheme.
 
 ## Guarantees & non-goals
 
@@ -331,24 +331,24 @@ Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) conve
 
 **Non-goals** (called out honestly)
 
-- **Exactly-once *effects*** at the receiver. Relaybox provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
+- **Exactly-once *effects*** at the receiver. CommitCourier provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
 - **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is a planned optional feature).
 - **Unbounded scale.** This targets small-to-medium volume on your existing Postgres, not billions/sec.
 - **At-rest secret encryption.** That's your DB's responsibility (optional encrypted-column support is future work).
 - Inbound webhook receiving / verification, and a customer-facing management portal UI.
 
-## Removing Relaybox
+## Removing CommitCourier
 
-Relaybox is non-invasive and reversible. Everything lives in three dedicated tables (`webhook_outbox`, `webhook_delivery_attempts`, `webhook_endpoints`). Stop the dispatcher, remove the `enqueue` calls, and drop those tables — your business schema is untouched.
+CommitCourier is non-invasive and reversible. Everything lives in three dedicated tables (`webhook_outbox`, `webhook_delivery_attempts`, `webhook_endpoints`). Stop the dispatcher, remove the `enqueue` calls, and drop those tables — your business schema is untouched.
 
 ## API surface
 
 | Import | Exports |
 |---|---|
-| `relaybox` | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types. |
-| `relaybox/core` | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
-| `relaybox/store/pg` | `postgresStore({ pool })` — `Store<PoolClient>`. |
-| `relaybox/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`. |
+| `commitcourier` | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types. |
+| `commitcourier/core` | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
+| `commitcourier/store/pg` | `postgresStore({ pool })` — `Store<PoolClient>`. |
+| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`. |
 
 Key signatures:
 

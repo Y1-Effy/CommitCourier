@@ -10,10 +10,10 @@
     "tsconfigFilePath": "<projectFolder>/tsconfig.json"
   },
 
-  // Record the public API surface in etc/relaybox.api.md; review diffs and detect breaking changes.
+  // Record the public API surface in etc/commitcourier.api.md; review diffs and detect breaking changes.
   "apiReport": {
     "enabled": true,
-    "reportFileName": "relaybox.api.md",
+    "reportFileName": "commitcourier.api.md",
     "reportFolder": "<projectFolder>/etc/"
   },
 

@@ -43,9 +43,9 @@ export interface Harness {
 
 /** Start a disposable Postgres container. */
 export async function startPostgres(): Promise<{ conn: PgConn; stop: () => Promise<void> }> {
-  const user = "relaybox";
-  const password = "relaybox";
-  const database = "relaybox";
+  const user = "commitcourier";
+  const password = "commitcourier";
+  const database = "commitcourier";
   const container: StartedTestContainer = await new GenericContainer("postgres:16-alpine")
     .withEnvironment({ POSTGRES_USER: user, POSTGRES_PASSWORD: password, POSTGRES_DB: database })
     .withExposedPorts(5432)
