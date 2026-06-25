@@ -45,7 +45,7 @@ npm install commitcourier
 npm install pg      # or: npm install knex
 ```
 
-**Requirements:** Node.js **18+**, **PostgreSQL 12+** (anything with `FOR UPDATE SKIP LOCKED`, i.e. ≥ 9.5, works). Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
+**Requirements:** Node.js **20.18.1+**, **PostgreSQL 12+** (anything with `FOR UPDATE SKIP LOCKED`, i.e. ≥ 9.5, works). Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
 
 ## Quick start
 

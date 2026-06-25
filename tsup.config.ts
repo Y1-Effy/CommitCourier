@@ -9,7 +9,7 @@ export default defineConfig({
   dts: true,
   clean: true,
   sourcemap: true,
-  target: "node18",
+  target: "node20",
   // Provide a real `import.meta.url` in the CJS output so _shared.ts can resolve the DDL file
   // (and a `__dirname` shim in ESM). Without this, the CJS build's import.meta.url is undefined.
   shims: true,

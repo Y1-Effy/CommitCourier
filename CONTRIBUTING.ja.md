@@ -7,7 +7,7 @@ CommitCourier の改善にご興味をお持ちいただきありがとうござ
 
 ## 前提
 
-- Node.js **18 以上**
+- Node.js **20.18.1 以上**
 - npm（リポジトリには `package-lock.json` を同梱）
 - Docker — integration / concurrency / fault / perf スイートの実行時のみ必要
   （`testcontainers` が実際の PostgreSQL を起動）。ユニットテストに Docker は不要。

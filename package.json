@@ -15,7 +15,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=18"
+    "node": ">=20.18.1"
   },
   "files": [
     "dist"
@@ -83,7 +83,7 @@
     "test:types": "vitest --typecheck --run --project unit",
     "test:mutation": "stryker run",
     "test:watch": "vitest",
-    "lint:publish": "publint && attw --pack .",
+    "lint:publish": "publint && attw --pack . --ignore-rules no-resolution",
     "api:check": "api-extractor run",
     "api:update": "api-extractor run --local",
     "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run test:unit",
@@ -106,7 +106,7 @@
     }
   },
   "devDependencies": {
-    "@arethetypeswrong/cli": "^0.17.0",
+    "@arethetypeswrong/cli": "^0.18.4",
     "@eslint/js": "^9.39.2",
     "@microsoft/api-extractor": "^7.48.0",
     "@stryker-mutator/core": "^8.7.0",
