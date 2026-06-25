@@ -7,29 +7,41 @@
  */
 import type { Pool, PoolClient } from "pg";
 import type { OutboxRow, DeliveryAttempt, EndpointRow, Transition } from "../core/index";
-import type { NewOutboxRow, NewDeliveryAttempt, ReplayFilter, Store } from "./store";
+import type {
+  NewOutboxRow,
+  NewDeliveryAttempt,
+  NewEndpointRow,
+  EndpointPatch,
+  ReplayFilter,
+  OutboxStats,
+  Store,
+} from "./store";
 import {
   OUTBOX_TABLE,
   ATTEMPTS_TABLE,
   ENDPOINTS_TABLE,
   OUTBOX_COLUMNS,
   ATTEMPT_COLUMNS,
-  CLAIM_SQL_PG,
-  DIAGNOSE_SQL,
+  ENDPOINT_COLUMNS,
+  ENDPOINT_JSON_COLUMN,
   outboxValues,
   attemptValues,
+  endpointValues,
+  endpointPatchColumns,
   transitionColumns,
+  completeAttemptSql,
+  countsFromRows,
   mapOutboxRow,
   mapAttemptRow,
   mapEndpointRow,
   diagnoseResult,
   existingFromRow,
-  loadInitSql,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
   type RawEndpointRow,
 } from "./_shared";
+import { postgres } from "./sql/postgres";
 
 /** Build `(cols) VALUES ($1, $2, ...)`, casting the named jsonb column to `::jsonb`. */
 function insertClause(table: string, columns: readonly string[], jsonColumn: string): string {
@@ -37,6 +49,24 @@ function insertClause(table: string, columns: readonly string[], jsonColumn: str
     .map((c, i) => (c === jsonColumn ? `$${String(i + 1)}::jsonb` : `$${String(i + 1)}`))
     .join(", ");
   return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
+}
+
+/** Build a multi-row INSERT (`(cols) VALUES (...),(...)`), casting the jsonb column per row. */
+function insertManyClause(
+  table: string,
+  columns: readonly string[],
+  jsonColumn: string,
+  rowCount: number,
+): string {
+  const tuples: string[] = [];
+  for (let r = 0; r < rowCount; r++) {
+    const ph = columns.map((c, i) => {
+      const n = r * columns.length + i + 1;
+      return c === jsonColumn ? `$${String(n)}::jsonb` : `$${String(n)}`;
+    });
+    tuples.push(`(${ph.join(", ")})`);
+  }
+  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${tuples.join(", ")}`;
 }
 
 /** Build the dynamic WHERE for {@link ReplayFilter}: `{ sql, params }` (empty when no filter). */
@@ -60,6 +90,7 @@ function replayWhere(filter: ReplayFilter): { sql: string; params: unknown[] } {
 
 const INSERT_OUTBOX_SQL = insertClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload");
 const INSERT_ATTEMPT_SQL = insertClause(ATTEMPTS_TABLE, ATTEMPT_COLUMNS, "request_headers");
+const INSERT_ENDPOINT_SQL = insertClause(ENDPOINTS_TABLE, ENDPOINT_COLUMNS, ENDPOINT_JSON_COLUMN);
 
 /** Run `fn` inside a BEGIN/COMMIT, rolling back on error and always releasing the client. */
 async function withTx<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -87,6 +118,51 @@ async function insertOutboxWith(client: PoolClient, row: NewOutboxRow): Promise<
   await client.query(INSERT_OUTBOX_SQL, outboxValues(row));
 }
 
+/** Registered-endpoint admin + stats methods, factored out to keep the store factory small. */
+function endpointAndStatsMethods(
+  pool: Pool,
+): Pick<Store, "insertEndpoint" | "updateEndpoint" | "findEndpoint" | "disableEndpoint" | "stats"> {
+  return {
+    async insertEndpoint(ep: NewEndpointRow) {
+      await pool.query(INSERT_ENDPOINT_SQL, endpointValues(ep));
+    },
+
+    async updateEndpoint(id, patch: EndpointPatch) {
+      const { columns, values } = endpointPatchColumns(patch);
+      if (columns.length === 0) return; // no-op patch
+      const set = columns
+        .map((c, i) => `${c} = $${String(i + 2)}${c === ENDPOINT_JSON_COLUMN ? "::jsonb" : ""}`)
+        .join(", ");
+      await pool.query(`UPDATE ${ENDPOINTS_TABLE} SET ${set} WHERE id = $1`, [id, ...values]);
+    },
+
+    async findEndpoint(id): Promise<EndpointRow | null> {
+      const res = await pool.query(`SELECT * FROM ${ENDPOINTS_TABLE} WHERE id = $1`, [id]);
+      const row = (res.rows as RawEndpointRow[])[0];
+      return row ? mapEndpointRow(row) : null;
+    },
+
+    async disableEndpoint(id, now) {
+      const sql = `UPDATE ${ENDPOINTS_TABLE} SET status = 'disabled', disabled_at = $2 WHERE id = $1`;
+      await pool.query(sql, [id, now]);
+    },
+
+    async stats(): Promise<OutboxStats> {
+      const counts = await pool.query(
+        `SELECT status, count(*) AS count FROM ${OUTBOX_TABLE} GROUP BY status`,
+      );
+      const oldest = await pool.query(
+        `SELECT min(available_at) AS oldest FROM ${OUTBOX_TABLE} WHERE status = 'pending'`,
+      );
+      const oldestPendingAt = (oldest.rows as { oldest: Date | null }[])[0]?.oldest ?? null;
+      return {
+        counts: countsFromRows(counts.rows as { status: string; count: string }[]),
+        oldestPendingAt,
+      };
+    },
+  };
+}
+
 /**
  * Build a {@link Store} backed by node-postgres (`pg`). `enqueue(trx, …)` takes a `PoolClient` so
  * the outbox write rides the caller's transaction (fail-closed); dispatch-path methods acquire
@@ -104,13 +180,22 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
       return insertOutboxWith(client, row);
     },
 
+    async insertOutboxMany(client, rows) {
+      if (rows.length === 0) return; // no-op
+      const sql = insertManyClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload", rows.length);
+      await client.query(
+        sql,
+        rows.flatMap((r) => outboxValues(r)),
+      );
+    },
+
     async insertOutboxAutonomous(row) {
       await pool.query(INSERT_OUTBOX_SQL, outboxValues(row));
     },
 
     async claimDue({ limit, lockedBy, now }) {
       // Single atomic statement: SELECT ... FOR UPDATE SKIP LOCKED then UPDATE to in_flight.
-      const res = await pool.query(CLAIM_SQL_PG, [now, limit, lockedBy]);
+      const res = await pool.query(postgres.claimSql.numbered, [now, limit, lockedBy]);
       return (res.rows as RawOutboxRow[]).map(mapOutboxRow);
     },
 
@@ -131,6 +216,13 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
 
     async recordAttempt(a: NewDeliveryAttempt) {
       await pool.query(INSERT_ATTEMPT_SQL, attemptValues(newId(), a));
+    },
+
+    async completeAttempt(a: NewDeliveryAttempt, t: Transition) {
+      // One round trip: INSERT the ledger row and apply the transition (guarded on in_flight).
+      const { columns, values } = transitionColumns(t);
+      const sql = completeAttemptSql(columns, "numbered");
+      await pool.query(sql, [...attemptValues(newId(), a), ...values, a.outboxId]);
     },
 
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {
@@ -155,25 +247,16 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
       });
     },
 
-    async findEndpoint(id): Promise<EndpointRow | null> {
-      const res = await pool.query(`SELECT * FROM ${ENDPOINTS_TABLE} WHERE id = $1`, [id]);
-      const row = (res.rows as RawEndpointRow[])[0];
-      return row ? mapEndpointRow(row) : null;
-    },
-
-    async disableEndpoint(id, now) {
-      const sql = `UPDATE ${ENDPOINTS_TABLE} SET status = 'disabled', disabled_at = $2 WHERE id = $1`;
-      await pool.query(sql, [id, now]);
-    },
+    ...endpointAndStatsMethods(pool),
 
     async diagnose() {
-      const res = await pool.query(DIAGNOSE_SQL);
+      const res = await pool.query(postgres.diagnoseSql);
       const row = (res.rows as Record<string, unknown>[])[0] ?? {};
       return diagnoseResult(existingFromRow(row));
     },
 
     async migrate() {
-      const sql = loadInitSql();
+      const sql = postgres.ddl();
       await withTx(pool, async (client) => {
         await client.query(sql);
       });

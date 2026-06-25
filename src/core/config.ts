@@ -33,7 +33,11 @@ const DEFAULTS = {
   signing: { scheme: "standard-webhooks" },
   retry: { maxAttempts: 12, backoff: "exponential", baseMs: 1_000, capMs: 3_600_000, jitter: 0.2 },
   delivery: { timeoutMs: 15_000, bodySnippetBytes: 4_096 },
-  ssrf: { blockPrivateRanges: true, allowlist: [] as string[], blocklist: [] as string[] },
+  ssrf: {
+    blockPrivateRanges: true,
+    allowlist: [] as readonly string[],
+    blocklist: [] as readonly string[],
+  },
 } as const satisfies Omit<RelayConfig, "clock" | "logger">;
 
 function fail(message: string): never {
@@ -125,8 +129,8 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
     delivery: Object.freeze(merged.delivery),
     ssrf: Object.freeze({
       blockPrivateRanges: merged.ssrf.blockPrivateRanges,
-      allowlist: Object.freeze([...merged.ssrf.allowlist]) as string[],
-      blocklist: Object.freeze([...merged.ssrf.blocklist]) as string[],
+      allowlist: Object.freeze([...merged.ssrf.allowlist]),
+      blocklist: Object.freeze([...merged.ssrf.blocklist]),
     }),
     clock: input.clock ?? (() => new Date()),
     logger,

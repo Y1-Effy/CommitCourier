@@ -68,6 +68,7 @@ function queueStore(seed: OutboxRow[]): {
   let reclaims = 0;
   const store: Store = {
     insertOutbox: () => Promise.resolve(),
+    insertOutboxMany: () => Promise.resolve(),
     insertOutboxAutonomous: () => Promise.resolve(),
     claimDue: ({ limit, lockedBy }) => {
       claims.push({ limit, lockedBy });
@@ -79,11 +80,19 @@ function queueStore(seed: OutboxRow[]): {
       return Promise.resolve(0);
     },
     recordAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve(),
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: () => Promise.resolve([]),
+    insertEndpoint: () => Promise.resolve(),
+    updateEndpoint: () => Promise.resolve(),
     findEndpoint: () => Promise.resolve(null),
     disableEndpoint: () => Promise.resolve(),
+    stats: () =>
+      Promise.resolve({
+        counts: { pending: 0, in_flight: 0, delivered: 0, dead: 0, observed: 0, cancelled: 0 },
+        oldestPendingAt: null,
+      }),
     diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),
     migrate: () => Promise.resolve(),
   };
@@ -160,6 +169,38 @@ describe("createDispatcher", () => {
     await waitFor(() => delivered.length === 9);
 
     expect(Date.now() - started).toBeLessThan(500);
+  });
+
+  it("does not let one slow delivery stall the others (continuous dispatch)", async () => {
+    const seed = Array.from({ length: 20 }, row);
+    const slowId = seed[0]!.id; // claimed first; holds a single slot until released
+    const fake = queueStore(seed);
+    const config = resolveConfig({});
+    const delivered: string[] = [];
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((r) => (releaseSlow = r));
+
+    const d = track(
+      createDispatcher({
+        store: fake.store,
+        deliver: async (r) => {
+          if (r.id === slowId) await slowGate;
+          delivered.push(r.id);
+        },
+        config,
+        options: { concurrency: 4, batchSize: 4, pollIntervalMs: 5 },
+      }),
+    );
+    await d.start();
+
+    // A batch barrier would block the whole batch behind the slow row; continuous dispatch keeps
+    // the other 19 flowing while the slow one occupies just one slot.
+    await waitFor(() => delivered.length >= 19);
+    expect(delivered).not.toContain(slowId);
+
+    releaseSlow();
+    await waitFor(() => delivered.length === 20);
+    expect(delivered).toContain(slowId);
   });
 
   it("idles without busy-spinning when the queue is empty", async () => {

@@ -1,6 +1,22 @@
-import { defineConfig } from "vitest/config";
+import { defineConfig, type Plugin } from "vitest/config";
+
+// Load `.sql` files as a default-export string, mirroring the esbuild `text` loader used by the
+// tsup build, so source/tests resolve the embedded DDL the same way the bundle does. Declared per
+// project because `test.projects` entries do not inherit the root-level `plugins`.
+const rawSql: Plugin = {
+  name: "raw-sql",
+  // Run before vite's import-analysis so the `.sql` content is turned into JS first.
+  enforce: "pre",
+  transform(code: string, id: string) {
+    if (id.endsWith(".sql")) {
+      return { code: `export default ${JSON.stringify(code)};`, map: null };
+    }
+    return undefined;
+  },
+};
 
 export default defineConfig({
+  plugins: [rawSql],
   test: {
     // Staged coverage thresholds: require thorough coverage for the pure core, moderate overall.
     coverage: {
@@ -25,6 +41,7 @@ export default defineConfig({
     // Postgres / real HTTP tests into "integration".
     projects: [
       {
+        plugins: [rawSql],
         test: {
           name: "unit",
           include: ["test/unit/**/*.test.ts"],
@@ -38,6 +55,7 @@ export default defineConfig({
         },
       },
       {
+        plugins: [rawSql],
         test: {
           name: "integration",
           include: [

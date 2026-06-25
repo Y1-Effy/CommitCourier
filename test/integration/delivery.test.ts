@@ -64,6 +64,7 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
   const captured: Captured = { attempts: [], transitions: [] };
   const store: Store = {
     insertOutbox: () => Promise.resolve(),
+    insertOutboxMany: () => Promise.resolve(),
     insertOutboxAutonomous: () => Promise.resolve(),
     claimDue: () => Promise.resolve([]),
     applyTransition: (id, t) => {
@@ -75,11 +76,24 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
       captured.attempts.push(a);
       return Promise.resolve();
     },
+    completeAttempt: (a, t) => {
+      // The dispatch path uses the combined op; capture both halves for the assertions.
+      captured.attempts.push(a);
+      captured.transitions.push({ id: a.outboxId, t });
+      return Promise.resolve();
+    },
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: () => Promise.resolve([]),
+    insertEndpoint: () => Promise.resolve(),
+    updateEndpoint: () => Promise.resolve(),
     findEndpoint: () => Promise.resolve(null),
     disableEndpoint: () => Promise.resolve(),
+    stats: () =>
+      Promise.resolve({
+        counts: { pending: 0, in_flight: 0, delivered: 0, dead: 0, observed: 0, cancelled: 0 },
+        oldestPendingAt: null,
+      }),
     diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),
     migrate: () => Promise.resolve(),
     ...over,

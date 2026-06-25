@@ -7,27 +7,37 @@
  */
 import type { Knex } from "knex";
 import type { OutboxRow, DeliveryAttempt, EndpointRow, Transition } from "../core/index";
-import type { NewDeliveryAttempt, ReplayFilter, Store } from "./store";
+import type {
+  NewDeliveryAttempt,
+  NewEndpointRow,
+  EndpointPatch,
+  ReplayFilter,
+  OutboxStats,
+  Store,
+} from "./store";
 import {
   OUTBOX_TABLE,
   ATTEMPTS_TABLE,
   ENDPOINTS_TABLE,
-  CLAIM_SQL_KNEX,
-  DIAGNOSE_SQL,
   outboxObject,
   attemptObject,
+  endpointObject,
+  endpointPatchObject,
   transitionColumns,
+  completeAttemptSql,
+  attemptValuesStringified,
+  countsFromRows,
   mapOutboxRow,
   mapAttemptRow,
   mapEndpointRow,
   diagnoseResult,
   existingFromRow,
-  loadInitSql,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
   type RawEndpointRow,
 } from "./_shared";
+import { postgres } from "./sql/postgres";
 
 /** Apply a {@link ReplayFilter}'s conditions to a knex query builder. */
 function applyReplayFilter(q: Knex.QueryBuilder, filter: ReplayFilter): Knex.QueryBuilder {
@@ -36,6 +46,46 @@ function applyReplayFilter(q: Knex.QueryBuilder, filter: ReplayFilter): Knex.Que
   if (filter.status !== undefined) out = out.where("status", filter.status);
   if (filter.since !== undefined) out = out.where("created_at", ">=", filter.since);
   return out;
+}
+
+/** Registered-endpoint admin + stats methods, factored out to keep the store factory small. */
+function endpointAndStatsMethods(
+  knex: Knex,
+): Pick<Store, "insertEndpoint" | "updateEndpoint" | "findEndpoint" | "disableEndpoint" | "stats"> {
+  return {
+    async insertEndpoint(ep: NewEndpointRow) {
+      await knex(ENDPOINTS_TABLE).insert(endpointObject(ep));
+    },
+
+    async updateEndpoint(id, patch: EndpointPatch) {
+      const set = endpointPatchObject(patch);
+      if (Object.keys(set).length === 0) return; // no-op patch
+      await knex(ENDPOINTS_TABLE).where("id", id).update(set);
+    },
+
+    async findEndpoint(id): Promise<EndpointRow | null> {
+      const row = (await knex(ENDPOINTS_TABLE).where("id", id).first()) as
+        | RawEndpointRow
+        | undefined;
+      return row ? mapEndpointRow(row) : null;
+    },
+
+    async disableEndpoint(id, now) {
+      await knex(ENDPOINTS_TABLE).where("id", id).update({ status: "disabled", disabled_at: now });
+    },
+
+    async stats(): Promise<OutboxStats> {
+      const rows = await knex(OUTBOX_TABLE).select("status").count("* as count").groupBy("status");
+      const oldest = (await knex(OUTBOX_TABLE)
+        .where("status", "pending")
+        .min("available_at as oldest")
+        .first()) as { oldest: Date | null } | undefined;
+      return {
+        counts: countsFromRows(rows as unknown as { status: string; count: number | string }[]),
+        oldestPendingAt: oldest?.oldest ?? null,
+      };
+    },
+  };
 }
 
 /**
@@ -55,14 +105,21 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       await trx(OUTBOX_TABLE).insert(outboxObject(row));
     },
 
+    async insertOutboxMany(trx, rows) {
+      if (rows.length === 0) return; // no-op
+      // knex collapses an array insert into a single multi-row INSERT statement.
+      await trx(OUTBOX_TABLE).insert(rows.map(outboxObject));
+    },
+
     async insertOutboxAutonomous(row) {
       await knex(OUTBOX_TABLE).insert(outboxObject(row));
     },
 
     async claimDue({ limit, lockedBy, now }): Promise<OutboxRow[]> {
       return knex.transaction(async (trx) => {
-        // Positional bindings (?): now appears twice (filter + SET), see CLAIM_SQL_KNEX.
-        const result = (await trx.raw(CLAIM_SQL_KNEX, [now, limit, now, lockedBy])) as unknown as {
+        // Positional bindings (?): now appears twice (filter + SET), see dialect claimSql.qmark.
+        const bindings = [now, limit, now, lockedBy];
+        const result = (await trx.raw(postgres.claimSql.qmark, bindings)) as unknown as {
           rows: RawOutboxRow[];
         };
         return result.rows.map(mapOutboxRow);
@@ -89,6 +146,14 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       await knex(ATTEMPTS_TABLE).insert(attemptObject(newId(), a));
     },
 
+    async completeAttempt(a: NewDeliveryAttempt, t: Transition) {
+      // One round trip via the shared CTE: INSERT the ledger row + apply the transition.
+      const { columns, values } = transitionColumns(t);
+      const sql = completeAttemptSql(columns, "qmark");
+      const bindings = [...attemptValuesStringified(newId(), a), ...values, a.outboxId];
+      await knex.raw(sql, bindings as Knex.RawBinding[]);
+    },
+
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {
       const rows = (await knex(ATTEMPTS_TABLE)
         .where("outbox_id", outboxId)
@@ -112,19 +177,10 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       return rows.map((r) => r.id);
     },
 
-    async findEndpoint(id): Promise<EndpointRow | null> {
-      const row = (await knex(ENDPOINTS_TABLE).where("id", id).first()) as
-        | RawEndpointRow
-        | undefined;
-      return row ? mapEndpointRow(row) : null;
-    },
-
-    async disableEndpoint(id, now) {
-      await knex(ENDPOINTS_TABLE).where("id", id).update({ status: "disabled", disabled_at: now });
-    },
+    ...endpointAndStatsMethods(knex),
 
     async diagnose() {
-      const res = (await knex.raw(DIAGNOSE_SQL)) as unknown as {
+      const res = (await knex.raw(postgres.diagnoseSql)) as unknown as {
         rows: Record<string, unknown>[];
       };
       const row = res.rows[0] ?? {};
@@ -132,7 +188,7 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
     },
 
     async migrate() {
-      const sql = loadInitSql();
+      const sql = postgres.ddl();
       await knex.transaction(async (trx) => {
         await trx.raw(sql);
       });

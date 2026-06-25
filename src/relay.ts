@@ -6,12 +6,13 @@
  * fail-closed), dispatcher creation, ledger queries, replay, and endpoint disabling. The store's
  * generic flows through so `enqueue`'s `trx` type is the driver's transaction handle.
  */
-import { randomUUID } from "node:crypto";
+import { newId } from "./id";
 import { resolveConfig, initialState, RelayError } from "./core/index";
 import type {
   EnqueueInput,
   OutboxRow,
   DeliveryAttempt,
+  EndpointRow,
   Mode,
   SigningConfig,
   RetryConfig,
@@ -20,16 +21,43 @@ import type {
   Clock,
   Logger,
 } from "./core/index";
-import type { Store, NewOutboxRow, ReplayFilter } from "./store/store";
+import type { Store, NewOutboxRow, ReplayFilter, EndpointPatch, OutboxStats } from "./store/store";
 import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
+import type { DeliveryHooks } from "./delivery/deliver";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
 import type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
 import {
   attempts as adminAttempts,
   replay as adminReplay,
+  registerEndpoint as adminRegister,
+  updateEndpoint as adminUpdate,
+  enableEndpoint as adminEnable,
+  getEndpoint as adminGet,
   disableEndpoint as adminDisable,
 } from "./admin/admin";
+
+/** Input to {@link EndpointAdmin.register}. */
+export interface RegisterEndpointInput {
+  url: string;
+  secret: string;
+  description?: string | null;
+  metadata?: Record<string, unknown> | null;
+}
+
+/** The registered-endpoint admin surface exposed by {@link Relay.endpoints}. */
+export interface EndpointAdmin {
+  /** Register a new endpoint; returns the generated id. */
+  register(input: RegisterEndpointInput): Promise<{ id: string }>;
+  /** Patch a registered endpoint; only the provided fields change. */
+  update(endpointId: string, patch: EndpointPatch): Promise<void>;
+  /** Re-enable a disabled endpoint. */
+  enable(endpointId: string): Promise<void>;
+  /** Disable an endpoint so no further deliveries target it. */
+  disable(endpointId: string): Promise<void>;
+  /** Look up a registered endpoint, or null when absent. */
+  get(endpointId: string): Promise<EndpointRow | null>;
+}
 
 /** Arguments to {@link createRelay}: the store plus a partial relay configuration. */
 export interface RelayInit<TTx> {
@@ -41,12 +69,16 @@ export interface RelayInit<TTx> {
   ssrf?: Partial<SsrfConfig>;
   clock?: Clock;
   logger?: Logger;
+  /** Optional delivery-outcome callbacks (fail-open) applied to every dispatcher from this relay. */
+  hooks?: DeliveryHooks;
 }
 
 /** The public surface returned by {@link createRelay}. */
 export interface Relay<TTx> {
   /** Ride the business TX (fail-closed). `trx` is required (basic design section 8.1). */
   enqueue(trx: TTx, input: EnqueueInput): Promise<{ id: string }>;
+  /** Bulk enqueue inside the business TX (fail-closed): one round trip, returns ids in input order. */
+  enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
   /** Non-TX enqueue. Loses the atomicity guarantee; use only when there is no business TX. */
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   /** Create a background dispatcher bound to this relay's store/deliver/config. */
@@ -55,7 +87,10 @@ export interface Relay<TTx> {
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
   /** Replay matching rows as fresh pending copies; returns the new ids. */
   replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
-  endpoints: { disable(endpointId: string): Promise<void> };
+  /** Registered-endpoint admin: register / update / enable / disable / get. */
+  endpoints: EndpointAdmin;
+  /** Aggregate queue statistics (status counts and oldest-pending age) for monitoring. */
+  stats(): Promise<OutboxStats>;
 }
 
 type InlineEndpoint = { url: string; secret: string };
@@ -96,8 +131,9 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   }
 
   const http = createHttpClient({ ssrf: resolved.ssrf, delivery: resolved.delivery });
+  const hooks = config.hooks;
   const deliver = (row: OutboxRow): Promise<void> =>
-    deliverOne(row, { store, http, config: resolved, clock: resolved.clock });
+    deliverOne(row, { store, http, config: resolved, clock: resolved.clock, hooks });
 
   /** Build the outbox row from enqueue input, snapshotting the inline secret at enqueue time. */
   function buildRow(input: EnqueueInput): NewOutboxRow {
@@ -111,7 +147,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
       );
     }
     return {
-      id: randomUUID(),
+      id: newId(),
       eventType: input.eventType,
       payload: input.payload,
       endpointId: registered ? registered.endpointId : null,
@@ -131,6 +167,12 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
       await store.insertOutbox(trx, row);
       return { id: row.id };
     },
+    async enqueueMany(trx, inputs) {
+      // One multi-row INSERT on the caller's TX; errors propagate (fail-closed).
+      const rows = inputs.map(buildRow);
+      await store.insertOutboxMany(trx, rows);
+      return { ids: rows.map((r) => r.id) };
+    },
     async enqueueUnsafe(input) {
       const row = buildRow(input);
       await store.insertOutboxAutonomous(row);
@@ -145,10 +187,20 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     replay(opts) {
       return adminReplay(store, resolved.clock(), opts);
     },
-    endpoints: {
-      disable(endpointId) {
-        return adminDisable(store, endpointId, resolved.clock());
-      },
+    endpoints: endpointAdmin(store, resolved.clock),
+    stats() {
+      return store.stats();
     },
+  };
+}
+
+/** Compose the registered-endpoint admin surface over the store (05-admin-api section 7). */
+function endpointAdmin(store: Store, clock: Clock): EndpointAdmin {
+  return {
+    register: (input) => adminRegister(store, input),
+    update: (id, patch) => adminUpdate(store, id, patch),
+    enable: (id) => adminEnable(store, id),
+    disable: (id) => adminDisable(store, id, clock()),
+    get: (id) => adminGet(store, id),
   };
 }

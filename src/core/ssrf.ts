@@ -205,7 +205,7 @@ function matchEntry(host: string, entry: string): boolean {
  * leading-dot domain suffixes (e.g. `".example.com"`). Also used for early pre-resolution
  * checks before DNS in the delivery layer.
  */
-export function matchHostList(host: string, list: string[]): boolean {
+export function matchHostList(host: string, list: readonly string[]): boolean {
   return list.some((entry) => matchEntry(host, entry));
 }
 

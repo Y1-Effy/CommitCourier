@@ -53,6 +53,24 @@ export interface DeliveryConfig {
     timeoutMs: number;
 }
 
+// @public
+export interface DeliveryEvent {
+    attempt: number;
+    durationMs: number;
+    error: string | null;
+    // (undocumented)
+    eventType: string;
+    id: string;
+    status: number | null;
+}
+
+// @public
+export interface DeliveryHooks {
+    onDead?: (event: DeliveryEvent) => void | Promise<void>;
+    onDelivered?: (event: DeliveryEvent) => void | Promise<void>;
+    onRetry?: (event: DeliveryEvent) => void | Promise<void>;
+}
+
 // @public (undocumented)
 export interface Dispatcher {
     // (undocumented)
@@ -67,6 +85,34 @@ export interface DispatcherOptions {
     concurrency?: number;
     pollIntervalMs?: number;
     reclaimAfterMs?: number;
+    reclaimIntervalMs?: number;
+}
+
+// @public
+export interface EndpointAdmin {
+    disable(endpointId: string): Promise<void>;
+    enable(endpointId: string): Promise<void>;
+    get(endpointId: string): Promise<EndpointRow | null>;
+    register(input: RegisterEndpointInput): Promise<{
+        id: string;
+    }>;
+    update(endpointId: string, patch: EndpointPatch): Promise<void>;
+}
+
+// @public
+export interface EndpointPatch {
+    // (undocumented)
+    description?: string | null;
+    // (undocumented)
+    disabledAt?: Date | null;
+    // (undocumented)
+    metadata?: Record<string, unknown> | null;
+    // (undocumented)
+    secret?: string;
+    // (undocumented)
+    status?: EndpointRow["status"];
+    // (undocumented)
+    url?: string;
 }
 
 // @public
@@ -125,7 +171,7 @@ export interface Logger {
 }
 
 // @public
-export function matchHostList(host: string, list: string[]): boolean;
+export function matchHostList(host: string, list: readonly string[]): boolean;
 
 // @public
 export type Mode = "observe" | "active";
@@ -145,6 +191,20 @@ export interface NewDeliveryAttempt {
     responseBodySnippet: string | null;
     // (undocumented)
     responseStatus: number | null;
+}
+
+// @public
+export interface NewEndpointRow {
+    // (undocumented)
+    description?: string | null;
+    // (undocumented)
+    id: string;
+    // (undocumented)
+    metadata?: Record<string, unknown> | null;
+    // (undocumented)
+    secret: string;
+    // (undocumented)
+    url: string;
 }
 
 // @public
@@ -213,17 +273,36 @@ export interface OutboxRow {
 }
 
 // @public
+export interface OutboxStats {
+    // (undocumented)
+    counts: Record<Status, number>;
+    oldestPendingAt: Date | null;
+}
+
+// @public
+export interface RegisterEndpointInput {
+    // (undocumented)
+    description?: string | null;
+    // (undocumented)
+    metadata?: Record<string, unknown> | null;
+    // (undocumented)
+    secret: string;
+    // (undocumented)
+    url: string;
+}
+
+// @public
 export interface Relay<TTx> {
     attempts(opts: {
         outboxId: string;
     }): Promise<DeliveryAttempt[]>;
     createDispatcher(options?: DispatcherOptions): Dispatcher;
-    // (undocumented)
-    endpoints: {
-        disable(endpointId: string): Promise<void>;
-    };
+    endpoints: EndpointAdmin;
     enqueue(trx: TTx, input: EnqueueInput): Promise<{
         id: string;
+    }>;
+    enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{
+        ids: string[];
     }>;
     enqueueUnsafe(input: EnqueueInput): Promise<{
         id: string;
@@ -235,6 +314,7 @@ export interface Relay<TTx> {
     }): Promise<{
         ids: string[];
     }>;
+    stats(): Promise<OutboxStats>;
 }
 
 // @public
@@ -271,6 +351,7 @@ export interface RelayInit<TTx> {
     clock?: Clock;
     // (undocumented)
     delivery?: Partial<DeliveryConfig>;
+    hooks?: DeliveryHooks;
     // (undocumented)
     logger?: Logger;
     // (undocumented)
@@ -336,9 +417,9 @@ export interface SigningConfig {
 // @public
 export interface SsrfConfig {
     // (undocumented)
-    allowlist: string[];
+    allowlist: readonly string[];
     // (undocumented)
-    blocklist: string[];
+    blocklist: readonly string[];
     // (undocumented)
     blockPrivateRanges: boolean;
 }
@@ -362,14 +443,17 @@ export interface Store<TTx = unknown> {
         lockedBy: string;
         now: Date;
     }): Promise<OutboxRow[]>;
+    completeAttempt(attempt: NewDeliveryAttempt, transition: Transition): Promise<void>;
     diagnose(): Promise<{
         ok: boolean;
         missingTables: string[];
     }>;
     disableEndpoint(id: string, now: Date): Promise<void>;
     findEndpoint(id: string): Promise<EndpointRow | null>;
+    insertEndpoint(ep: NewEndpointRow): Promise<void>;
     insertOutbox(trx: TTx, row: NewOutboxRow): Promise<void>;
     insertOutboxAutonomous(row: NewOutboxRow): Promise<void>;
+    insertOutboxMany(trx: TTx, rows: NewOutboxRow[]): Promise<void>;
     insertReplayCopies(rows: NewOutboxRow[]): Promise<string[]>;
     migrate(): Promise<void>;
     queryAttempts(opts: {
@@ -381,6 +465,8 @@ export interface Store<TTx = unknown> {
     }): Promise<number>;
     recordAttempt(attempt: NewDeliveryAttempt): Promise<void>;
     selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]>;
+    stats(): Promise<OutboxStats>;
+    updateEndpoint(id: string, patch: EndpointPatch): Promise<void>;
 }
 
 // @public

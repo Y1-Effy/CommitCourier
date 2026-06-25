@@ -11,6 +11,7 @@ import knex, { type Knex } from "knex";
 import { postgresStore } from "../../src/store/pg";
 import { knexStore } from "../../src/store/knex";
 import type { Store, NewOutboxRow } from "../../src/store/store";
+import type { OutboxRow } from "../../src/core/index";
 
 /** Connection parameters for the started container. */
 export interface PgConn {
@@ -30,15 +31,33 @@ export function dockerAvailable(): boolean {
 /** The dispatch-path surface of {@link Store} (independent of the transaction-handle type). */
 export type DispatchStore = Omit<Store, "insertOutbox">;
 
-/** Uniform per-adapter handle used by the shared suite. */
+/**
+ * Uniform per-adapter handle used by the shared conformance suite. The verification hooks are
+ * storage-paradigm-neutral (no SQL in their signatures), so the same suite can drive any backend
+ * — SQL or NoSQL — by providing one more `Harness` implementation.
+ */
 export interface Harness {
   name: string;
   store: DispatchStore;
   /** Enqueue inside a user transaction; rollback instead of commit when requested. */
   enqueue(row: NewOutboxRow, opts?: { rollback?: boolean }): Promise<void>;
-  /** Parameterless raw SQL for assertions/setup (returns snake_case rows). */
-  raw(sql: string): Promise<Record<string, unknown>[]>;
+  /** Bulk enqueue inside a user transaction (single multi-row INSERT); rollback when requested. */
+  enqueueMany(rows: NewOutboxRow[], opts?: { rollback?: boolean }): Promise<void>;
+  /** Read one outbox row as the mapped domain shape, or undefined when absent. */
+  getOutbox(id: string): Promise<OutboxRow | undefined>;
+  /** Force a row into `in_flight` with a specific `lockedAt` (to set up reclaim scenarios). */
+  setInFlight(id: string, lockedAt: Date): Promise<void>;
+  /** Seed a registered endpoint (no store method creates one). */
+  insertEndpoint(ep: { id: string; url: string; secret: string }): Promise<void>;
+  /** Remove all rows between tests (backing structures stay in place). */
+  reset(): Promise<void>;
   teardown(): Promise<void>;
+}
+
+/** Adapter-neutral single-row read built on the store's own filtered select. */
+async function getOutboxVia(store: DispatchStore, id: string): Promise<OutboxRow | undefined> {
+  const rows = await store.selectForReplay({ outboxId: id });
+  return rows[0];
 }
 
 /** Start a disposable Postgres container. */
@@ -64,6 +83,9 @@ export async function startPostgres(): Promise<{ conn: PgConn; stop: () => Promi
 /** Sentinel thrown to force a knex transaction to roll back. */
 class RollbackSignal extends Error {}
 
+const TRUNCATE_SQL =
+  "TRUNCATE webhook_delivery_attempts, webhook_outbox, webhook_endpoints RESTART IDENTITY CASCADE";
+
 /** pg-backed harness. */
 export function pgHarness(conn: PgConn): Harness {
   const pool = new Pool(conn);
@@ -81,9 +103,32 @@ export function pgHarness(conn: PgConn): Harness {
         client.release();
       }
     },
-    async raw(sql) {
-      const res = await pool.query(sql);
-      return res.rows as Record<string, unknown>[];
+    async enqueueMany(rows, opts) {
+      const client: PoolClient = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        await store.insertOutboxMany(client, rows);
+        await client.query(opts?.rollback ? "ROLLBACK" : "COMMIT");
+      } finally {
+        client.release();
+      }
+    },
+    getOutbox: (id) => getOutboxVia(store, id),
+    async setInFlight(id, lockedAt) {
+      await pool.query(
+        "UPDATE webhook_outbox SET status='in_flight', locked_at=$2, locked_by='test' WHERE id=$1",
+        [id, lockedAt],
+      );
+    },
+    async insertEndpoint(ep) {
+      await pool.query("INSERT INTO webhook_endpoints (id, url, secret) VALUES ($1, $2, $3)", [
+        ep.id,
+        ep.url,
+        ep.secret,
+      ]);
+    },
+    async reset() {
+      await pool.query(TRUNCATE_SQL);
     },
     teardown: () => pool.end(),
   };
@@ -106,19 +151,30 @@ export function knexHarness(conn: PgConn): Harness {
         if (!(err instanceof RollbackSignal)) throw err;
       }
     },
-    async raw(sql) {
-      const res = (await db.raw(sql)) as unknown as { rows: Record<string, unknown>[] };
-      return res.rows;
+    async enqueueMany(rows, opts) {
+      try {
+        await db.transaction(async (trx) => {
+          await store.insertOutboxMany(trx, rows);
+          if (opts?.rollback) throw new RollbackSignal();
+        });
+      } catch (err) {
+        if (!(err instanceof RollbackSignal)) throw err;
+      }
+    },
+    getOutbox: (id) => getOutboxVia(store, id),
+    async setInFlight(id, lockedAt) {
+      await db("webhook_outbox")
+        .where({ id })
+        .update({ status: "in_flight", locked_at: lockedAt, locked_by: "test" });
+    },
+    async insertEndpoint(ep) {
+      await db("webhook_endpoints").insert({ id: ep.id, url: ep.url, secret: ep.secret });
+    },
+    async reset() {
+      await db.raw(TRUNCATE_SQL);
     },
     teardown: () => db.destroy(),
   };
-}
-
-/** Remove all rows between tests (schema stays in place). */
-export async function truncateAll(h: Harness): Promise<void> {
-  await h.raw(
-    "TRUNCATE webhook_delivery_attempts, webhook_outbox, webhook_endpoints RESTART IDENTITY CASCADE",
-  );
 }
 
 /** Build a minimal valid outbox row for an inline (url) destination. */

@@ -86,8 +86,8 @@ export interface DeliveryConfig {
 /** SSRF guard policy (basic design section 12). */
 export interface SsrfConfig {
   blockPrivateRanges: boolean;
-  allowlist: string[];
-  blocklist: string[];
+  allowlist: readonly string[];
+  blocklist: readonly string[];
 }
 
 /** Signature scheme (basic design section 11). Only Standard Webhooks is supported. */

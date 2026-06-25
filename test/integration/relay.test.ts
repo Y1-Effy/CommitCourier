@@ -24,6 +24,10 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
       captured.inserted.push({ trx, row });
       return Promise.resolve();
     },
+    insertOutboxMany: (trx, rows) => {
+      for (const row of rows) captured.inserted.push({ trx, row });
+      return Promise.resolve();
+    },
     insertOutboxAutonomous: (row) => {
       captured.autonomous.push(row);
       return Promise.resolve();
@@ -32,17 +36,25 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
     applyTransition: () => Promise.resolve(),
     reclaimStuck: () => Promise.resolve(0),
     recordAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve(),
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: (rows) => {
       captured.replayCopies.push(...rows);
       return Promise.resolve(rows.map((r) => r.id));
     },
+    insertEndpoint: () => Promise.resolve(),
+    updateEndpoint: () => Promise.resolve(),
     findEndpoint: () => Promise.resolve(null),
     disableEndpoint: (id, now) => {
       captured.disabled.push({ id, now });
       return Promise.resolve();
     },
+    stats: () =>
+      Promise.resolve({
+        counts: { pending: 0, in_flight: 0, delivered: 0, dead: 0, observed: 0, cancelled: 0 },
+        oldestPendingAt: null,
+      }),
     diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),
     migrate: () => Promise.resolve(),
     ...over,
