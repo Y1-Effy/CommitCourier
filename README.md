@@ -3,8 +3,8 @@
 > Transactional Outbound Webhook delivery for Node.js / TypeScript, backed by your **existing PostgreSQL**.
 
 [![npm version](https://img.shields.io/npm/v/commitcourier.svg)](https://www.npmjs.com/package/commitcourier)
-[![license](https://img.shields.io/npm/l/commitcourier.svg)](./LICENSE)
-[![node](https://img.shields.io/node/v/commitcourier.svg)](https://nodejs.org)
+[![license](https://img.shields.io/github/license/Y1-Effy/CommitCourier)](./LICENSE)
+[![node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)](https://nodejs.org)
 
 🇯🇵 日本語版: **[README.ja.md](./README.ja.md)** · 🔒 [Security policy](./SECURITY.md)
 
