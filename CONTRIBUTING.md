@@ -7,7 +7,7 @@ project, the conventions we follow, and how to get a change merged.
 
 ## Prerequisites
 
-- Node.js **20.18.1+**
+- Node.js **22.19.0+**
 - npm (the repository ships a `package-lock.json`)
 - Docker — only required to run the integration / concurrency / fault / perf suites
   (`testcontainers` spins up a real PostgreSQL). Unit tests need no Docker.

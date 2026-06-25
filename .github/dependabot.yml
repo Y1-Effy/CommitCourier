@@ -9,6 +9,11 @@ updates:
       # Group devDependencies into a single PR to reduce review overhead.
       dev-dependencies:
         dependency-type: development
+    ignore:
+      # eslint 10 is not yet supported by eslint-plugin-import (peer allows up to eslint 9), so a
+      # major bump breaks `npm ci` with ERESOLVE. Hold the major until the plugin supports v10.
+      - dependency-name: "eslint"
+        update-types: ["version-update:semver-major"]
 
   - package-ecosystem: github-actions
     directory: "/"
