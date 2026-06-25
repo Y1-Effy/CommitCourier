@@ -91,7 +91,7 @@
   },
   "dependencies": {
     "p-limit": "^6.2.0",
-    "undici": "^7.0.0"
+    "undici": "^8.5.0"
   },
   "peerDependencies": {
     "knex": ">=3",
