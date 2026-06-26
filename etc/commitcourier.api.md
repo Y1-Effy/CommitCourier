@@ -14,7 +14,13 @@ export function base64ToBytes(b64: string): Uint8Array;
 export function bytesToBase64(bytes: Uint8Array): string;
 
 // @public
+export function bytesToUtf8(bytes: Uint8Array): string;
+
+// @public
 export type Clock = () => Date;
+
+// @public
+export function createAesGcmCipher(key: Uint8Array | string): SecretCipher;
 
 // @public (undocumented)
 export function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>>;
@@ -154,6 +160,9 @@ export interface EnqueueInput {
 
 // @public
 export function evaluateIp(ip: string, cfg: SsrfConfig): SsrfDecision;
+
+// @public
+export function generateSecretKey(): string;
 
 // @public
 export function initialState(mode: Mode, now: Date): Pick<OutboxRow, "status" | "attempts" | "availableAt">;
@@ -347,6 +356,7 @@ export type RelayErrorCode = "CONFIG_INVALID" | "MISSING_TABLES" | "SSRF_BLOCKED
 
 // @public
 export interface RelayInit<TTx> {
+    cipher?: SecretCipher;
     // (undocumented)
     clock?: Clock;
     // (undocumented)
@@ -390,6 +400,14 @@ export interface RetryConfig {
     jitter: number;
     // (undocumented)
     maxAttempts: number;
+}
+
+// @public
+export interface SecretCipher {
+    // (undocumented)
+    decrypt(ciphertext: string): Promise<string>;
+    // (undocumented)
+    encrypt(plaintext: string): Promise<string>;
 }
 
 // @public

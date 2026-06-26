@@ -18,10 +18,12 @@ import type {
   RetryConfig,
   DeliveryConfig,
   SsrfConfig,
+  SecretCipher,
   Clock,
   Logger,
 } from "./core/index";
 import type { Store, NewOutboxRow, ReplayFilter, EndpointPatch, OutboxStats } from "./store/store";
+import { createEncryptedStore } from "./store/encrypted-store";
 import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
 import type { DeliveryHooks } from "./delivery/deliver";
@@ -62,6 +64,12 @@ export interface EndpointAdmin {
 /** Arguments to {@link createRelay}: the store plus a partial relay configuration. */
 export interface RelayInit<TTx> {
   store: Store<TTx>;
+  /**
+   * Optional cipher for encrypting signing secrets at rest (`secretSnapshot`, endpoint `secret`).
+   * When provided, the store is transparently wrapped so secrets are ciphertext in the backend.
+   * See {@link createAesGcmCipher}. When omitted, secrets are stored as-is (plaintext).
+   */
+  cipher?: SecretCipher;
   mode?: Mode;
   signing?: Partial<SigningConfig>;
   retry?: Partial<RetryConfig>;
@@ -119,7 +127,9 @@ function asRegistered(ep: unknown): { endpointId: string } | null {
 }
 
 export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>> {
-  const { store, ...rest } = config;
+  const { store: rawStore, cipher, ...rest } = config;
+  // Encrypt signing secrets at rest by wrapping the store; every layer below keeps seeing plaintext.
+  const store = cipher ? createEncryptedStore(rawStore, cipher) : rawStore;
   const resolved = resolveConfig(rest);
 
   const diag = await store.diagnose();

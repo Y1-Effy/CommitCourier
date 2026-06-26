@@ -6,10 +6,16 @@
  */
 
 const _enc = /* @__PURE__ */ new TextEncoder();
+const _dec = /* @__PURE__ */ new TextDecoder();
 
 /** Encode a string to its UTF-8 bytes. */
 export function utf8ToBytes(s: string): Uint8Array {
   return _enc.encode(s);
+}
+
+/** Decode UTF-8 bytes back to a string. */
+export function bytesToUtf8(bytes: Uint8Array): string {
+  return _dec.decode(bytes);
 }
 
 /** Decode a standard (non-URL-safe) Base64 string to bytes. */

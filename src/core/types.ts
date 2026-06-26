@@ -17,7 +17,10 @@ export interface OutboxRow {
   endpointId: string | null;
   /** Inline destination, when not using a registered endpoint. */
   targetUrl: string | null;
-  /** Signing-key snapshot taken at enqueue time. */
+  /**
+   * Signing-key snapshot taken at enqueue time. Plaintext at this boundary; encrypted at rest
+   * when a `cipher` is configured on the relay (see {@link createAesGcmCipher}).
+   */
   secretSnapshot: string | null;
   status: Status;
   attempts: number;
@@ -56,7 +59,10 @@ export interface DeliveryAttempt {
 export interface EndpointRow {
   id: string;
   url: string;
-  /** Signing secret. At-rest encryption is the DB's responsibility (encrypted-column support is future). */
+  /**
+   * Signing secret. Plaintext at this boundary; encrypted at rest when a `cipher` is configured on
+   * the relay (see {@link createAesGcmCipher}), otherwise at-rest encryption is the DB's responsibility.
+   */
   secret: string;
   status: "active" | "disabled";
   description: string | null;

@@ -7,7 +7,7 @@ CREATE TABLE IF NOT EXISTS webhook_outbox (
   payload         jsonb NOT NULL,
   endpoint_id     uuid NULL,
   target_url      text NULL,
-  secret_snapshot text NULL,
+  secret_snapshot text NULL,        -- signing-key snapshot; ciphertext when a cipher is configured (createAesGcmCipher), else plaintext
   status          text NOT NULL
                   CHECK (status IN ('pending','in_flight','delivered','dead','observed','cancelled')),
   attempts        int  NOT NULL DEFAULT 0,
@@ -43,7 +43,7 @@ CREATE INDEX IF NOT EXISTS ix_attempts_outbox ON webhook_delivery_attempts (outb
 CREATE TABLE IF NOT EXISTS webhook_endpoints (   -- optional (only for the registered-endpoint workflow)
   id            uuid PRIMARY KEY,
   url           text NOT NULL,
-  secret        text NOT NULL,             -- at-rest encryption is the DB's responsibility (optional encrypted-column support is future)
+  secret        text NOT NULL,             -- ciphertext when a cipher is configured (createAesGcmCipher); otherwise plaintext and at-rest encryption is the DB's responsibility
   status        text NOT NULL DEFAULT 'active'
                 CHECK (status IN ('active','disabled')),
   description   text NULL,

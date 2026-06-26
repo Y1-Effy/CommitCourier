@@ -20,10 +20,13 @@ export type {
 export { RelayError } from "./errors";
 export type { RelayErrorCode } from "./errors";
 
-export { utf8ToBytes, base64ToBytes, bytesToBase64 } from "./encoding";
+export { utf8ToBytes, base64ToBytes, bytesToBase64, bytesToUtf8 } from "./encoding";
 
 export { sign } from "./signing";
 export type { SignatureHeaders } from "./signing";
+
+export { createAesGcmCipher, generateSecretKey } from "./cipher";
+export type { SecretCipher } from "./cipher";
 
 export { backoffMs } from "./retry";
 

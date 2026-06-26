@@ -37,11 +37,12 @@ CommitCourier はセキュリティ機微な責務を扱うため、ライブラ
 - **Outbound SSRF。** SSRF 防御は既定で有効で、プライベート／ループバック／リンクローカル／クラウドメタデータ宛先を遮断します。DNS リバインディング対策として、**名前解決後の IP** に対して再検証します。
 - **改ざん・なりすましの検出。** 配信は Standard Webhooks（`{id}.{timestamp}.{body}` に対する HMAC-SHA256）で署名され、受信側が真正性と完全性を検証できます。
 - **台帳での secret の取り扱い。** 配信台帳はリクエストヘッダを記録しますが、**署名 secret 自体は決して保存しません**。応答本文は設定可能なスニペットサイズに切り詰めます。
+- **署名 secret の保管時暗号化（任意）。** `createRelay({ cipher })` に `createAesGcmCipher(key)`（WebCrypto AES-256-GCM）または独自の `SecretCipher`（KMS/Vault 連携など）を渡すと、`webhook_outbox.secret_snapshot` と `webhook_endpoints.secret` は DB に書かれる時点で暗号文（`ccsec.v1.` 接頭辞）になり、署名計算の直前にメモリ上でのみ復号されます。改ざんは GCM 認証により検出されます。
 - **fail-closed な enqueue。** Outbox 行は業務トランザクションの中で書かれるため、rollback された業務書き込みに対して webhook が送られることはありません。
 
 ### 利用者の責務（ライブラリのスコープ外）
 
-- **secret の保管時暗号化。** 署名 secret（`webhook_outbox.secret_snapshot` および `webhook_endpoints.secret`）は、アプリが書き込んだままの形で保存されます。保管時の暗号化はデータベース側の責務です（任意の暗号化カラム対応は将来作業）。
+- **secret の鍵管理。** 上記の `cipher` を使う場合、暗号鍵（`createAesGcmCipher` のキー）の安全な保管・配布・ローテーションは利用者の責務です。`cipher` を設定しない場合、署名 secret はアプリが書き込んだままの平文で保存され、保管時の暗号化はデータベース側の責務になります。
 - **受信側の検証と冪等処理。** CommitCourier は at-least-once 配信と idempotency key を提供しますが、署名検証とイベントの重複排除は受信側の責務です。
 - **SSRF 防御の無効化。** `ssrf.blockPrivateRanges: false`（または allowlist へのホスト追加）は内部宛先への到達性を再び有効にします。これは明示的かつ警告付きのオプトインであり、その結果生じる露出は利用者の判断です。
 - **トランスポート保護と認証情報。** HTTPS エンドポイントを使用し、DB 認証情報や署名 secret をソース管理に含めないでください。
