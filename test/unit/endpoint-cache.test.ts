@@ -8,6 +8,7 @@ function endpointRow(id: string, secret = "whsec_x"): EndpointRow {
     id,
     url: "https://example.test/hook",
     secret,
+    secretSecondary: null,
     status: "active",
     description: null,
     consecutiveFailures: 0,

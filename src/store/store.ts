@@ -61,6 +61,8 @@ export interface NewEndpointRow {
 export interface EndpointPatch {
   url?: string;
   secret?: string;
+  /** Secondary signing secret for key rotation; set to a value to dual-sign, or null to finalize. */
+  secretSecondary?: string | null;
   description?: string | null;
   metadata?: Record<string, unknown> | null;
   status?: EndpointRow["status"];
@@ -105,8 +107,18 @@ export interface Store<TTx = unknown> {
    * and return the claimed rows. Concurrent dispatchers must never claim the same row: SQL uses
    * `FOR UPDATE SKIP LOCKED`; an atomic conditional update (e.g. Mongo `findOneAndUpdate` whose
    * filter requires `status = 'pending'`) gives the same skip-the-locked effect.
+   *
+   * `ordering` (default `"none"`, the global-FIFO behaviour) opts into per-endpoint FIFO: at most the
+   * single oldest due row per registered endpoint is claimed, and only when no earlier non-terminal
+   * row for that endpoint is in flight or awaiting retry — so deliveries to one endpoint stay in
+   * order. Inline (null-endpoint) rows are always claimed unordered.
    */
-  claimDue(opts: { limit: number; lockedBy: string; now: Date }): Promise<OutboxRow[]>;
+  claimDue(opts: {
+    limit: number;
+    lockedBy: string;
+    now: Date;
+    ordering?: "none" | "per-endpoint";
+  }): Promise<OutboxRow[]>;
 
   /**
    * Apply a state transition (a sparse {@link Transition} delta from core/state.ts) to one row.

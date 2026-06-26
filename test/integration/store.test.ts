@@ -3,10 +3,12 @@
  * and knex adapters to prove identical semantics. Requires Docker (testcontainers); skips
  * cleanly when none is available.
  */
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { onSuccess } from "../../src/core/index";
 import {
   dockerAvailable,
+  drizzleHarness,
   knexHarness,
   pgHarness,
   sampleRow,
@@ -15,7 +17,7 @@ import {
   type PgConn,
 } from "./_helpers";
 
-const HARNESS_NAMES = ["pg", "knex"] as const;
+const HARNESS_NAMES = ["pg", "knex", "drizzle"] as const;
 
 describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
   let stop: () => Promise<void>;
@@ -28,7 +30,8 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
     stop = started.stop;
     harnesses.pg = pgHarness(conn);
     harnesses.knex = knexHarness(conn);
-    // Migrate once via one adapter; both share the same schema.
+    harnesses.drizzle = drizzleHarness(conn);
+    // Migrate once via one adapter; all share the same schema.
     await harnesses.pg.store.migrate();
   });
 
@@ -88,6 +91,77 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
 
       expect(new Set(claimed).size).toBe(claimed.length); // no duplicates
       expect(new Set(claimed)).toEqual(ids); // every row claimed exactly once
+    });
+
+    it("per-endpoint FIFO holds the line: a backed-off head blocks later rows (head by seq)", async () => {
+      const endpointId = randomUUID();
+      await h().insertEndpoint({ id: endpointId, url: "https://ep.test/hook", secret: "s" });
+      const now = new Date();
+      // row1 is inserted first but backed off into the future (a failed head awaiting retry); row2 is
+      // inserted later and already due. The head must be row1 (smallest seq), so the endpoint is
+      // blocked until row1 is due — row2 must never jump ahead.
+      const row1 = sampleRow({
+        endpointId,
+        targetUrl: null,
+        secretSnapshot: null,
+        availableAt: new Date(now.getTime() + 10 * 60_000),
+      });
+      await h().enqueue(row1);
+      const row2 = sampleRow({
+        endpointId,
+        targetUrl: null,
+        secretSnapshot: null,
+        availableAt: new Date(now.getTime() - 1_000),
+      });
+      await h().enqueue(row2);
+
+      // Head (row1) is not yet due → nothing is claimed for this endpoint.
+      const blocked = await h().store.claimDue({
+        limit: 10,
+        lockedBy: "w1",
+        now,
+        ordering: "per-endpoint",
+      });
+      expect(blocked.map((r) => r.id)).not.toContain(row1.id);
+      expect(blocked.map((r) => r.id)).not.toContain(row2.id);
+
+      // Once row1 is due, the head (row1) is claimed first — never row2 ahead of it.
+      const afterDue = await h().store.claimDue({
+        limit: 10,
+        lockedBy: "w2",
+        now: new Date(now.getTime() + 11 * 60_000),
+        ordering: "per-endpoint",
+      });
+      expect(afterDue.map((r) => r.id)).toEqual([row1.id]);
+    });
+
+    it("per-endpoint FIFO preserves arrival order within a single-transaction bulk enqueue", async () => {
+      const endpointId = randomUUID();
+      await h().insertEndpoint({ id: endpointId, url: "https://ep.test/hook", secret: "s" });
+      const due = new Date(Date.now() - 1_000);
+      // Three rows for one endpoint, all due, enqueued in ONE transaction → identical created_at and
+      // random uuids. Only the monotonic `seq` distinguishes their arrival order; the head must follow
+      // it so they are delivered in insertion order.
+      const rows = [0, 1, 2].map(() =>
+        sampleRow({ endpointId, targetUrl: null, secretSnapshot: null, availableAt: due }),
+      );
+      await h().enqueueMany(rows);
+
+      // Claim one at a time (one in-flight per endpoint), completing each before the next is claimable.
+      const claimedOrder: string[] = [];
+      for (let i = 0; i < rows.length; i++) {
+        const claimed = await h().store.claimDue({
+          limit: 10,
+          lockedBy: "w1",
+          now: new Date(),
+          ordering: "per-endpoint",
+        });
+        expect(claimed).toHaveLength(1);
+        const id = claimed[0]!.id;
+        claimedOrder.push(id);
+        await h().store.applyTransition(id, onSuccess(new Date()));
+      }
+      expect(claimedOrder).toEqual(rows.map((r) => r.id));
     });
 
     it("reclaimStuck recovers only stale in_flight rows", async () => {

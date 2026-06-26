@@ -9,7 +9,13 @@
  */
 import initSql from "./sql/001_init.sql";
 import type { OutboxRow, DeliveryAttempt, EndpointRow, Transition, Status } from "../core/index";
-import type { NewOutboxRow, NewDeliveryAttempt, NewEndpointRow, EndpointPatch } from "./store";
+import type {
+  NewOutboxRow,
+  NewDeliveryAttempt,
+  NewEndpointRow,
+  EndpointPatch,
+  ReplayFilter,
+} from "./store";
 
 /** Re-exported so the pg/knex adapters keep importing `newId` from a single store-local module. */
 export { newId } from "../id";
@@ -68,6 +74,7 @@ interface RawEndpointRow {
   id: string;
   url: string;
   secret: string;
+  secret_secondary: string | null;
   status: string;
   description: string | null;
   consecutive_failures: number;
@@ -115,6 +122,7 @@ export function mapEndpointRow(r: RawEndpointRow): EndpointRow {
     id: r.id,
     url: r.url,
     secret: r.secret,
+    secretSecondary: r.secret_secondary,
     status: r.status as EndpointRow["status"],
     description: r.description,
     consecutiveFailures: r.consecutive_failures,
@@ -240,6 +248,7 @@ export function endpointObject(ep: NewEndpointRow): Record<string, unknown> {
 const ENDPOINT_PATCH_COLUMN: Record<keyof EndpointPatch, string> = {
   url: "url",
   secret: "secret",
+  secretSecondary: "secret_secondary",
   description: "description",
   metadata: "metadata",
   status: "status",
@@ -338,6 +347,70 @@ UPDATE ${OUTBOX_TABLE} SET ${set} WHERE id = ${ph(idPos)} AND status = 'in_fligh
 export function attemptValuesStringified(id: string, a: NewDeliveryAttempt): unknown[] {
   const obj = attemptObject(id, a);
   return ATTEMPT_COLUMNS.map((c) => obj[c]);
+}
+
+/** Ordered outbox values with the jsonb `payload` stringified, matching {@link OUTBOX_COLUMNS}. */
+export function outboxValuesStringified(row: NewOutboxRow): unknown[] {
+  const obj = outboxObject(row);
+  return OUTBOX_COLUMNS.map((c) => obj[c]);
+}
+
+/** Ordered endpoint values with the jsonb `metadata` stringified, matching {@link ENDPOINT_COLUMNS}. */
+export function endpointValuesStringified(ep: NewEndpointRow): unknown[] {
+  const obj = endpointObject(ep);
+  return ENDPOINT_COLUMNS.map((c) => obj[c]);
+}
+
+// --- Numbered-placeholder INSERT / replay SQL builders ($1, $2, …). Shared by the pg and Drizzle
+// adapters (both run node-postgres under the hood and bind positional `$n` parameters). ---
+
+/** Build `INSERT INTO t (cols) VALUES ($1, $2, ...)`, casting the named jsonb column to `::jsonb`. */
+export function insertClause(
+  table: string,
+  columns: readonly string[],
+  jsonColumn: string,
+): string {
+  const placeholders = columns
+    .map((c, i) => (c === jsonColumn ? `$${String(i + 1)}::jsonb` : `$${String(i + 1)}`))
+    .join(", ");
+  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
+}
+
+/** Build a multi-row INSERT (`(cols) VALUES (...),(...)`), casting the jsonb column per row. */
+export function insertManyClause(
+  table: string,
+  columns: readonly string[],
+  jsonColumn: string,
+  rowCount: number,
+): string {
+  const tuples: string[] = [];
+  for (let r = 0; r < rowCount; r++) {
+    const ph = columns.map((c, i) => {
+      const n = r * columns.length + i + 1;
+      return c === jsonColumn ? `$${String(n)}::jsonb` : `$${String(n)}`;
+    });
+    tuples.push(`(${ph.join(", ")})`);
+  }
+  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${tuples.join(", ")}`;
+}
+
+/** Build the dynamic WHERE for a {@link ReplayFilter}: `{ sql, params }` (empty when no filter). */
+export function replayWhere(filter: ReplayFilter): { sql: string; params: unknown[] } {
+  const conds: string[] = [];
+  const params: unknown[] = [];
+  if (filter.outboxId !== undefined) {
+    params.push(filter.outboxId);
+    conds.push(`id = $${String(params.length)}`);
+  }
+  if (filter.status !== undefined) {
+    params.push(filter.status);
+    conds.push(`status = $${String(params.length)}`);
+  }
+  if (filter.since !== undefined) {
+    params.push(filter.since);
+    conds.push(`created_at >= $${String(params.length)}`);
+  }
+  return { sql: conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "", params };
 }
 
 // --- Diagnose-result computation. The dialect supplies the existence-probe SQL (see

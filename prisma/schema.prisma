@@ -1,0 +1,14 @@
+// Minimal Prisma schema for the CommitCourier Prisma-adapter integration test only.
+// The adapter is raw-SQL based (no models), so this declares just the datasource and a generated
+// client (driver-adapter / query-compiler mode, Prisma 7). The generated client is written under
+// test/integration/.prisma-client (gitignored) and constructed with a pg driver adapter at runtime,
+// so generation needs no live database. This schema is dev/test infra and is not shipped.
+generator client {
+  provider = "prisma-client"
+  output   = "../test/integration/.prisma-client"
+  runtime  = "nodejs"
+}
+
+datasource db {
+  provider = "postgresql"
+}

@@ -19,6 +19,8 @@ export default tseslint.config(
       "docs/**",
       ".stryker-tmp/**",
       "reports/**",
+      // Generated Prisma client for the Prisma adapter test (gitignored, produced by codegen).
+      "test/integration/.prisma-client/**",
     ],
   },
 

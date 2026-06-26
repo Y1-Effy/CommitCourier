@@ -32,11 +32,12 @@ function outboxRow(secretSnapshot: string | null): OutboxRow {
   };
 }
 
-function endpointRow(secret: string): EndpointRow {
+function endpointRow(secret: string, secretSecondary: string | null = null): EndpointRow {
   return {
     id: "ep-1",
     url: "https://example.test/hook",
     secret,
+    secretSecondary,
     status: "active",
     description: null,
     consecutiveFailures: 0,

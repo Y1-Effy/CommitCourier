@@ -6,7 +6,7 @@ import { describe, expect, it, vi } from "vitest";
 import { deliverOne } from "../../src/delivery/deliver";
 import type { DeliverDeps, DeliveryHooks } from "../../src/delivery/deliver";
 import { resolveConfig } from "../../src/core/index";
-import type { OutboxRow } from "../../src/core/index";
+import type { OutboxRow, Transition } from "../../src/core/index";
 import type { Store } from "../../src/store/store";
 
 type HttpResult = Awaited<ReturnType<DeliverDeps["http"]["post"]>>;
@@ -75,8 +75,27 @@ function deps(opts: {
   };
 }
 
-const ok: HttpResult = { status: 200, bodySnippet: "ok", durationMs: 7, error: null };
-const fail: HttpResult = { status: 500, bodySnippet: "err", durationMs: 9, error: null };
+const ok: HttpResult = {
+  status: 200,
+  bodySnippet: "ok",
+  durationMs: 7,
+  error: null,
+  retryAfter: null,
+};
+const fail: HttpResult = {
+  status: 500,
+  bodySnippet: "err",
+  durationMs: 9,
+  error: null,
+  retryAfter: null,
+};
+const gone: HttpResult = {
+  status: 410,
+  bodySnippet: "gone",
+  durationMs: 5,
+  error: null,
+  retryAfter: null,
+};
 
 describe("delivery hooks", () => {
   it("fires onDelivered (only) on a 2xx response", async () => {
@@ -137,6 +156,76 @@ describe("delivery hooks", () => {
     expect(calls.complete).toBe(1);
     expect(calls.record).toBe(0);
     expect(calls.transition).toBe(0);
+  });
+
+  it("treats 410 Gone as a permanent failure: onDead even with attempts remaining, row -> dead", async () => {
+    const hooks = { onDelivered: vi.fn(), onRetry: vi.fn(), onDead: vi.fn() };
+    let transition: Transition | undefined;
+    const store = noopStore({
+      completeAttempt: (_a, t) => {
+        transition = t;
+        return Promise.resolve();
+      },
+    });
+    const config = resolveConfig({ retry: { maxAttempts: 12 } });
+    await deliverOne(row(), {
+      store,
+      http: { post: () => Promise.resolve(gone) },
+      config,
+      clock: () => new Date(0),
+      hooks,
+    });
+    expect(hooks.onDead).toHaveBeenCalledTimes(1);
+    expect(hooks.onRetry).not.toHaveBeenCalled();
+    expect(transition?.status).toBe("dead");
+  });
+
+  it("disables the registered endpoint on a 410 Gone", async () => {
+    const disableEndpoint = vi.fn(() => Promise.resolve());
+    const store = noopStore({
+      findEndpoint: () =>
+        Promise.resolve({
+          id: "ep-1",
+          url: "https://example.test/hook",
+          secret: "whsec_test",
+          secretSecondary: null,
+          status: "active",
+          description: null,
+          consecutiveFailures: 0,
+          disabledAt: null,
+          metadata: null,
+          createdAt: new Date(0),
+        }),
+      disableEndpoint,
+    });
+    const config = resolveConfig({});
+    await deliverOne(row({ endpointId: "ep-1", targetUrl: null, secretSnapshot: null }), {
+      store,
+      http: { post: () => Promise.resolve(gone) },
+      config,
+      clock: () => new Date(0),
+    });
+    expect(disableEndpoint).toHaveBeenCalledWith("ep-1", new Date(0));
+  });
+
+  it("honours Retry-After over the computed backoff (clamped to capMs)", async () => {
+    let transition: Transition | undefined;
+    const store = noopStore({
+      completeAttempt: (_a, t) => {
+        transition = t;
+        return Promise.resolve();
+      },
+    });
+    // baseMs 1000 would back off ~1s on attempt 1; Retry-After: 120 wins (120s), under the cap.
+    const config = resolveConfig({ retry: { maxAttempts: 12, baseMs: 1000, capMs: 3_600_000 } });
+    const result: HttpResult = { ...fail, status: 503, retryAfter: "120" };
+    await deliverOne(row(), {
+      store,
+      http: { post: () => Promise.resolve(result) },
+      config,
+      clock: () => new Date(0),
+    });
+    expect(transition?.availableAt?.getTime()).toBe(120_000);
   });
 
   it("swallows a throwing hook (fail-open) and logs it", async () => {

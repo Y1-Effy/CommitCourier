@@ -1,0 +1,251 @@
+/**
+ * Drizzle adapter (per 02-store section 3.3). `drizzleStore({ db })`.
+ *
+ * `TTx = DrizzleTx` (a drizzle node-postgres transaction): `insertOutbox` runs on the caller's
+ * drizzle transaction and joins the user's TX (fail-closed). Drizzle sits on node-postgres, so the
+ * adapter reuses the exact Postgres dialect SQL and the shared row/column plumbing as the `pg`
+ * adapter.
+ *
+ * Execution seam: drizzle's `execute` overrides node-postgres' type parsers and returns timestamps as
+ * raw strings (it maps them in its ORM layer, which we bypass). So row-reading dispatch/admin methods
+ * run through the underlying `$client` (node-postgres' default parsers → `Date`), exactly like the pg
+ * adapter; only the enqueue-path writes — which bind params and read no rows — use the drizzle
+ * transaction handle so they ride the caller's transaction. `drizzle-orm` is an optional peer
+ * dependency (types only; the db is injected).
+ */
+import { sql, type SQL } from "drizzle-orm";
+import type { NodePgDatabase } from "drizzle-orm/node-postgres";
+import type { OutboxRow, DeliveryAttempt, EndpointRow, Transition } from "../core/index";
+import type {
+  NewDeliveryAttempt,
+  NewEndpointRow,
+  EndpointPatch,
+  ReplayFilter,
+  OutboxStats,
+  Store,
+} from "./store";
+import {
+  OUTBOX_TABLE,
+  ATTEMPTS_TABLE,
+  ENDPOINTS_TABLE,
+  OUTBOX_COLUMNS,
+  ATTEMPT_COLUMNS,
+  ENDPOINT_COLUMNS,
+  ENDPOINT_JSON_COLUMN,
+  outboxValues,
+  attemptValues,
+  endpointValues,
+  endpointPatchColumns,
+  transitionColumns,
+  completeAttemptSql,
+  insertClause,
+  insertManyClause,
+  replayWhere,
+  countsFromRows,
+  mapOutboxRow,
+  mapAttemptRow,
+  mapEndpointRow,
+  diagnoseResult,
+  existingFromRow,
+  newId,
+  type RawOutboxRow,
+  type RawAttemptRow,
+  type RawEndpointRow,
+} from "./_shared";
+import { postgres } from "./sql/postgres";
+
+/** The node-postgres client surface (`Pool` or `Client`) drizzle exposes as `$client`. */
+type PgClient = {
+  query(text: string, params?: unknown[]): Promise<{ rows?: unknown[]; rowCount?: number | null }>;
+};
+
+/** A drizzle node-postgres database, plus the `$client` exposed by the `drizzle()` factory. */
+export type DrizzleDb = NodePgDatabase & { $client: PgClient };
+
+/** The transaction handle drizzle passes to a `db.transaction` callback (the `enqueue` TTx). */
+export type DrizzleTx = Parameters<Parameters<DrizzleDb["transaction"]>[0]>[0];
+
+/** The drizzle executor surface used for enqueue-path writes (satisfied by {@link DrizzleTx}). */
+type Executor = { execute(query: SQL): Promise<unknown> };
+
+const INSERT_OUTBOX_SQL = insertClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload");
+const INSERT_ATTEMPT_SQL = insertClause(ATTEMPTS_TABLE, ATTEMPT_COLUMNS, "request_headers");
+const INSERT_ENDPOINT_SQL = insertClause(ENDPOINTS_TABLE, ENDPOINT_COLUMNS, ENDPOINT_JSON_COLUMN);
+
+/**
+ * Turn a numbered (`$1`, `$2`, …) SQL string and its ordered params into a drizzle `SQL` object.
+ * Each `$n` occurrence binds `params[n-1]` as its own parameter (a reused `$1` simply binds the same
+ * value again), so the shared dialect SQL — including its reused `now` slots — works unchanged. Only
+ * used for enqueue-path writes on the caller's transaction (which read no rows).
+ */
+function toSql(numbered: string, params: readonly unknown[]): SQL {
+  const chunks: SQL[] = [];
+  const re = /\$(\d+)/g;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(numbered)) !== null) {
+    if (m.index > last) chunks.push(sql.raw(numbered.slice(last, m.index)));
+    chunks.push(sql`${params[Number(m[1]) - 1]}`);
+    last = m.index + m[0].length;
+  }
+  if (last < numbered.length) chunks.push(sql.raw(numbered.slice(last)));
+  return sql.join(chunks);
+}
+
+/** Registered-endpoint admin + stats methods, factored out to keep the store factory small. */
+function endpointAndStatsMethods(
+  client: PgClient,
+): Pick<Store, "insertEndpoint" | "updateEndpoint" | "findEndpoint" | "disableEndpoint" | "stats"> {
+  return {
+    async insertEndpoint(ep: NewEndpointRow) {
+      await client.query(INSERT_ENDPOINT_SQL, endpointValues(ep));
+    },
+
+    async updateEndpoint(id, patch: EndpointPatch) {
+      const { columns, values } = endpointPatchColumns(patch);
+      if (columns.length === 0) return; // no-op patch
+      const set = columns
+        .map((c, i) => `${c} = $${String(i + 2)}${c === ENDPOINT_JSON_COLUMN ? "::jsonb" : ""}`)
+        .join(", ");
+      await client.query(`UPDATE ${ENDPOINTS_TABLE} SET ${set} WHERE id = $1`, [id, ...values]);
+    },
+
+    async findEndpoint(id): Promise<EndpointRow | null> {
+      const res = await client.query(`SELECT * FROM ${ENDPOINTS_TABLE} WHERE id = $1`, [id]);
+      const row = (res.rows as RawEndpointRow[] | undefined)?.[0];
+      return row ? mapEndpointRow(row) : null;
+    },
+
+    async disableEndpoint(id, now) {
+      const sql = `UPDATE ${ENDPOINTS_TABLE} SET status = 'disabled', disabled_at = $2 WHERE id = $1`;
+      await client.query(sql, [id, now]);
+    },
+
+    async stats(): Promise<OutboxStats> {
+      const counts = await client.query(
+        `SELECT status, count(*) AS count FROM ${OUTBOX_TABLE} GROUP BY status`,
+      );
+      const oldest = await client.query(
+        `SELECT min(available_at) AS oldest FROM ${OUTBOX_TABLE} WHERE status = 'pending'`,
+      );
+      const oldestPendingAt =
+        (oldest.rows as { oldest: Date | null }[] | undefined)?.[0]?.oldest ?? null;
+      return {
+        counts: countsFromRows((counts.rows ?? []) as { status: string; count: string }[]),
+        oldestPendingAt,
+      };
+    },
+  };
+}
+
+/**
+ * Build a {@link Store} backed by Drizzle (node-postgres). `enqueue(trx, …)` takes a drizzle
+ * transaction so the outbox write rides the caller's transaction (fail-closed); dispatch/admin
+ * methods run on the underlying `$client`. Semantics match the `pg` adapter (same dialect SQL and
+ * driver-level type parsing).
+ *
+ * @param opts - Holds the drizzle database (built with `drizzle(pool)`, so `$client` is present).
+ * @returns A `Store<DrizzleTx>` to pass to `createRelay`.
+ */
+export function drizzleStore(opts: { db: DrizzleDb }): Store<DrizzleTx> {
+  const { db } = opts;
+  const client = db.$client;
+
+  /** Insert (enqueue-path) on the caller's drizzle transaction; reads no rows. */
+  const insertOn = (trx: Executor, text: string, params: readonly unknown[]): Promise<unknown> =>
+    trx.execute(toSql(text, params));
+
+  return {
+    async insertOutbox(trx, row) {
+      // Ride the caller's TX: any error propagates so the user's TX rolls back (fail-closed).
+      await insertOn(trx, INSERT_OUTBOX_SQL, outboxValues(row));
+    },
+
+    async insertOutboxMany(trx, rows) {
+      if (rows.length === 0) return; // no-op
+      const sql = insertManyClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload", rows.length);
+      await insertOn(
+        trx,
+        sql,
+        rows.flatMap((r) => outboxValues(r)),
+      );
+    },
+
+    async insertOutboxAutonomous(row) {
+      await client.query(INSERT_OUTBOX_SQL, outboxValues(row));
+    },
+
+    async claimDue({ limit, lockedBy, now, ordering }): Promise<OutboxRow[]> {
+      // Single atomic statement (CTE): SELECT ... FOR UPDATE SKIP LOCKED then UPDATE to in_flight.
+      // Both variants share `[now, limit, lockedBy]` ($1 reused for every now slot).
+      const numbered =
+        ordering === "per-endpoint"
+          ? postgres.claimSqlPerEndpoint.numbered
+          : postgres.claimSql.numbered;
+      const res = await client.query(numbered, [now, limit, lockedBy]);
+      return ((res.rows ?? []) as RawOutboxRow[]).map(mapOutboxRow);
+    },
+
+    async applyTransition(id, t: Transition) {
+      const { columns, values } = transitionColumns(t);
+      const set = columns.map((c, i) => `${c} = $${String(i + 2)}`).join(", ");
+      // Idempotency guard: only act on a row still held in_flight.
+      const sql = `UPDATE ${OUTBOX_TABLE} SET ${set} WHERE id = $1 AND status = 'in_flight'`;
+      await client.query(sql, [id, ...values]);
+    },
+
+    async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {
+      const cutoff = new Date(now.getTime() - reclaimAfterMs);
+      const sql = `UPDATE ${OUTBOX_TABLE} SET status = 'pending', locked_at = NULL, locked_by = NULL WHERE status = 'in_flight' AND locked_at < $1`;
+      const res = await client.query(sql, [cutoff]);
+      return res.rowCount ?? 0;
+    },
+
+    async recordAttempt(a: NewDeliveryAttempt) {
+      await client.query(INSERT_ATTEMPT_SQL, attemptValues(newId(), a));
+    },
+
+    async completeAttempt(a: NewDeliveryAttempt, t: Transition) {
+      // One round trip via the shared CTE: INSERT the ledger row + apply the transition.
+      const { columns, values } = transitionColumns(t);
+      const sql = completeAttemptSql(columns, "numbered");
+      await client.query(sql, [...attemptValues(newId(), a), ...values, a.outboxId]);
+    },
+
+    async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {
+      const sql = `SELECT * FROM ${ATTEMPTS_TABLE} WHERE outbox_id = $1 ORDER BY attempt_no`;
+      const res = await client.query(sql, [outboxId]);
+      return ((res.rows ?? []) as RawAttemptRow[]).map(mapAttemptRow);
+    },
+
+    async selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]> {
+      const where = replayWhere(filter);
+      const sql = `SELECT * FROM ${OUTBOX_TABLE} ${where.sql} ORDER BY created_at`;
+      const res = await client.query(sql, where.params);
+      return ((res.rows ?? []) as RawOutboxRow[]).map(mapOutboxRow);
+    },
+
+    async insertReplayCopies(rows): Promise<string[]> {
+      await db.transaction(async (tx) => {
+        for (const row of rows) {
+          await insertOn(tx, INSERT_OUTBOX_SQL, outboxValues(row));
+        }
+      });
+      return rows.map((r) => r.id);
+    },
+
+    ...endpointAndStatsMethods(client),
+
+    async diagnose() {
+      const res = await client.query(postgres.diagnoseSql);
+      const row = ((res.rows ?? []) as Record<string, unknown>[])[0] ?? {};
+      return diagnoseResult(existingFromRow(row));
+    },
+
+    async migrate() {
+      // The DDL is multiple statements; the simple query protocol ($client.query with no params)
+      // runs them in one call (drizzle's execute uses the extended protocol, which rejects that).
+      await client.query(postgres.ddl());
+    },
+  };
+}

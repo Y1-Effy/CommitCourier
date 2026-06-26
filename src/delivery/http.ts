@@ -22,6 +22,8 @@ export interface HttpResult {
   durationMs: number;
   /** Exception summary, if any (e.g. `"SSRF_BLOCKED:metadata"`, `"TIMEOUT"`). */
   error: string | null;
+  /** Raw `Retry-After` response header (null when absent); parsed by the caller via `parseRetryAfter`. */
+  retryAfter: string | null;
 }
 
 /** Resolve a hostname to all candidate addresses. Injectable so tests can simulate rebinding. */
@@ -44,6 +46,12 @@ class SsrfBlockedError extends Error {
 const defaultResolveAll: ResolveAll = (hostname, callback) => {
   dnsLookup(hostname, { all: true }, callback);
 };
+
+/** Normalise an undici header value (string | string[] | undefined) to a single string or null. */
+function headerValue(value: string | string[] | undefined): string | null {
+  if (value == null) return null;
+  return Array.isArray(value) ? (value[0] ?? null) : value;
+}
 
 /** Drop the surrounding brackets of an IPv6 literal host (`[::1]` becomes `::1`). */
 function stripBrackets(host: string): string {
@@ -190,6 +198,7 @@ export function createHttpClient(
         bodySnippet: null,
         durationMs: Date.now() - start,
         error,
+        retryAfter: null,
       });
 
       let parsed: URL;
@@ -220,7 +229,13 @@ export function createHttpClient(
           dispatcher: agent,
         });
         const bodySnippet = await readSnippet(res.body, delivery.bodySnippetBytes);
-        return { status: res.statusCode, bodySnippet, durationMs: Date.now() - start, error: null };
+        return {
+          status: res.statusCode,
+          bodySnippet,
+          durationMs: Date.now() - start,
+          error: null,
+          retryAfter: headerValue(res.headers["retry-after"]),
+        };
       } catch (err) {
         return fail(summarize(err));
       } finally {

@@ -39,6 +39,21 @@ import {
 } from "./_shared";
 import { postgres } from "./sql/postgres";
 
+/**
+ * Pick the claim SQL and its positional (`?`) bindings for the requested ordering. Bindings follow
+ * the SQL's textual order: the per-endpoint variant has an extra `now` filter (two filters + SET).
+ */
+function claimArgs(
+  ordering: "none" | "per-endpoint" | undefined,
+  now: Date,
+  limit: number,
+  lockedBy: string,
+): { sql: string; bindings: Knex.RawBinding[] } {
+  return ordering === "per-endpoint"
+    ? { sql: postgres.claimSqlPerEndpoint.qmark, bindings: [now, now, limit, now, lockedBy] }
+    : { sql: postgres.claimSql.qmark, bindings: [now, limit, now, lockedBy] };
+}
+
 /** Apply a {@link ReplayFilter}'s conditions to a knex query builder. */
 function applyReplayFilter(q: Knex.QueryBuilder, filter: ReplayFilter): Knex.QueryBuilder {
   let out = q;
@@ -115,13 +130,10 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       await knex(OUTBOX_TABLE).insert(outboxObject(row));
     },
 
-    async claimDue({ limit, lockedBy, now }): Promise<OutboxRow[]> {
+    async claimDue({ limit, lockedBy, now, ordering }): Promise<OutboxRow[]> {
       return knex.transaction(async (trx) => {
-        // Positional bindings (?): now appears twice (filter + SET), see dialect claimSql.qmark.
-        const bindings = [now, limit, now, lockedBy];
-        const result = (await trx.raw(postgres.claimSql.qmark, bindings)) as unknown as {
-          rows: RawOutboxRow[];
-        };
+        const { sql, bindings } = claimArgs(ordering, now, limit, lockedBy);
+        const result = (await trx.raw(sql, bindings)) as unknown as { rows: RawOutboxRow[] };
         return result.rows.map(mapOutboxRow);
       });
     },

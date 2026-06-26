@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { backoffMs } from "../../src/core/retry";
+import { backoffMs, parseRetryAfter } from "../../src/core/retry";
 import type { RetryConfig } from "../../src/core/types";
 
 const cfg: RetryConfig = {
@@ -49,5 +49,33 @@ describe("retry.backoffMs", () => {
     const v = backoffMs(1, cfg);
     expect(v).toBeGreaterThanOrEqual(800);
     expect(v).toBeLessThanOrEqual(1_200);
+  });
+});
+
+describe("retry.parseRetryAfter", () => {
+  const now = Date.UTC(2026, 0, 1, 0, 0, 0); // fixed epoch ms
+
+  it("parses delta-seconds into milliseconds", () => {
+    expect(parseRetryAfter("120", now)).toBe(120_000);
+    expect(parseRetryAfter("0", now)).toBe(0);
+  });
+
+  it("parses an HTTP-date into a future delay relative to now", () => {
+    const future = new Date(now + 30_000).toUTCString();
+    expect(parseRetryAfter(future, now)).toBe(30_000);
+  });
+
+  it("returns null for a past HTTP-date", () => {
+    const past = new Date(now - 30_000).toUTCString();
+    expect(parseRetryAfter(past, now)).toBeNull();
+  });
+
+  it("returns null for absent, empty, or unparseable values", () => {
+    expect(parseRetryAfter(null, now)).toBeNull();
+    expect(parseRetryAfter(undefined, now)).toBeNull();
+    expect(parseRetryAfter("", now)).toBeNull();
+    expect(parseRetryAfter("   ", now)).toBeNull();
+    expect(parseRetryAfter("soon", now)).toBeNull();
+    expect(parseRetryAfter("-5", now)).toBeNull(); // not a bare non-negative integer
   });
 });

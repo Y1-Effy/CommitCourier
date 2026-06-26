@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from "vitest";
 import { completeAttemptSql } from "../../src/store/_shared";
+import { postgres } from "../../src/store/sql/postgres";
 
 describe("completeAttemptSql", () => {
   it("numbers placeholders in textual order: attempt values, SET values, then id (pg)", () => {
@@ -23,5 +24,25 @@ describe("completeAttemptSql", () => {
     expect(sql).toContain("WHERE id = ? AND status = 'in_flight'");
     // 8 attempt values + 2 SET values + 1 id = 11 placeholders.
     expect((sql.match(/\?/g) ?? []).length).toBe(11);
+  });
+});
+
+describe("per-endpoint FIFO claim SQL", () => {
+  it("claims one head row per endpoint with a skip-locked lock (pg, $n reused for now)", () => {
+    const sql = postgres.claimSqlPerEndpoint.numbered;
+    expect(sql).toContain("DISTINCT ON (endpoint_id)");
+    expect(sql).toContain("status IN ('pending', 'in_flight')");
+    expect(sql).toContain("FOR UPDATE OF o SKIP LOCKED");
+    // now ($1) appears in both filters and the SET; limit ($2) and lockedBy ($3) once each.
+    expect(sql).toContain("head.available_at <= $1");
+    expect(sql).toContain("LIMIT $2");
+    expect(sql).toContain("locked_by = $3");
+  });
+
+  it("uses positional ? in textual order for knex.raw (now, now, limit, now, lockedBy)", () => {
+    const sql = postgres.claimSqlPerEndpoint.qmark;
+    // 2 now filters + 1 limit + 1 now(SET) + 1 lockedBy = 5 placeholders.
+    expect((sql.match(/\?/g) ?? []).length).toBe(5);
+    expect(sql).toContain("FOR UPDATE OF o SKIP LOCKED");
   });
 });

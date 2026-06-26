@@ -9,8 +9,10 @@ import { randomUUID } from "node:crypto";
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers";
 import { Pool, type PoolClient } from "pg";
 import knex, { type Knex } from "knex";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { postgresStore } from "../../src/store/pg";
 import { knexStore } from "../../src/store/knex";
+import { drizzleStore } from "../../src/store/drizzle";
 import type { Store, NewOutboxRow } from "../../src/store/store";
 import type { OutboxRow } from "../../src/core/index";
 
@@ -199,6 +201,52 @@ export function knexHarness(conn: PgConn): Harness {
       await db.raw(TRUNCATE_SQL);
     },
     teardown: () => db.destroy(),
+  };
+}
+
+/** drizzle-backed harness (node-postgres). Uses the same pool for raw setup helpers. */
+export function drizzleHarness(conn: PgConn): Harness {
+  const pool = new Pool(conn);
+  const db = drizzle(pool);
+  const store = drizzleStore({ db });
+  const rollbackIfRequested = async (
+    fn: (tx: Parameters<Parameters<typeof db.transaction>[0]>[0]) => Promise<void>,
+    rollback?: boolean,
+  ): Promise<void> => {
+    try {
+      await db.transaction(async (tx) => {
+        await fn(tx);
+        if (rollback) throw new RollbackSignal();
+      });
+    } catch (err) {
+      if (!(err instanceof RollbackSignal)) throw err;
+    }
+  };
+  return {
+    name: "drizzle",
+    store,
+    enqueue: (row, opts) =>
+      rollbackIfRequested((tx) => store.insertOutbox(tx, row), opts?.rollback),
+    enqueueMany: (rows, opts) =>
+      rollbackIfRequested((tx) => store.insertOutboxMany(tx, rows), opts?.rollback),
+    getOutbox: (id) => getOutboxVia(store, id),
+    async setInFlight(id, lockedAt) {
+      await pool.query(
+        "UPDATE webhook_outbox SET status='in_flight', locked_at=$2, locked_by='test' WHERE id=$1",
+        [id, lockedAt],
+      );
+    },
+    async insertEndpoint(ep) {
+      await pool.query("INSERT INTO webhook_endpoints (id, url, secret) VALUES ($1, $2, $3)", [
+        ep.id,
+        ep.url,
+        ep.secret,
+      ]);
+    },
+    async reset() {
+      await pool.query(TRUNCATE_SQL);
+    },
+    teardown: () => pool.end(),
   };
 }
 

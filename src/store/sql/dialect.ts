@@ -21,6 +21,15 @@ export interface SqlDialect {
    * - `qmark`: positional `?` (knex.raw), bindings `[now, limit, now, lockedBy]`.
    */
   readonly claimSql: { readonly numbered: string; readonly qmark: string };
+  /**
+   * Opt-in per-endpoint FIFO claim (v1.1). Same atomic shape as {@link claimSql}, but claims at most
+   * the single oldest due row per registered endpoint and only when that endpoint has no earlier
+   * non-terminal row in flight or awaiting retry — so deliveries to one endpoint stay strictly
+   * ordered. Inline (null-endpoint) rows are unaffected (claimed as in {@link claimSql}). Bindings:
+   * - `numbered`: `[now, limit, lockedBy]` ($1 reused for every `now` slot).
+   * - `qmark`: `[now, now, limit, now, lockedBy]` (`now` appears in two filters and the SET).
+   */
+  readonly claimSqlPerEndpoint: { readonly numbered: string; readonly qmark: string };
   /** Object-existence probe whose result row is consumed by the shared diagnose helpers. */
   readonly diagnoseSql: string;
   /** The idempotent DDL script applied by `migrate()`. */

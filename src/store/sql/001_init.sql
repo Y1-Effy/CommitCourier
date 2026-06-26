@@ -21,6 +21,13 @@ CREATE TABLE IF NOT EXISTS webhook_outbox (
   CHECK (endpoint_id IS NOT NULL OR target_url IS NOT NULL) -- one of them is required
 );
 
+-- v1.1 per-endpoint FIFO ordering key: a monotonic insertion sequence. Unlike created_at (= now(),
+-- which is the transaction start time and therefore identical for every row enqueued in one TX), an
+-- IDENTITY column increments per row even within a single transaction (a multi-row INSERT is numbered
+-- in VALUES order), so it preserves true arrival order for the per-endpoint head. Added via idempotent
+-- ALTER, before the index that uses it.
+ALTER TABLE webhook_outbox ADD COLUMN IF NOT EXISTS seq bigint GENERATED ALWAYS AS IDENTITY;
+
 -- For the dispatch claim (WHERE status='pending' AND available_at <= $1 ORDER BY available_at):
 -- a partial index over only pending rows stays small as delivered/dead rows accumulate, so claims
 -- and their index maintenance cost track the live backlog, not the whole table.
@@ -29,6 +36,12 @@ CREATE INDEX IF NOT EXISTS ix_outbox_due ON webhook_outbox (available_at) WHERE 
 -- set so the visibility-timeout sweep is an index range scan, not a full-table scan.
 CREATE INDEX IF NOT EXISTS ix_outbox_inflight ON webhook_outbox (locked_at) WHERE status = 'in_flight';
 CREATE INDEX IF NOT EXISTS ix_outbox_endpoint ON webhook_outbox (endpoint_id);
+-- v1.1 per-endpoint FIFO claim (opt-in): the DISTINCT ON (endpoint_id) head scan reads each endpoint's
+-- earliest-inserted (smallest seq) non-terminal row, so index the live (pending/in_flight) set keyed by
+-- (endpoint_id, seq). The head must follow arrival order (seq) -- created_at ties within a transaction
+-- and the retry-mutated available_at does not reflect arrival, so neither can order the head.
+CREATE INDEX IF NOT EXISTS ix_outbox_ep_head ON webhook_outbox (endpoint_id, seq)
+  WHERE status IN ('pending', 'in_flight');
 -- For ledger scans: cheap time-ordered scan
 CREATE INDEX IF NOT EXISTS brin_outbox_created ON webhook_outbox USING brin (created_at);
 
@@ -57,3 +70,7 @@ CREATE TABLE IF NOT EXISTS webhook_endpoints (   -- optional (only for the regis
   metadata      jsonb NULL,
   created_at    timestamptz NOT NULL DEFAULT now()
 );
+-- v1.1 key rotation: secondary signing secret for dual-signing during a rotation window (ciphertext
+-- when a cipher is configured, like `secret`). Added via idempotent ALTER so re-running migrate() on
+-- an existing deployment picks it up without a separate migration file.
+ALTER TABLE webhook_endpoints ADD COLUMN IF NOT EXISTS secret_secondary text NULL;

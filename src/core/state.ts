@@ -70,6 +70,24 @@ export function onFailure(
 }
 
 /**
+ * Permanent delivery failure (e.g. HTTP 410 Gone): `in_flight` -&gt; `dead` immediately, without
+ * consuming the remaining retry budget. `attempts` is still incremented so the ledger/last attempt
+ * line up. Used when the receiver signals the destination is gone for good.
+ */
+export function onPermanentFailure(
+  row: Pick<OutboxRow, "attempts">,
+  errorSummary: string,
+): Transition {
+  return {
+    status: "dead",
+    attempts: row.attempts + 1,
+    lastError: errorSummary,
+    lockedAt: null,
+    lockedBy: null,
+  };
+}
+
+/**
  * Reclaim a stuck row: `in_flight` with a stale `lockedAt` -&gt; `pending` (at-least-once).
  * The store applies this with a conditional UPDATE on `lockedAt`.
  */

@@ -28,9 +28,16 @@ export type { SignatureHeaders } from "./signing";
 export { createAesGcmCipher, generateSecretKey } from "./cipher";
 export type { SecretCipher } from "./cipher";
 
-export { backoffMs } from "./retry";
+export { backoffMs, parseRetryAfter } from "./retry";
 
-export { initialState, onClaim, onSuccess, onFailure, onReclaim } from "./state";
+export {
+  initialState,
+  onClaim,
+  onSuccess,
+  onFailure,
+  onPermanentFailure,
+  onReclaim,
+} from "./state";
 export type { Transition } from "./state";
 
 export { evaluateIp, matchHostList } from "./ssrf";

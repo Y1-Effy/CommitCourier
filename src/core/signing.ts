@@ -14,7 +14,7 @@ export interface SignatureHeaders {
   "webhook-id": string;
   /** Unix seconds, as a string. */
   "webhook-timestamp": string;
-  /** `"v1,<base64>"`. */
+  /** One or more space-separated `"v1,<base64>"` signatures (more than one during key rotation). */
   "webhook-signature": string;
 }
 
@@ -40,32 +40,44 @@ function decodeSecret(secret: string): Uint8Array {
   }
 }
 
+/** Compute a single `v1,<base64>` HMAC-SHA256 signature over the signed content. */
+async function signOne(secret: string, signedContent: Uint8Array): Promise<string> {
+  const key = await crypto.subtle.importKey(
+    "raw",
+    decodeSecret(secret),
+    { name: "HMAC", hash: "SHA-256" },
+    false,
+    ["sign"],
+  );
+  const mac = await crypto.subtle.sign("HMAC", key, signedContent);
+  return `v1,${bytesToBase64(new Uint8Array(mac))}`;
+}
+
 /**
  * Sign a webhook per the Standard Webhooks convention.
  *
- * Per convention the secret is `"whsec_" + base64` (decoded by the internal `decodeSecret`).
- * Rejects
- * with `RelayError("CONFIG_INVALID")` when a `whsec_` secret is not valid Base64.
+ * `secrets` carries one or more keys (more than one during a key rotation): each produces a
+ * `v1,<base64>` signature and they are joined with a space in `webhook-signature`, so a receiver
+ * configured with any of the keys can verify. Order is preserved (the current key first).
+ *
+ * Per convention each secret is `"whsec_" + base64` (decoded by the internal `decodeSecret`).
+ * Rejects with `RelayError("CONFIG_INVALID")` when `secrets` is empty or a `whsec_` secret is not
+ * valid Base64.
  */
 export async function sign(opts: {
   id: string;
   timestampSec: number;
   body: string;
-  secret: string;
+  secrets: string[];
 }): Promise<SignatureHeaders> {
-  const keyBytes = decodeSecret(opts.secret);
-  const key = await crypto.subtle.importKey(
-    "raw",
-    keyBytes,
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const signedContent = `${opts.id}.${String(opts.timestampSec)}.${opts.body}`;
-  const mac = await crypto.subtle.sign("HMAC", key, utf8ToBytes(signedContent));
+  if (opts.secrets.length === 0) {
+    throw new RelayError("CONFIG_INVALID", "sign requires at least one signing secret");
+  }
+  const signedContent = utf8ToBytes(`${opts.id}.${String(opts.timestampSec)}.${opts.body}`);
+  const signatures = await Promise.all(opts.secrets.map((s) => signOne(s, signedContent)));
   return {
     "webhook-id": opts.id,
     "webhook-timestamp": String(opts.timestampSec),
-    "webhook-signature": `v1,${bytesToBase64(new Uint8Array(mac))}`,
+    "webhook-signature": signatures.join(" "),
   };
 }

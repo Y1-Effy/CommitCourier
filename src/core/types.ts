@@ -64,6 +64,12 @@ export interface EndpointRow {
    * the relay (see {@link createAesGcmCipher}), otherwise at-rest encryption is the DB's responsibility.
    */
   secret: string;
+  /**
+   * Optional secondary signing secret, set during a key rotation so deliveries are dual-signed with
+   * both keys (see {@link "../delivery/deliver"}). Null outside a rotation. Encrypted at rest when a
+   * `cipher` is configured, exactly like {@link EndpointRow.secret}.
+   */
+  secretSecondary: string | null;
   status: "active" | "disabled";
   description: string | null;
   /** Auto-disable counter; only the registered-endpoint workflow tracks this. */

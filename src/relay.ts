@@ -38,6 +38,8 @@ import {
   enableEndpoint as adminEnable,
   getEndpoint as adminGet,
   disableEndpoint as adminDisable,
+  rotateEndpointSecret as adminRotate,
+  finalizeRotation as adminFinalizeRotation,
 } from "./admin/admin";
 
 /** Input to {@link EndpointAdmin.register}. */
@@ -60,6 +62,14 @@ export interface EndpointAdmin {
   disable(endpointId: string): Promise<void>;
   /** Look up a registered endpoint, or null when absent. */
   get(endpointId: string): Promise<EndpointRow | null>;
+  /**
+   * Begin a signing-key rotation: promote the current secret to the secondary slot and set
+   * `newSecret` as primary, so deliveries are dual-signed with both keys. Call {@link finalizeRotation}
+   * once receivers have migrated to drop the old key.
+   */
+  rotateSecret(endpointId: string, newSecret: string): Promise<void>;
+  /** Finish a rotation: drop the secondary secret so deliveries sign with the new key only. */
+  finalizeRotation(endpointId: string): Promise<void>;
 }
 
 /** Arguments to {@link createRelay}: the store plus a partial relay configuration. */
@@ -244,5 +254,7 @@ function endpointAdmin(store: Store, clock: Clock): EndpointAdmin {
     enable: (id) => adminEnable(store, id),
     disable: (id) => adminDisable(store, id, clock()),
     get: (id) => adminGet(store, id),
+    rotateSecret: (id, newSecret) => adminRotate(store, id, newSecret),
+    finalizeRotation: (id) => adminFinalizeRotation(store, id),
   };
 }

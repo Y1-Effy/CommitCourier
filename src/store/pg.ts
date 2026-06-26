@@ -30,6 +30,9 @@ import {
   endpointPatchColumns,
   transitionColumns,
   completeAttemptSql,
+  insertClause,
+  insertManyClause,
+  replayWhere,
   countsFromRows,
   mapOutboxRow,
   mapAttemptRow,
@@ -42,51 +45,6 @@ import {
   type RawEndpointRow,
 } from "./_shared";
 import { postgres } from "./sql/postgres";
-
-/** Build `(cols) VALUES ($1, $2, ...)`, casting the named jsonb column to `::jsonb`. */
-function insertClause(table: string, columns: readonly string[], jsonColumn: string): string {
-  const placeholders = columns
-    .map((c, i) => (c === jsonColumn ? `$${String(i + 1)}::jsonb` : `$${String(i + 1)}`))
-    .join(", ");
-  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
-}
-
-/** Build a multi-row INSERT (`(cols) VALUES (...),(...)`), casting the jsonb column per row. */
-function insertManyClause(
-  table: string,
-  columns: readonly string[],
-  jsonColumn: string,
-  rowCount: number,
-): string {
-  const tuples: string[] = [];
-  for (let r = 0; r < rowCount; r++) {
-    const ph = columns.map((c, i) => {
-      const n = r * columns.length + i + 1;
-      return c === jsonColumn ? `$${String(n)}::jsonb` : `$${String(n)}`;
-    });
-    tuples.push(`(${ph.join(", ")})`);
-  }
-  return `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${tuples.join(", ")}`;
-}
-
-/** Build the dynamic WHERE for {@link ReplayFilter}: `{ sql, params }` (empty when no filter). */
-function replayWhere(filter: ReplayFilter): { sql: string; params: unknown[] } {
-  const conds: string[] = [];
-  const params: unknown[] = [];
-  if (filter.outboxId !== undefined) {
-    params.push(filter.outboxId);
-    conds.push(`id = $${String(params.length)}`);
-  }
-  if (filter.status !== undefined) {
-    params.push(filter.status);
-    conds.push(`status = $${String(params.length)}`);
-  }
-  if (filter.since !== undefined) {
-    params.push(filter.since);
-    conds.push(`created_at >= $${String(params.length)}`);
-  }
-  return { sql: conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "", params };
-}
 
 const INSERT_OUTBOX_SQL = insertClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload");
 const INSERT_ATTEMPT_SQL = insertClause(ATTEMPTS_TABLE, ATTEMPT_COLUMNS, "request_headers");
@@ -193,9 +151,14 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
       await pool.query(INSERT_OUTBOX_SQL, outboxValues(row));
     },
 
-    async claimDue({ limit, lockedBy, now }) {
+    async claimDue({ limit, lockedBy, now, ordering }) {
       // Single atomic statement: SELECT ... FOR UPDATE SKIP LOCKED then UPDATE to in_flight.
-      const res = await pool.query(postgres.claimSql.numbered, [now, limit, lockedBy]);
+      // Both variants share the same `[now, limit, lockedBy]` bindings ($1 reused for every now slot).
+      const sql =
+        ordering === "per-endpoint"
+          ? postgres.claimSqlPerEndpoint.numbered
+          : postgres.claimSql.numbered;
+      const res = await pool.query(sql, [now, limit, lockedBy]);
       return (res.rows as RawOutboxRow[]).map(mapOutboxRow);
     },
 

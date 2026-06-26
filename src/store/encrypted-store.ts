@@ -59,10 +59,13 @@ export function createEncryptedStore<TTx>(inner: Store<TTx>, cipher: SecretCiphe
       await inner.insertEndpoint(enc);
     },
     async updateEndpoint(id, patch) {
-      const enc: EndpointPatch =
-        patch.secret === undefined
-          ? patch
-          : { ...patch, secret: await cipher.encrypt(patch.secret) };
+      // Encrypt whichever secret column the patch sets. `secretSecondary: null` (rotation finalize)
+      // is left as-is; only a string value is encrypted.
+      const enc: EndpointPatch = { ...patch };
+      if (typeof patch.secret === "string") enc.secret = await cipher.encrypt(patch.secret);
+      if (typeof patch.secretSecondary === "string") {
+        enc.secretSecondary = await cipher.encrypt(patch.secretSecondary);
+      }
       await inner.updateEndpoint(id, enc);
     },
 
@@ -78,7 +81,12 @@ export function createEncryptedStore<TTx>(inner: Store<TTx>, cipher: SecretCiphe
     async findEndpoint(id) {
       const ep = await inner.findEndpoint(id);
       if (!ep) return ep;
-      const decrypted: EndpointRow = { ...ep, secret: await cipher.decrypt(ep.secret) };
+      const decrypted: EndpointRow = {
+        ...ep,
+        secret: await cipher.decrypt(ep.secret),
+        secretSecondary:
+          ep.secretSecondary == null ? null : await cipher.decrypt(ep.secretSecondary),
+      };
       return decrypted;
     },
 

@@ -5,7 +5,14 @@
  * transition for one claimed row. {@link deliverOne} is strictly fail-open: it never throws, so
  * a delivery-side failure cannot stop the dispatcher loop or reach the user's business path.
  */
-import { sign, backoffMs, onSuccess, onFailure } from "../core/index";
+import {
+  sign,
+  backoffMs,
+  parseRetryAfter,
+  onSuccess,
+  onFailure,
+  onPermanentFailure,
+} from "../core/index";
 import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/index";
 import type { Store, NewDeliveryAttempt } from "../store/store";
 import type { createHttpClient } from "./http";
@@ -53,11 +60,20 @@ interface Ctx {
   now: Date;
 }
 
-type Resolved = { ok: true; url: string; secret: string } | { ok: false; error: string };
+type Resolved = { ok: true; url: string; secrets: string[] } | { ok: false; error: string };
 
 /** Only a 2xx response is a success; everything else (including no response) is a retry. */
 function isSuccess(status: number | null): boolean {
   return status !== null && status >= 200 && status < 300;
+}
+
+/**
+ * A permanent failure stops retries immediately. Only `410 Gone` qualifies in v1.1: the receiver is
+ * telling us the destination no longer exists, so retrying wastes attempts and a registered endpoint
+ * should be disabled.
+ */
+function isPermanentFailure(status: number | null): boolean {
+  return status === 410;
 }
 
 /** Resolve the destination URL and signing secret for a row (registered endpoint or inline). */
@@ -66,11 +82,13 @@ async function resolveTarget(row: OutboxRow, store: Store): Promise<Resolved> {
     const ep = await store.findEndpoint(row.endpointId);
     if (!ep) return { ok: false, error: "ENDPOINT_NOT_FOUND" };
     if (ep.status === "disabled") return { ok: false, error: "ENDPOINT_DISABLED" };
-    return { ok: true, url: ep.url, secret: ep.secret };
+    // Dual-sign with the secondary key too during a rotation window (current key first).
+    const secrets = ep.secretSecondary == null ? [ep.secret] : [ep.secret, ep.secretSecondary];
+    return { ok: true, url: ep.url, secrets };
   }
   if (row.targetUrl != null) {
     if (row.secretSnapshot == null) return { ok: false, error: "MISSING_SECRET" };
-    return { ok: true, url: row.targetUrl, secret: row.secretSnapshot };
+    return { ok: true, url: row.targetUrl, secrets: [row.secretSnapshot] };
   }
   return { ok: false, error: "ENQUEUE_NO_TARGET" };
 }
@@ -146,31 +164,61 @@ async function applySuccess(
  * Failure: write the ledger row and schedule the next retry or move to `dead` in one round trip
  * (guarded on `status = 'in_flight'`), then notify onRetry/onDead.
  */
+// eslint-disable-next-line max-params -- one optional Retry-After hint kept inline with the failure path
 async function applyFailure(
+  ctx: Ctx,
+  attempt: NewDeliveryAttempt,
+  summary: string,
+  event: DeliveryEvent,
+  retryAfterMs?: number | null,
+): Promise<void> {
+  const { row, deps, now } = ctx;
+  const { retry } = deps.config;
+  const dead = row.attempts + 1 >= retry.maxAttempts;
+  // Honour a server-sent Retry-After when it exceeds our own backoff, clamped to retry.capMs so a
+  // hostile/buggy header cannot park a row indefinitely.
+  const base = backoffMs(row.attempts + 1, retry);
+  const backoff = Math.min(Math.max(base, retryAfterMs ?? 0), retry.capMs);
+  await deps.store.completeAttempt(attempt, onFailure(row, retry, now, summary, backoff));
+  await fireHook(ctx, dead ? deps.hooks?.onDead : deps.hooks?.onRetry, event);
+}
+
+/**
+ * Permanent failure (HTTP 410 Gone): write the ledger row and move straight to `dead` without
+ * consuming the retry budget, disable the registered endpoint (fail-open — a disable error is logged,
+ * never propagated), then notify onDead.
+ */
+async function applyPermanentFailure(
   ctx: Ctx,
   attempt: NewDeliveryAttempt,
   summary: string,
   event: DeliveryEvent,
 ): Promise<void> {
   const { row, deps, now } = ctx;
-  const dead = row.attempts + 1 >= deps.config.retry.maxAttempts;
-  const backoff = backoffMs(row.attempts + 1, deps.config.retry);
-  await deps.store.completeAttempt(
-    attempt,
-    onFailure(row, deps.config.retry, now, summary, backoff),
-  );
-  await fireHook(ctx, dead ? deps.hooks?.onDead : deps.hooks?.onRetry, event);
+  await deps.store.completeAttempt(attempt, onPermanentFailure(row, summary));
+  if (row.endpointId != null) {
+    try {
+      await deps.store.disableEndpoint(row.endpointId, now);
+    } catch (err) {
+      deps.config.logger.error("disableEndpoint on 410 failed", {
+        id: row.id,
+        endpointId: row.endpointId,
+        error: secretFreeSummary(err),
+      });
+    }
+  }
+  await fireHook(ctx, deps.hooks?.onDead, event);
 }
 
 /** Run the POST, then write the ledger row and apply the success/failure transition in one round trip. */
-async function deliverHttp(ctx: Ctx, url: string, secret: string): Promise<void> {
+async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<void> {
   const { row, now } = ctx;
   const body = JSON.stringify(row.payload);
   const sig = await sign({
     id: row.id,
     timestampSec: Math.floor(now.getTime() / 1000),
     body,
-    secret,
+    secrets,
   });
   const headers = buildHeaders(sig, row);
   const res = await ctx.deps.http.post({ url, headers, body });
@@ -185,9 +233,17 @@ async function deliverHttp(ctx: Ctx, url: string, secret: string): Promise<void>
     durationMs: res.durationMs,
     error: success ? null : failure,
   };
-  await (success
-    ? applySuccess(ctx, attempt, eventFor(ctx, res.status, null, res.durationMs))
-    : applyFailure(ctx, attempt, failure, eventFor(ctx, res.status, failure, res.durationMs)));
+  if (success) {
+    await applySuccess(ctx, attempt, eventFor(ctx, res.status, null, res.durationMs));
+    return;
+  }
+  const event = eventFor(ctx, res.status, failure, res.durationMs);
+  if (isPermanentFailure(res.status)) {
+    await applyPermanentFailure(ctx, attempt, failure, event);
+    return;
+  }
+  const retryAfterMs = parseRetryAfter(res.retryAfter, now.getTime());
+  await applyFailure(ctx, attempt, failure, event, retryAfterMs);
 }
 
 /**
@@ -210,7 +266,7 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
       );
       return;
     }
-    await deliverHttp(ctx, resolved.url, resolved.secret);
+    await deliverHttp(ctx, resolved.url, resolved.secrets);
   } catch (err) {
     const summary = secretFreeSummary(err);
     deps.config.logger.error("deliverOne failed", { id: row.id, error: summary });

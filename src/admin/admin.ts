@@ -4,6 +4,7 @@
  * {@link "../relay".createRelay} composes them into the public `Relay`.
  */
 import { newId } from "../id";
+import { RelayError } from "../core/index";
 import type { DeliveryAttempt, EndpointRow } from "../core/index";
 import type {
   Store,
@@ -70,6 +71,26 @@ export async function registerEndpoint(
 /** Patch a registered endpoint; only the provided fields change (05 section 7). */
 export function updateEndpoint(store: Store, id: string, patch: EndpointPatch): Promise<void> {
   return store.updateEndpoint(id, patch);
+}
+
+/**
+ * Begin a key rotation: promote the current secret to the secondary slot and set `newSecret` as the
+ * primary, so deliveries are dual-signed with both keys until {@link finalizeRotation} drops the old
+ * one. Throws `ENDPOINT_NOT_FOUND` when the id is unknown.
+ */
+export async function rotateEndpointSecret(
+  store: Store,
+  id: string,
+  newSecret: string,
+): Promise<void> {
+  const ep = await store.findEndpoint(id);
+  if (!ep) throw new RelayError("ENDPOINT_NOT_FOUND", `endpoint not found: ${id}`);
+  await store.updateEndpoint(id, { secret: newSecret, secretSecondary: ep.secret });
+}
+
+/** Finish a key rotation: drop the secondary secret so deliveries sign with the new key only. */
+export function finalizeRotation(store: Store, id: string): Promise<void> {
+  return store.updateEndpoint(id, { secretSecondary: null });
 }
 
 /** Re-enable a disabled endpoint (clears the disabled marker) (05 section 7). */

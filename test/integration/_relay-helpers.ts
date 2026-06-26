@@ -6,8 +6,11 @@
  */
 import { Pool, type PoolClient } from "pg";
 import knexLib from "knex";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { sql } from "drizzle-orm";
 import { postgresStore } from "../../src/store/pg";
 import { knexStore } from "../../src/store/knex";
+import { drizzleStore } from "../../src/store/drizzle";
 import { createRelay } from "../../src/relay";
 import type { Relay, RelayInit } from "../../src/relay";
 import type { EnqueueInput } from "../../src/core/index";
@@ -108,6 +111,37 @@ export async function knexRelay(conn: PgConn, init: RelayConfigInit): Promise<Re
   };
 }
 
+export async function drizzleRelay(conn: PgConn, init: RelayConfigInit): Promise<RelayHarness> {
+  const pool = new Pool(conn);
+  const db = drizzle(pool);
+  const store = drizzleStore({ db });
+  const relay = await createRelay({ store, ...init });
+  return {
+    name: "drizzle",
+    api: relay,
+    store,
+    enqueueCommitted(input) {
+      return db.transaction((tx) => relay.enqueue(tx, input));
+    },
+    async enqueueWithBusiness(input, businessSql, opts) {
+      try {
+        await db.transaction(async (tx) => {
+          await tx.execute(sql.raw(businessSql));
+          await relay.enqueue(tx, input);
+          if (opts.rollback) throw new Rollback();
+        });
+      } catch (err) {
+        if (!(err instanceof Rollback)) throw err;
+      }
+    },
+    async query(querySql) {
+      const res = await pool.query(querySql);
+      return res.rows as Record<string, unknown>[];
+    },
+    teardown: () => pool.end(),
+  };
+}
+
 /** The adapters to parametrize a suite over. */
 export const RELAY_ADAPTERS: [
   string,
@@ -115,4 +149,5 @@ export const RELAY_ADAPTERS: [
 ][] = [
   ["pg", pgRelay],
   ["knex", knexRelay],
+  ["drizzle", drizzleRelay],
 ];

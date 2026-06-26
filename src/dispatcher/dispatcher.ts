@@ -26,6 +26,13 @@ export interface DispatcherOptions {
   reclaimIntervalMs?: number;
   /** Upper bound on rows claimed-but-not-finished at once (in-flight buffer). Default concurrency * 2. */
   batchSize?: number;
+  /**
+   * Delivery ordering. `"none"` (default) claims globally oldest-first with full concurrency.
+   * `"per-endpoint"` opts into per-endpoint FIFO: at most one in-flight delivery per registered
+   * endpoint, strictly in arrival order (a failed head row holds the line until it is delivered or
+   * dead). Inline (`{ url, secret }`) deliveries are unaffected.
+   */
+  ordering?: "none" | "per-endpoint";
 }
 
 export interface Dispatcher {
@@ -42,6 +49,7 @@ interface ResolvedOptions {
   reclaimAfterMs: number;
   reclaimIntervalMs: number;
   batchSize: number;
+  ordering: "none" | "per-endpoint";
 }
 
 function resolveOptions(o: DispatcherOptions = {}): ResolvedOptions {
@@ -53,9 +61,17 @@ function resolveOptions(o: DispatcherOptions = {}): ResolvedOptions {
     reclaimAfterMs,
     reclaimIntervalMs: o.reclaimIntervalMs ?? Math.min(reclaimAfterMs, 30_000),
     batchSize: o.batchSize ?? concurrency * 2,
+    ordering: o.ordering ?? "none",
   };
-  // Fail-fast on misconfiguration. In particular batchSize <= 0 would silently deliver nothing
-  // (claimDue with limit 0 always returns []), so reject it loudly rather than stall forever.
+  validateOptions(resolved);
+  return resolved;
+}
+
+/**
+ * Fail-fast on misconfiguration. In particular a non-positive batchSize would silently deliver
+ * nothing (claimDue with limit 0 always returns []), so reject it loudly rather than stall forever.
+ */
+function validateOptions(resolved: ResolvedOptions): void {
   if (!(resolved.concurrency >= 1)) {
     fail(`dispatcher concurrency must be >= 1, got ${String(resolved.concurrency)}`);
   }
@@ -71,7 +87,6 @@ function resolveOptions(o: DispatcherOptions = {}): ResolvedOptions {
   if (!(resolved.reclaimIntervalMs >= 0)) {
     fail(`dispatcher reclaimIntervalMs must be >= 0, got ${String(resolved.reclaimIntervalMs)}`);
   }
-  return resolved;
 }
 
 function fail(message: string): never {
@@ -146,7 +161,12 @@ async function runLoop(ctx: LoopCtx): Promise<void> {
     }
     let rows: OutboxRow[];
     try {
-      rows = await store.claimDue({ limit: capacity, lockedBy, now: clock() });
+      rows = await store.claimDue({
+        limit: capacity,
+        lockedBy,
+        now: clock(),
+        ordering: opts.ordering,
+      });
     } catch (err) {
       logger.error("dispatcher claim failed", { error: String(err) });
       await sleep(opts.pollIntervalMs);
