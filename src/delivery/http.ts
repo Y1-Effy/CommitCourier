@@ -128,19 +128,11 @@ async function readSnippet(
 }
 
 /**
- * POST with SSRF validation. Never throws: any failure (blocked range, network error, timeout)
- * is captured in {@link HttpResult}. A single shared {@link Agent} pins connections per request.
+ * Build the SSRF-validating `connect.lookup`: resolve all candidate IPs, reject any blocked range
+ * (unless the host is allowlisted), then hand undici a single vetted address (family-matched).
  */
-export function createHttpClient(
-  cfg: { ssrf: SsrfConfig; delivery: DeliveryConfig },
-  deps: { resolveAll?: ResolveAll } = {},
-): {
-  post(opts: { url: string; headers: Record<string, string>; body: string }): Promise<HttpResult>;
-} {
-  const { ssrf, delivery } = cfg;
-  const resolveAll = deps.resolveAll ?? defaultResolveAll;
-
-  const guardedLookup: LookupFunction = (hostname, options, callback) => {
+function makeGuardedLookup(ssrf: SsrfConfig, resolveAll: ResolveAll): LookupFunction {
+  return (hostname, options, callback) => {
     resolveAll(hostname, (err, addresses) => {
       if (err) {
         callback(err, "", 0);
@@ -165,8 +157,22 @@ export function createHttpClient(
       callback(null, chosen.address, chosen.family);
     });
   };
+}
 
-  const connect: { lookup: LookupFunction } = { lookup: guardedLookup };
+/**
+ * POST with SSRF validation. Never throws: any failure (blocked range, network error, timeout)
+ * is captured in {@link HttpResult}. A single shared {@link Agent} pins connections per request.
+ */
+export function createHttpClient(
+  cfg: { ssrf: SsrfConfig; delivery: DeliveryConfig },
+  deps: { resolveAll?: ResolveAll } = {},
+): {
+  post(opts: { url: string; headers: Record<string, string>; body: string }): Promise<HttpResult>;
+} {
+  const { ssrf, delivery } = cfg;
+  const resolveAll = deps.resolveAll ?? defaultResolveAll;
+
+  const connect: { lookup: LookupFunction } = { lookup: makeGuardedLookup(ssrf, resolveAll) };
   // Tune connection reuse for delivery throughput: a longer keep-alive window reuses TCP/TLS across
   // bursts to the same host; `connections` (when set) caps per-origin sockets. `pipelining` stays at
   // the undici default (1) since POST is not safe to pipeline.

@@ -92,6 +92,30 @@ describe("createEndpointCache", () => {
     }
   });
 
+  it("does not cache a value read concurrently with an update (stale-read guard)", async () => {
+    const { store, findEndpoint } = fakeStore({ a: endpointRow("a", "whsec_current") });
+    // Hold the first read open so an update can race it before it resolves.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    findEndpoint.mockImplementationOnce(async () => {
+      await gate;
+      return endpointRow("a", "whsec_stale"); // the pre-update row this read observed
+    });
+    const cached = createEndpointCache(store, { ttlMs: 10_000 });
+
+    const inflight = cached.findEndpoint("a"); // captures generation, then awaits the gate
+    await cached.updateEndpoint("a", { secret: "whsec_current" }); // bumps generation, evicts
+    release();
+    await inflight; // the in-flight read completes but must NOT populate the cache
+
+    const again = await cached.findEndpoint("a");
+    // A second inner read proves the racing value was not cached and served from the cache.
+    expect(findEndpoint).toHaveBeenCalledTimes(2);
+    expect(again?.secret).toBe("whsec_current");
+  });
+
   it("does not cache a miss, so a later insert is visible at once", async () => {
     const rows: Record<string, EndpointRow | null> = { a: null };
     const { store, findEndpoint } = fakeStore(rows);

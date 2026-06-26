@@ -27,21 +27,28 @@ interface Entry {
 export function createEndpointCache<TTx>(inner: Store<TTx>, opts: { ttlMs: number }): Store<TTx> {
   const { ttlMs } = opts;
   const cache = new Map<string, Entry>();
+  // Bumped on every write; a read captures it before fetching and only caches if it is unchanged
+  // afterwards, so a value read concurrently with an update/disable is never cached (stale-read guard).
+  let generation = 0;
 
   return {
     async findEndpoint(id) {
       const hit = cache.get(id);
       if (hit && hit.expiresAt > Date.now()) return hit.row;
+      const gen = generation;
       const row = await inner.findEndpoint(id);
-      // Only cache hits: caching a miss would hide a subsequent register until the TTL expires.
-      if (row) cache.set(id, { row, expiresAt: Date.now() + ttlMs });
+      // Only cache hits (caching a miss would hide a subsequent register), and only when no write
+      // raced during the read — otherwise this fetch may have seen the pre-write row.
+      if (row && gen === generation) cache.set(id, { row, expiresAt: Date.now() + ttlMs });
       return row;
     },
     async updateEndpoint(id, patch: EndpointPatch) {
+      generation++; // invalidate any read currently in flight
       cache.delete(id);
       await inner.updateEndpoint(id, patch);
     },
     async disableEndpoint(id, now) {
+      generation++;
       cache.delete(id);
       await inner.disableEndpoint(id, now);
     },
