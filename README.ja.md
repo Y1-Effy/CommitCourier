@@ -36,6 +36,7 @@ CommitCourier は、**あなた自身の DB トランザクションに相乗り
 - **SSRF 防御は既定 ON** — プライベート／ループバック／リンクローカル／クラウドメタデータ宛先を遮断。
 - **複数インスタンスでの単一配信**を `FOR UPDATE SKIP LOCKED` で担保。可視性タイムアウト回収で at-least-once。
 - **観測（observe）モード** — 実送信せずに「送るはずの内容」を記録し、安全に段階導入。
+- **任意の保管時暗号化** — `cipher`（組込みの WebCrypto AES-256-GCM ヘルパ、または独自の KMS/Vault アダプタ）を渡すと、`secret_snapshot`／エンドポイント secret を DB 上で暗号文として保持。
 
 ## インストール
 
@@ -112,7 +113,7 @@ try {
 
 > 業務トランザクションが無い場合は `relay.enqueueUnsafe(input)` が独自接続で enqueue しますが、**原子性保証を失います**（それこそが本ライブラリの核心です）。本当に外側のトランザクションが存在しない場合にのみ使ってください。
 
-> **インライン vs 登録済みエンドポイント。** 例では宛先をインライン `endpoint: { url, secret }` で渡しており、これが主経路です（secret は enqueue 時点で outbox 行にスナップショットされます）。代わりに `webhook_endpoints` の行を `endpoint: { endpointId }` で参照することもできます。v1 には**エンドポイント登録 API はありません**。該当行は自前で INSERT してください（例：`INSERT INTO webhook_endpoints (id, url, secret) VALUES (…)`）。公開されているのは `relay.endpoints.disable(id)` のみです。
+> **インライン vs 登録済みエンドポイント。** 例では宛先をインライン `endpoint: { url, secret }` で渡しており、これが主経路です（secret は enqueue 時点で outbox 行にスナップショットされます）。代わりに `webhook_endpoints` の行を `endpoint: { endpointId }` で参照することもできます。これらの行は `relay.endpoints` 管理 API（`register({ url, secret, … })` / `update` / `enable` / `disable` / `get`）で管理できます。
 
 ### 4. dispatcher を起動する
 
@@ -211,33 +212,47 @@ observe モードで enqueue ─▶ observed   （記録のみ・送信しない
 
 すべての設定は任意で、安全な既定値にマージされます。不正な値は起動時に `RelayError("CONFIG_INVALID")` で拒否され、危険だが有効な値（例：SSRF 防御の無効化）は許容されつつ logger で警告されます。
 
-| グループ   | オプション           | 既定値                | 補足                                                               |
-| ---------- | -------------------- | --------------------- | ------------------------------------------------------------------ |
-|            | `mode`               | `"active"`            | `"observe"` は行を `observed` として記録し、送信しない。           |
-| `signing`  | `scheme`             | `"standard-webhooks"` | Standard Webhooks のみ対応。                                       |
-| `retry`    | `maxAttempts`        | `12`                  | 1 以上の整数。                                                     |
-| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`、上限あり。                              |
-| `retry`    | `baseMs`             | `1000`                |                                                                    |
-| `retry`    | `capMs`              | `3600000`             | `baseMs` 以上であること。                                          |
-| `retry`    | `jitter`             | `0.2`                 | `0..1` の割合。thundering herd 回避のため既定 ON。                 |
-| `delivery` | `timeoutMs`          | `15000`               | リクエストごとの HTTP タイムアウト。                               |
-| `delivery` | `bodySnippetBytes`   | `4096`                | 台帳に保存する応答本文の先頭バイト数。                             |
-| `ssrf`     | `blockPrivateRanges` | `true`                | プライベート／ループバック／リンクローカル／メタデータ IP を遮断。 |
-| `ssrf`     | `allowlist`          | `[]`                  | 許可するホストパターン。                                           |
-| `ssrf`     | `blocklist`          | `[]`                  | 拒否するホストパターン。                                           |
+| グループ   | オプション           | 既定値                | 補足                                                                                 |
+| ---------- | -------------------- | --------------------- | ------------------------------------------------------------------------------------ |
+|            | `mode`               | `"active"`            | `"observe"` は行を `observed` として記録し、送信しない。                             |
+| `signing`  | `scheme`             | `"standard-webhooks"` | Standard Webhooks のみ対応。                                                         |
+| `retry`    | `maxAttempts`        | `12`                  | 1 以上の整数。                                                                       |
+| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`、上限あり。                                                |
+| `retry`    | `baseMs`             | `1000`                |                                                                                      |
+| `retry`    | `capMs`              | `3600000`             | `baseMs` 以上であること。                                                            |
+| `retry`    | `jitter`             | `0.2`                 | `0..1` の割合。thundering herd 回避のため既定 ON。                                   |
+| `delivery` | `timeoutMs`          | `15000`               | リクエストごとの HTTP タイムアウト。                                                 |
+| `delivery` | `bodySnippetBytes`   | `4096`                | 台帳に保存する応答本文の先頭バイト数。                                               |
+| `delivery` | `keepAliveTimeoutMs` | `10000`               | undici keep-alive 窓。長くすると同一宛先への連続配信で TCP/TLS を再利用。            |
+| `delivery` | `connections`        | _(undici 既定)_       | オリジンあたりの同時接続数の上限（任意）。                                           |
+| `ssrf`     | `blockPrivateRanges` | `true`                | プライベート／ループバック／リンクローカル／メタデータ IP を遮断。                   |
+| `ssrf`     | `allowlist`          | `[]`                  | 許可するホストパターン。                                                             |
+| `ssrf`     | `blocklist`          | `[]`                  | 拒否するホストパターン。                                                             |
+|            | `endpointCacheTtlMs` | `0`（無効）           | 登録エンドポイント検索の in-process キャッシュ TTL（ms）。「性能チューニング」参照。 |
 
 dispatcher のオプション（`relay.createDispatcher({ … })`）：
 
-| オプション       | 既定値            | 補足                                                      |
-| ---------------- | ----------------- | --------------------------------------------------------- |
-| `concurrency`    | `8`               | 最大同時配信数。                                          |
-| `pollIntervalMs` | `1000`            | アイドル時のポーリング間隔。満杯バッチ時は即座に再 tick。 |
-| `reclaimAfterMs` | `300000`          | 可視性タイムアウト。これを超えた `in_flight` 行を回収。   |
-| `batchSize`      | `concurrency * 2` | 1 tick で確保する行数。                                   |
+| オプション       | 既定値            | 補足                                                                                                      |
+| ---------------- | ----------------- | --------------------------------------------------------------------------------------------------------- |
+| `concurrency`    | `8`               | 最大同時配信数。                                                                                          |
+| `pollIntervalMs` | `1000`            | アイドル時の待機の上限。アイドル時は約 50ms からこの値まで指数バックオフし、満杯バッチ時は即座に再 tick。 |
+| `reclaimAfterMs` | `300000`          | 可視性タイムアウト。これを超えた `in_flight` 行を回収。                                                   |
+| `batchSize`      | `concurrency * 2` | 1 tick で確保する行数。                                                                                   |
+
+### 性能チューニング
+
+スループットは dispatcher に十分な余地を与えるかが要点です。
+
+- **並行度とプールサイズ。** `concurrency` を上げる効果は `pg.Pool` に空き接続がある場合のみ。dispatch 経路は in-flight な `claimDue` / `completeAttempt` ごとに 1 接続を使います。`Pool({ max })` は `concurrency` ＋ 余裕以上にしないと、配信がプール待ちで止まります。
+- **バッチと接続。** `batchSize`（既定 `concurrency * 2`）は in-flight バッファ上限、`delivery.connections` は宛先あたりの接続上限。負荷に合わせて調整し、同一ホストへ多数配信するなら `delivery.keepAliveTimeoutMs` を延ばします。
+- **登録エンドポイントのキャッシュ。** 登録エンドポイント運用では配信ごとに DB を引きます。`endpointCacheTtlMs`（例 `1000`〜`5000`）で in-process キャッシュ。`update`/`disable` は同一プロセス内で即時無効化し、TTL が他プロセスの変更の鮮度遅延の上限になります。inline `{ url, secret }` 運用には影響しません。
+- **インデックスは組込み。** claim/reclaim クエリは `pending` / `in_flight` 行のみの部分インデックスを使うため、delivered/dead 行が増えても高速なまま（調整不要）。
 
 **段階導入**：まず `mode: "observe"` で「送るはず」の量と宛先を記録し、想定と差分確認してから `"active"` に切り替えます。
 
 **署名 secret の形式**：`whsec_` プレフィックス付きの secret は Standard Webhooks の慣例どおり Base64 とみなして raw 鍵バイトにデコードします。それ以外の文字列は raw UTF-8 バイトとして使われます。
+
+**保管時の secret 暗号化**：`createRelay({ store, cipher })` に `cipher` を渡すと、署名 secret は DB 上で暗号文になります。組込みの `createAesGcmCipher(key)`（WebCrypto AES-256-GCM。鍵は `generateSecretKey()` で生成可）、または KMS/Vault 上の独自 `SecretCipher` を使えます。鍵の管理は利用者責務で、`cipher` 未指定なら secret は平文のまま保存されます。
 
 ## 運用
 
@@ -335,7 +350,7 @@ ORDER BY created_at DESC;
 - 受信側での **exactly-once な「効果」**。提供するのは at-least-once ＋ idempotency key であり、最終的な重複排除は受信側の責務です。
 - エンドポイント横断の**全順序保証**。既定は順不同です（エンドポイント単位 FIFO は将来の任意機能）。
 - **無限スケール**。既存 Postgres 上の中〜中規模を正直な対象とし、billions/sec 級は対象外です。
-- **鍵の保管時暗号化**。これは DB 側の責務です（任意の暗号化カラム対応は将来）。
+- **暗号鍵の管理**。署名 secret は `cipher` 設定で保管時暗号化できますが（「設定」参照）、鍵自体の保管・配布・ローテーションは利用者の責務です。`cipher` 未設定時の保管時暗号化は DB 側の責務です。
 - インバウンド webhook の受信・検証、および顧客向け管理ポータル UI。
 
 ## CommitCourier の取り外し
@@ -358,19 +373,21 @@ function createRelay<TTx>(init: RelayInit<TTx>): Promise<Relay<TTx>>;
 
 interface Relay<TTx> {
   enqueue(trx: TTx, input: EnqueueInput): Promise<{ id: string }>;
+  enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   createDispatcher(options?: DispatcherOptions): Dispatcher;
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
   replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
-  endpoints: { disable(endpointId: string): Promise<void> };
+  stats(): Promise<OutboxStats>;
+  endpoints: EndpointAdmin; // register / update / enable / disable / get
 }
 ```
 
 ## ステータスとロードマップ
 
-- **v1（現行）**：Postgres ストア、`pg` ＋ Knex アダプタ、トランザクショナル enqueue、ポーラー型 dispatcher（外部キュー不要）、Standard Webhooks 署名（単一鍵）、リトライ／バックオフ／ジッター／DLQ、配信台帳、ID 指定リプレイ、SSRF 防御、観測モード。
+- **v1（現行）**：Postgres ストア、`pg` ＋ Knex アダプタ、トランザクショナル enqueue、ポーラー型 dispatcher（外部キュー不要）、Standard Webhooks 署名（単一鍵）、リトライ／バックオフ／ジッター／DLQ、配信台帳、ID 指定リプレイ、SSRF 防御、観測モード、登録エンドポイント管理 API（`register` / `update` / `enable` / `disable` / `get`）、任意の保管時 secret 暗号化（`cipher`）、スループット調整（claim/reclaim の部分インデックス、undici keep-alive、任意の登録エンドポイントキャッシュ、適応ポーリング）。
 - **v1.1**：Drizzle / Prisma アダプタ、鍵ローテーション（二重署名）、エンドポイント単位 FIFO、`Retry-After` 尊重。
-- **v2**：任意の BullMQ アクセラレータ・アダプタ（Outbox 行は引き続き真実の源泉）、エンドポイント登録の管理 API、OpenTelemetry フック。
+- **v2**：任意の BullMQ アクセラレータ・アダプタ（Outbox 行は引き続き真実の源泉）、より高機能なエンドポイント管理 API、OpenTelemetry フック。
 
 ## セキュリティ
 

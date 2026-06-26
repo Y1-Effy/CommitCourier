@@ -37,11 +37,12 @@ CommitCourier handles security-sensitive concerns, so it helps to be explicit ab
 - **Outbound SSRF.** The SSRF guard is on by default and blocks private, loopback, link-local, and cloud-metadata destinations. The destination is re-validated against the _resolved_ IP to defend against DNS rebinding.
 - **Tamper / spoof detection.** Deliveries are signed with Standard Webhooks (HMAC-SHA256 over `{id}.{timestamp}.{body}`), so receivers can verify authenticity and integrity.
 - **Secret hygiene in the ledger.** The delivery ledger records request headers but **never stores the signing secret itself**; response bodies are truncated to a configurable snippet size.
+- **Optional at-rest encryption of signing secrets.** Pass `cipher` to `createRelay` — `createAesGcmCipher(key)` (WebCrypto AES-256-GCM) or your own `SecretCipher` over a KMS/Vault — and `webhook_outbox.secret_snapshot` / `webhook_endpoints.secret` are stored as ciphertext (a versioned `ccsec.v1.` envelope) and decrypted only in memory just before signing. Tampering is detected by GCM authentication.
 - **Fail-closed enqueue.** The outbox row is written inside your transaction, so a webhook can never be emitted for a business write that rolled back.
 
 ### Integrator responsibilities (out of scope for the library)
 
-- **Secret at-rest encryption.** Signing secrets (`webhook_outbox.secret_snapshot` and `webhook_endpoints.secret`) are stored as written by your application. Encrypting them at rest is your database's responsibility; optional encrypted-column support is future work.
+- **Encryption-key management.** When you use the `cipher` option above, storing, distributing, and rotating the encryption key is your responsibility. Without a `cipher`, signing secrets are stored as written by your application and encrypting them at rest is your database's responsibility.
 - **Receiver-side verification and idempotency.** CommitCourier provides at-least-once delivery plus an idempotency key, but verifying the signature and de-duplicating events is the receiver's responsibility.
 - **Disabling the SSRF guard.** Setting `ssrf.blockPrivateRanges: false` (or adding hosts to the allowlist) re-enables reachability of internal destinations. This is an explicit, warned opt-in; the resulting exposure is your decision.
 - **Transport security and credentials.** Use HTTPS endpoints and keep your database credentials and signing secrets out of source control.

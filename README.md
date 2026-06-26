@@ -36,6 +36,7 @@ CommitCourier is the one embedded library that rides **your own DB transaction**
 - **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
 - **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
+- **Optional at-rest encryption** for signing secrets — plug in `cipher` (a built-in WebCrypto AES-256-GCM helper, or your own KMS/Vault adapter) to keep `secret_snapshot` / endpoint secrets as ciphertext in the DB.
 
 ## Install
 
@@ -112,7 +113,7 @@ try {
 
 > No business transaction? `relay.enqueueUnsafe(input)` enqueues on its own connection — but you **lose the atomicity guarantee**, which is the whole point. Use it only where there is genuinely no surrounding transaction.
 
-> **Inline vs registered endpoints.** The examples pass the destination inline as `endpoint: { url, secret }`, which is the primary path: the secret is snapshotted onto the outbox row at enqueue time. You can instead reference a row in `webhook_endpoints` with `endpoint: { endpointId }`. In v1 there is **no endpoint-registration API** — insert those rows yourself (e.g. `INSERT INTO webhook_endpoints (id, url, secret) VALUES (…)`); only `relay.endpoints.disable(id)` is exposed.
+> **Inline vs registered endpoints.** The examples pass the destination inline as `endpoint: { url, secret }`, which is the primary path: the secret is snapshotted onto the outbox row at enqueue time. You can instead reference a row in `webhook_endpoints` with `endpoint: { endpointId }`, and manage those rows through the `relay.endpoints` admin API — `register({ url, secret, … })`, `update`, `enable`, `disable`, and `get`.
 
 ### 4. Run the dispatcher
 
@@ -211,32 +212,32 @@ If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` excee
 
 All config is optional and merged over safe defaults. Invalid values are rejected at startup with `RelayError("CONFIG_INVALID")`; dangerous-but-valid ones (e.g. disabling the SSRF guard) are allowed but warned via the logger.
 
-| Group      | Option               | Default               | Notes                                                        |
-| ---------- | -------------------- | --------------------- | ------------------------------------------------------------ |
-|            | `mode`               | `"active"`            | `"observe"` records rows as `observed` and never sends.      |
-| `signing`  | `scheme`             | `"standard-webhooks"` | Only Standard Webhooks is supported.                         |
-| `retry`    | `maxAttempts`        | `12`                  | Integer ≥ 1.                                                 |
-| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`, capped.                           |
-| `retry`    | `baseMs`             | `1000`                |                                                              |
-| `retry`    | `capMs`              | `3600000`             | Must be ≥ `baseMs`.                                          |
-| `retry`    | `jitter`             | `0.2`                 | Fraction in `0..1`, on by default to avoid thundering herds. |
-| `delivery` | `timeoutMs`          | `15000`               | Per-request HTTP timeout.                                    |
-| `delivery` | `bodySnippetBytes`   | `4096`                | How much of the response body is stored in the ledger.       |
-| `delivery` | `keepAliveTimeoutMs` | `10000`               | undici keep-alive window; longer reuses TCP/TLS across bursts to the same host. |
-| `delivery` | `connections`        | _(undici default)_    | Optional cap on simultaneous connections per origin.         |
-| `ssrf`     | `blockPrivateRanges` | `true`                | Blocks private / loopback / link-local / metadata IPs.       |
-| `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                     |
-| `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                       |
+| Group      | Option               | Default               | Notes                                                                                |
+| ---------- | -------------------- | --------------------- | ------------------------------------------------------------------------------------ |
+|            | `mode`               | `"active"`            | `"observe"` records rows as `observed` and never sends.                              |
+| `signing`  | `scheme`             | `"standard-webhooks"` | Only Standard Webhooks is supported.                                                 |
+| `retry`    | `maxAttempts`        | `12`                  | Integer ≥ 1.                                                                         |
+| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`, capped.                                                   |
+| `retry`    | `baseMs`             | `1000`                |                                                                                      |
+| `retry`    | `capMs`              | `3600000`             | Must be ≥ `baseMs`.                                                                  |
+| `retry`    | `jitter`             | `0.2`                 | Fraction in `0..1`, on by default to avoid thundering herds.                         |
+| `delivery` | `timeoutMs`          | `15000`               | Per-request HTTP timeout.                                                            |
+| `delivery` | `bodySnippetBytes`   | `4096`                | How much of the response body is stored in the ledger.                               |
+| `delivery` | `keepAliveTimeoutMs` | `10000`               | undici keep-alive window; longer reuses TCP/TLS across bursts to the same host.      |
+| `delivery` | `connections`        | _(undici default)_    | Optional cap on simultaneous connections per origin.                                 |
+| `ssrf`     | `blockPrivateRanges` | `true`                | Blocks private / loopback / link-local / metadata IPs.                               |
+| `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                                             |
+| `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                                               |
 |            | `endpointCacheTtlMs` | `0` (off)             | TTL (ms) for an in-process registered-endpoint lookup cache; see Performance tuning. |
 
 Dispatcher options (`relay.createDispatcher({ … })`):
 
-| Option           | Default           | Notes                                                         |
-| ---------------- | ----------------- | ------------------------------------------------------------- |
-| `concurrency`    | `8`               | Max concurrent deliveries.                                    |
-| `pollIntervalMs` | `1000`            | Idle poll interval; a full batch ticks again immediately.     |
-| `reclaimAfterMs` | `300000`          | Visibility timeout: reclaim `in_flight` rows older than this. |
-| `batchSize`      | `concurrency * 2` | Rows claimed per tick.                                        |
+| Option           | Default           | Notes                                                                                                                      |
+| ---------------- | ----------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `concurrency`    | `8`               | Max concurrent deliveries.                                                                                                 |
+| `pollIntervalMs` | `1000`            | Upper bound of the idle poll wait; an idle loop backs off from ~50ms up to this, and a full batch ticks again immediately. |
+| `reclaimAfterMs` | `300000`          | Visibility timeout: reclaim `in_flight` rows older than this.                                                              |
+| `batchSize`      | `concurrency * 2` | Rows claimed per tick.                                                                                                     |
 
 ### Performance tuning
 
@@ -250,6 +251,8 @@ Throughput is mostly about giving the dispatcher room to work:
 **Phased rollout:** start in `mode: "observe"` to record the volume and destinations of what _would_ be sent, diff it against expectations, then switch to `"active"`.
 
 **Signing secret format:** a `whsec_`-prefixed secret is treated as Base64 per the Standard Webhooks convention and decoded to raw key bytes; any other string is used as raw UTF-8 bytes.
+
+**Encrypting secrets at rest:** pass `cipher` to `createRelay({ store, cipher })` to keep signing secrets as ciphertext in the DB. Use the built-in `createAesGcmCipher(key)` (WebCrypto AES-256-GCM; `generateSecretKey()` mints a key) or your own `SecretCipher` over a KMS/Vault. Managing the key is your responsibility; omitting `cipher` stores secrets as-is (plaintext).
 
 ## Operations
 
@@ -347,7 +350,7 @@ Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) conve
 - **Exactly-once _effects_** at the receiver. CommitCourier provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
 - **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is a planned optional feature).
 - **Unbounded scale.** This targets small-to-medium volume on your existing Postgres, not billions/sec.
-- **At-rest secret encryption.** That's your DB's responsibility (optional encrypted-column support is future work).
+- **Encryption-key management.** Signing secrets can be encrypted at rest by configuring a `cipher` (see Configuration); managing the key itself — storage, distribution, rotation — is yours. Without a `cipher`, at-rest encryption is your database's responsibility.
 - Inbound webhook receiving / verification, and a customer-facing management portal UI.
 
 ## Removing CommitCourier
@@ -370,19 +373,21 @@ function createRelay<TTx>(init: RelayInit<TTx>): Promise<Relay<TTx>>;
 
 interface Relay<TTx> {
   enqueue(trx: TTx, input: EnqueueInput): Promise<{ id: string }>;
+  enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   createDispatcher(options?: DispatcherOptions): Dispatcher;
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
   replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
-  endpoints: { disable(endpointId: string): Promise<void> };
+  stats(): Promise<OutboxStats>;
+  endpoints: EndpointAdmin; // register / update / enable / disable / get
 }
 ```
 
 ## Status & roadmap
 
-- **v1 (current):** Postgres store, `pg` + Knex adapters, transactional enqueue, poller-based dispatcher (no external queue), Standard Webhooks signing (single key), retry / backoff / jitter / DLQ, delivery ledger, replay by id, SSRF protection, observe mode.
+- **v1 (current):** Postgres store, `pg` + Knex adapters, transactional enqueue, poller-based dispatcher (no external queue), Standard Webhooks signing (single key), retry / backoff / jitter / DLQ, delivery ledger, replay by id, SSRF protection, observe mode, a registered-endpoint admin API (`register` / `update` / `enable` / `disable` / `get`), optional at-rest secret encryption (`cipher`), and throughput tuning (partial claim/reclaim indexes, undici keep-alive, an optional registered-endpoint cache, adaptive idle polling).
 - **v1.1:** Drizzle / Prisma adapters, key rotation (dual signing), per-endpoint FIFO, `Retry-After` support.
-- **v2:** Optional BullMQ accelerator adapter (the outbox row stays the source of truth), endpoint-registration admin API, OpenTelemetry hooks.
+- **v2:** Optional BullMQ accelerator adapter (the outbox row stays the source of truth), a richer endpoint-management API, OpenTelemetry hooks.
 
 ## Security
 

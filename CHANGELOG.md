@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Optional at-rest encryption for signing secrets: `createAesGcmCipher` (WebCrypto AES-256-GCM),
+  the `SecretCipher` interface, and `generateSecretKey`, wired through `createRelay({ cipher })`.
+  Secrets are stored as a versioned `ccsec.v1.` ciphertext envelope and decrypted only in memory.
+- An optional in-process registered-endpoint cache via `RelayInit.endpointCacheTtlMs`, removing the
+  per-delivery `findEndpoint` round trip on the registered-endpoint hot path.
+- `delivery.keepAliveTimeoutMs` (default 10s) and `delivery.connections` for tuning undici connection
+  reuse on the delivery client.
+
+### Changed
+
+- The dispatch claim and reclaim queries now use partial indexes over only the `pending` /
+  `in_flight` rows, so they stay fast as delivered/dead rows accumulate.
+- The dispatcher's idle wait now backs off adaptively from ~50ms up to `pollIntervalMs`, lowering the
+  latency of the first delivery after an idle period.
+
+### Fixed
+
+- Integration tests no longer skip on Windows Docker Desktop: the Docker probe falls back to the
+  Docker CLI instead of relying on a named pipe that `existsSync` cannot detect.
+
 ## [0.1.0] - 2026-06-25
 
 Initial public release.
