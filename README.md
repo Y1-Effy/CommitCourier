@@ -222,9 +222,12 @@ All config is optional and merged over safe defaults. Invalid values are rejecte
 | `retry`    | `jitter`             | `0.2`                 | Fraction in `0..1`, on by default to avoid thundering herds. |
 | `delivery` | `timeoutMs`          | `15000`               | Per-request HTTP timeout.                                    |
 | `delivery` | `bodySnippetBytes`   | `4096`                | How much of the response body is stored in the ledger.       |
+| `delivery` | `keepAliveTimeoutMs` | `10000`               | undici keep-alive window; longer reuses TCP/TLS across bursts to the same host. |
+| `delivery` | `connections`        | _(undici default)_    | Optional cap on simultaneous connections per origin.         |
 | `ssrf`     | `blockPrivateRanges` | `true`                | Blocks private / loopback / link-local / metadata IPs.       |
 | `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                     |
 | `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                       |
+|            | `endpointCacheTtlMs` | `0` (off)             | TTL (ms) for an in-process registered-endpoint lookup cache; see Performance tuning. |
 
 Dispatcher options (`relay.createDispatcher({ … })`):
 
@@ -234,6 +237,15 @@ Dispatcher options (`relay.createDispatcher({ … })`):
 | `pollIntervalMs` | `1000`            | Idle poll interval; a full batch ticks again immediately.     |
 | `reclaimAfterMs` | `300000`          | Visibility timeout: reclaim `in_flight` rows older than this. |
 | `batchSize`      | `concurrency * 2` | Rows claimed per tick.                                        |
+
+### Performance tuning
+
+Throughput is mostly about giving the dispatcher room to work:
+
+- **Concurrency vs. pool size.** Raising `concurrency` only helps if the `pg.Pool` has connections to spare: the dispatch path uses one connection per in-flight `claimDue` / `completeAttempt`. Size `Pool({ max })` to at least `concurrency` plus headroom, or deliveries stall waiting on the pool.
+- **Batch and connections.** `batchSize` (default `concurrency * 2`) caps the in-flight buffer; `delivery.connections` caps sockets per destination. Tune both to the workload, and lengthen `delivery.keepAliveTimeoutMs` when you deliver many events to the same hosts.
+- **Registered-endpoint cache.** With the registered-endpoint workflow every delivery looks the endpoint up in the DB. Set `endpointCacheTtlMs` (e.g. `1000`–`5000`) to cache lookups in-process; `update`/`disable` evict immediately within the process, and the TTL bounds how long another process's change can be stale. It has no effect on the inline `{ url, secret }` workflow.
+- **Indexes are built in.** The claim and reclaim queries use partial indexes over only the `pending` / `in_flight` rows, so they stay fast as delivered/dead rows accumulate — no tuning needed.
 
 **Phased rollout:** start in `mode: "observe"` to record the volume and destinations of what _would_ be sent, diff it against expectations, then switch to `"active"`.
 

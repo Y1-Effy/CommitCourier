@@ -105,6 +105,11 @@ async function runLoop(ctx: LoopCtx): Promise<void> {
   const { store, deliver, config, opts, limit, lockedBy, active, inFlight, sleep } = ctx;
   const { logger, clock } = config;
   let lastReclaimAt = 0;
+  // Adaptive idle backoff: when the queue is empty, start near-immediate and double up to
+  // pollIntervalMs, so the first row after an idle period is picked up with low latency without
+  // busy-spinning while quiet. Reset to the floor whenever work is found.
+  const minIdleMs = Math.min(50, opts.pollIntervalMs);
+  let idleMs = minIdleMs;
 
   const freeCapacity = (): number => opts.batchSize - (limit.activeCount + limit.pendingCount);
   const schedule = (row: OutboxRow): void => {
@@ -148,9 +153,12 @@ async function runLoop(ctx: LoopCtx): Promise<void> {
       continue;
     }
     if (rows.length === 0) {
-      await sleep(opts.pollIntervalMs); // nothing due; idle without busy-spinning
+      // Nothing due: wait the current backoff, then lengthen it up to the poll-interval cap.
+      await sleep(idleMs);
+      idleMs = Math.min(idleMs * 2, opts.pollIntervalMs);
       continue;
     }
+    idleMs = minIdleMs; // work found: reset the idle backoff to its floor.
     // deliver never throws; schedule without awaiting and loop to claim more as slots free.
     for (const row of rows) schedule(row);
   }

@@ -363,6 +363,7 @@ export interface RelayInit<TTx> {
     clock?: Clock;
     // (undocumented)
     delivery?: Partial<DeliveryConfig>;
+    endpointCacheTtlMs?: number;
     hooks?: DeliveryHooks;
     // (undocumented)
     logger?: Logger;

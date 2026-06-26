@@ -68,7 +68,6 @@ describe.skipIf(!dockerAvailable())("claim throughput (integration)", () => {
     }
     const elapsedMs = Date.now() - start;
     const rowsPerSec = Math.round((drained / elapsedMs) * 1000);
-    // eslint-disable-next-line no-console
     console.log(
       `[bench] drained ${String(drained)} pending rows from a ${String(
         DELIVERED_ROWS + PENDING_ROWS,

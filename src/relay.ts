@@ -24,6 +24,7 @@ import type {
 } from "./core/index";
 import type { Store, NewOutboxRow, ReplayFilter, EndpointPatch, OutboxStats } from "./store/store";
 import { createEncryptedStore } from "./store/encrypted-store";
+import { createEndpointCache } from "./store/endpoint-cache";
 import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
 import type { DeliveryHooks } from "./delivery/deliver";
@@ -70,6 +71,13 @@ export interface RelayInit<TTx> {
    * See {@link createAesGcmCipher}. When omitted, secrets are stored as-is (plaintext).
    */
   cipher?: SecretCipher;
+  /**
+   * Optional TTL (ms) for an in-process registered-endpoint lookup cache. Cuts the per-delivery
+   * `findEndpoint` DB round trip on the registered-endpoint hot path; `updateEndpoint`/`disable`
+   * evict in-process, and the TTL bounds cross-process staleness. Omitted/0 disables caching
+   * (default). Has no effect on the inline `{ url, secret }` workflow.
+   */
+  endpointCacheTtlMs?: number;
   mode?: Mode;
   signing?: Partial<SigningConfig>;
   retry?: Partial<RetryConfig>;
@@ -126,10 +134,34 @@ function asRegistered(ep: unknown): { endpointId: string } | null {
     : null;
 }
 
+/**
+ * Compose the store decorators: encrypt secrets at rest, then (optionally) cache decrypted endpoint
+ * lookups outermost so every layer below keeps seeing plaintext rows. Validates the cache TTL.
+ */
+function wrapStore<TTx>(
+  rawStore: Store<TTx>,
+  cipher: SecretCipher | undefined,
+  endpointCacheTtlMs: number | undefined,
+): Store<TTx> {
+  if (
+    endpointCacheTtlMs !== undefined &&
+    !(Number.isFinite(endpointCacheTtlMs) && endpointCacheTtlMs >= 0)
+  ) {
+    throw new RelayError(
+      "CONFIG_INVALID",
+      `endpointCacheTtlMs must be a number >= 0, got ${String(endpointCacheTtlMs)}`,
+    );
+  }
+  let store = cipher ? createEncryptedStore(rawStore, cipher) : rawStore;
+  if (endpointCacheTtlMs && endpointCacheTtlMs > 0) {
+    store = createEndpointCache(store, { ttlMs: endpointCacheTtlMs });
+  }
+  return store;
+}
+
 export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>> {
-  const { store: rawStore, cipher, ...rest } = config;
-  // Encrypt signing secrets at rest by wrapping the store; every layer below keeps seeing plaintext.
-  const store = cipher ? createEncryptedStore(rawStore, cipher) : rawStore;
+  const { store: rawStore, cipher, endpointCacheTtlMs, ...rest } = config;
+  const store = wrapStore(rawStore, cipher, endpointCacheTtlMs);
   const resolved = resolveConfig(rest);
 
   const diag = await store.diagnose();
