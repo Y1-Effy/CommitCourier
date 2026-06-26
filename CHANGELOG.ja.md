@@ -11,6 +11,24 @@
 
 ### Added（追加）
 
+- **鍵ローテーション／二重署名（v1.1）**：ローテーション中は登録エンドポイントへの配信を現行鍵と
+  旧鍵の両方で署名します（Standard Webhooks のスペース区切り `v1,…` 複数署名）。受信側はどちらの鍵
+  でも検証可能。管理操作 `endpoints.rotateSecret(id, newSecret)` と `endpoints.finalizeRotation(id)`
+  を追加（冪等マイグレーションで `secret_secondary` 列を追加。`cipher` 設定時は保管時暗号化）。
+- **`Retry-After` 尊重（v1.1）**：リトライ対象応答が `Retry-After`（delta-seconds または HTTP-date）
+  を持つ場合、次回試行を `max(backoff, Retry-After)` に設定し、`retry.capMs` で上限クランプします。
+- **`410 Gone` 即時無効化（v1.1）**：`410` 応答はリトライ枠を消費せず行を即 `dead` にし、登録
+  エンドポイントを無効化します。
+- **オプトインのエンドポイント単位 FIFO（v1.1）**：`createDispatcher({ ordering: "per-endpoint" })`
+  で各登録エンドポイントの行を到着順に逐次配信します（エンドポイントごとに in-flight は 1 本）。
+  既定（`"none"`）は従来どおり順不同・並列。インライン宛先は対象外。順序付けは単調増加の挿入列
+  （`webhook_outbox.seq`）で行うため、同一トランザクションでまとめて enqueue したイベントも挿入順に
+  配信されます。
+- **Drizzle アダプタ（v1.1）**：`commitcourier/store/drizzle` から `drizzleStore` を公開。pg/knex と
+  同一の Postgres dialect・契約を再利用。`drizzle-orm` は任意 peer 依存。
+- **Prisma アダプタ（v1.1）**：`commitcourier/store/prisma` から `prismaStore` を公開。raw SQL ベース
+  （同一 dialect・契約を再利用）で、enqueue は呼び出し元の `prisma.$transaction` に相乗り。`@prisma/client`
+  は任意 peer 依存で、構造的型で受けるため未インストールでもライブラリはビルド可能。
 - 署名 secret の任意の保管時暗号化：`createAesGcmCipher`（WebCrypto AES-256-GCM）、`SecretCipher`
   インターフェース、`generateSecretKey` を追加し、`createRelay({ cipher })` で配線。secret は
   バージョン付き `ccsec.v1.` 暗号文エンベロープで保存され、署名直前にメモリ上でのみ復号されます。

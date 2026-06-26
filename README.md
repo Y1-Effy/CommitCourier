@@ -348,7 +348,7 @@ Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) conve
 **Non-goals** (called out honestly)
 
 - **Exactly-once _effects_** at the receiver. CommitCourier provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
-- **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is a planned optional feature).
+- **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is available as an opt-in feature: `createDispatcher({ ordering: "per-endpoint" })`).
 - **Unbounded scale.** This targets small-to-medium volume on your existing Postgres, not billions/sec.
 - **Encryption-key management.** Signing secrets can be encrypted at rest by configuring a `cipher` (see Configuration); managing the key itself — storage, distribution, rotation — is yours. Without a `cipher`, at-rest encryption is your database's responsibility.
 - Inbound webhook receiving / verification, and a customer-facing management portal UI.
@@ -386,7 +386,7 @@ interface Relay<TTx> {
 ## Status & roadmap
 
 - **v1 (current):** Postgres store, `pg` + Knex adapters, transactional enqueue, poller-based dispatcher (no external queue), Standard Webhooks signing (single key), retry / backoff / jitter / DLQ, delivery ledger, replay by id, SSRF protection, observe mode, a registered-endpoint admin API (`register` / `update` / `enable` / `disable` / `get`), optional at-rest secret encryption (`cipher`), and throughput tuning (partial claim/reclaim indexes, undici keep-alive, an optional registered-endpoint cache, adaptive idle polling).
-- **v1.1:** Drizzle / Prisma adapters, key rotation (dual signing), per-endpoint FIFO, `Retry-After` support.
+- **v1.1:** key rotation / dual signing (`endpoints.rotateSecret` / `finalizeRotation`), `Retry-After` support, immediate `410 Gone` endpoint invalidation, opt-in per-endpoint FIFO (`createDispatcher({ ordering: "per-endpoint" })`), and Drizzle (`commitcourier/store/drizzle`) + Prisma (`commitcourier/store/prisma`) adapters.
 - **v2:** Optional BullMQ accelerator adapter (the outbox row stays the source of truth), a richer endpoint-management API, OpenTelemetry hooks.
 
 ## Security

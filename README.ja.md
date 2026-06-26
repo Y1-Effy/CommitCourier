@@ -348,7 +348,7 @@ ORDER BY created_at DESC;
 **非目標（正直に明記）**
 
 - 受信側での **exactly-once な「効果」**。提供するのは at-least-once ＋ idempotency key であり、最終的な重複排除は受信側の責務です。
-- エンドポイント横断の**全順序保証**。既定は順不同です（エンドポイント単位 FIFO は将来の任意機能）。
+- エンドポイント横断の**全順序保証**。既定は順不同です（エンドポイント単位 FIFO はオプトインで提供：`createDispatcher({ ordering: "per-endpoint" })`）。
 - **無限スケール**。既存 Postgres 上の中〜中規模を正直な対象とし、billions/sec 級は対象外です。
 - **暗号鍵の管理**。署名 secret は `cipher` 設定で保管時暗号化できますが（「設定」参照）、鍵自体の保管・配布・ローテーションは利用者の責務です。`cipher` 未設定時の保管時暗号化は DB 側の責務です。
 - インバウンド webhook の受信・検証、および顧客向け管理ポータル UI。
@@ -386,7 +386,7 @@ interface Relay<TTx> {
 ## ステータスとロードマップ
 
 - **v1（現行）**：Postgres ストア、`pg` ＋ Knex アダプタ、トランザクショナル enqueue、ポーラー型 dispatcher（外部キュー不要）、Standard Webhooks 署名（単一鍵）、リトライ／バックオフ／ジッター／DLQ、配信台帳、ID 指定リプレイ、SSRF 防御、観測モード、登録エンドポイント管理 API（`register` / `update` / `enable` / `disable` / `get`）、任意の保管時 secret 暗号化（`cipher`）、スループット調整（claim/reclaim の部分インデックス、undici keep-alive、任意の登録エンドポイントキャッシュ、適応ポーリング）。
-- **v1.1**：Drizzle / Prisma アダプタ、鍵ローテーション（二重署名）、エンドポイント単位 FIFO、`Retry-After` 尊重。
+- **v1.1**：鍵ローテーション／二重署名（`endpoints.rotateSecret` / `finalizeRotation`）、`Retry-After` 尊重、`410 Gone` での即時エンドポイント無効化、オプトインのエンドポイント単位 FIFO（`createDispatcher({ ordering: "per-endpoint" })`）、Drizzle（`commitcourier/store/drizzle`）＋ Prisma（`commitcourier/store/prisma`）アダプタ。
 - **v2**：任意の BullMQ アクセラレータ・アダプタ（Outbox 行は引き続き真実の源泉）、より高機能なエンドポイント管理 API、OpenTelemetry フック。
 
 ## セキュリティ

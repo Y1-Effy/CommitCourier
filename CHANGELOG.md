@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Key rotation / dual signing (v1.1):** during a rotation, deliveries to a registered endpoint are
+  signed with both the current and previous keys (Standard Webhooks space-separated `v1,…` signatures),
+  so a receiver on either key verifies. New admin ops `endpoints.rotateSecret(id, newSecret)` and
+  `endpoints.finalizeRotation(id)`, backed by a new `secret_secondary` column (added via idempotent
+  migration; encrypted at rest when a `cipher` is configured).
+- **`Retry-After` support (v1.1):** a retryable response carrying `Retry-After` (delta-seconds or
+  HTTP-date) schedules the next attempt at `max(backoff, Retry-After)`, clamped to `retry.capMs`.
+- **Immediate `410 Gone` invalidation (v1.1):** a `410` response moves the row straight to `dead`
+  without consuming the retry budget and disables the registered endpoint.
+- **Opt-in per-endpoint FIFO (v1.1):** `createDispatcher({ ordering: "per-endpoint" })` delivers each
+  registered endpoint's rows strictly in arrival order (one in-flight per endpoint); the default
+  (`"none"`) stays unordered and fully concurrent. Inline destinations are unaffected. Ordering uses a
+  monotonic insertion sequence (`webhook_outbox.seq`), so events enqueued together in one transaction
+  (a bulk/same-TX enqueue) are still delivered in insertion order.
+- **Drizzle adapter (v1.1):** `drizzleStore` exported from `commitcourier/store/drizzle`, reusing the
+  same Postgres dialect and contract as the `pg`/`knex` adapters. `drizzle-orm` is an optional peer.
+- **Prisma adapter (v1.1):** `prismaStore` exported from `commitcourier/store/prisma`, raw-SQL based
+  (reusing the same dialect/contract); enqueue rides the caller's `prisma.$transaction`. `@prisma/client`
+  is an optional peer; Prisma is typed structurally so the library builds without it.
 - Optional at-rest encryption for signing secrets: `createAesGcmCipher` (WebCrypto AES-256-GCM),
   the `SecretCipher` interface, and `generateSecretKey`, wired through `createRelay({ cipher })`.
   Secrets are stored as a versioned `ccsec.v1.` ciphertext envelope and decrypted only in memory.
