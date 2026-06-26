@@ -87,6 +87,16 @@ export interface RetryConfig {
 export interface DeliveryConfig {
   timeoutMs: number;
   bodySnippetBytes: number;
+  /**
+   * How long an idle keep-alive connection is kept open for reuse, in ms (undici `keepAliveTimeout`).
+   * Longer windows reuse TCP/TLS across bursts of deliveries to the same host. Defaults to 10_000.
+   */
+  keepAliveTimeoutMs: number;
+  /**
+   * Optional cap on simultaneous connections per origin (undici `connections`). Bounds resource use
+   * under heavy fan-out to a single host. Left to the undici default (unbounded) when omitted.
+   */
+  connections?: number;
 }
 
 /** SSRF guard policy (basic design section 12). */

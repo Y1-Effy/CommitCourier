@@ -21,7 +21,11 @@ describe("config.resolveConfig defaults", () => {
       capMs: 3_600_000,
       jitter: 0.2,
     });
-    expect(cfg.delivery).toEqual({ timeoutMs: 15_000, bodySnippetBytes: 4_096 });
+    expect(cfg.delivery).toEqual({
+      timeoutMs: 15_000,
+      bodySnippetBytes: 4_096,
+      keepAliveTimeoutMs: 10_000,
+    });
     expect(cfg.ssrf).toEqual({ blockPrivateRanges: true, allowlist: [], blocklist: [] });
   });
 
@@ -65,6 +69,9 @@ describe("config.resolveConfig validation (fail-fast)", () => {
     ["capMs below baseMs", { retry: { baseMs: 5_000, capMs: 1_000 } }],
     ["timeoutMs <= 0", { delivery: { timeoutMs: 0 } }],
     ["bodySnippetBytes <= 0", { delivery: { bodySnippetBytes: 0 } }],
+    ["keepAliveTimeoutMs <= 0", { delivery: { keepAliveTimeoutMs: 0 } }],
+    ["connections < 1", { delivery: { connections: 0 } }],
+    ["non-integer connections", { delivery: { connections: 2.5 } }],
   ])("throws CONFIG_INVALID for %s", (_label, input) => {
     try {
       resolveConfig(input);
@@ -94,6 +101,16 @@ describe("config.resolveConfig validation (fail-fast)", () => {
   it("accepts the inclusive jitter boundaries 0 and 1", () => {
     expect(resolveConfig({ retry: { jitter: 0 } }).retry.jitter).toBe(0);
     expect(resolveConfig({ retry: { jitter: 1 } }).retry.jitter).toBe(1);
+  });
+
+  it("accepts a valid connections cap and keeps it on the resolved config", () => {
+    const cfg = resolveConfig({ delivery: { connections: 64 } });
+    expect(cfg.delivery.connections).toBe(64);
+    expect(cfg.delivery.keepAliveTimeoutMs).toBe(10_000);
+  });
+
+  it("leaves connections undefined by default (undici default)", () => {
+    expect(resolveConfig({}).delivery.connections).toBeUndefined();
   });
 });
 

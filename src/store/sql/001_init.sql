@@ -21,8 +21,13 @@ CREATE TABLE IF NOT EXISTS webhook_outbox (
   CHECK (endpoint_id IS NOT NULL OR target_url IS NOT NULL) -- one of them is required
 );
 
--- For polling: speed up the search for due rows
-CREATE INDEX IF NOT EXISTS ix_outbox_due ON webhook_outbox (status, available_at);
+-- For the dispatch claim (WHERE status='pending' AND available_at <= $1 ORDER BY available_at):
+-- a partial index over only pending rows stays small as delivered/dead rows accumulate, so claims
+-- and their index maintenance cost track the live backlog, not the whole table.
+CREATE INDEX IF NOT EXISTS ix_outbox_due ON webhook_outbox (available_at) WHERE status = 'pending';
+-- For reclaim (WHERE status='in_flight' AND locked_at < $1): partial index over the small in_flight
+-- set so the visibility-timeout sweep is an index range scan, not a full-table scan.
+CREATE INDEX IF NOT EXISTS ix_outbox_inflight ON webhook_outbox (locked_at) WHERE status = 'in_flight';
 CREATE INDEX IF NOT EXISTS ix_outbox_endpoint ON webhook_outbox (endpoint_id);
 -- For ledger scans: cheap time-ordered scan
 CREATE INDEX IF NOT EXISTS brin_outbox_created ON webhook_outbox USING brin (created_at);

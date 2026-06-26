@@ -55,6 +55,8 @@ export interface DeliveryAttempt {
 export interface DeliveryConfig {
     // (undocumented)
     bodySnippetBytes: number;
+    connections?: number;
+    keepAliveTimeoutMs: number;
     // (undocumented)
     timeoutMs: number;
 }

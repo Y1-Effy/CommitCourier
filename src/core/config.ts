@@ -32,7 +32,7 @@ const DEFAULTS = {
   mode: "active",
   signing: { scheme: "standard-webhooks" },
   retry: { maxAttempts: 12, backoff: "exponential", baseMs: 1_000, capMs: 3_600_000, jitter: 0.2 },
-  delivery: { timeoutMs: 15_000, bodySnippetBytes: 4_096 },
+  delivery: { timeoutMs: 15_000, bodySnippetBytes: 4_096, keepAliveTimeoutMs: 10_000 },
   ssrf: {
     blockPrivateRanges: true,
     allowlist: [] as readonly string[],
@@ -84,6 +84,15 @@ function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
   }
   if (!(cfg.delivery.bodySnippetBytes > 0)) {
     fail(`delivery.bodySnippetBytes must be > 0, got ${String(cfg.delivery.bodySnippetBytes)}`);
+  }
+  if (!(cfg.delivery.keepAliveTimeoutMs > 0)) {
+    fail(`delivery.keepAliveTimeoutMs must be > 0, got ${String(cfg.delivery.keepAliveTimeoutMs)}`);
+  }
+  if (
+    cfg.delivery.connections !== undefined &&
+    !(Number.isInteger(cfg.delivery.connections) && cfg.delivery.connections >= 1)
+  ) {
+    fail(`delivery.connections must be an integer >= 1, got ${String(cfg.delivery.connections)}`);
   }
 }
 

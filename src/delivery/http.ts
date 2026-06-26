@@ -167,7 +167,14 @@ export function createHttpClient(
   };
 
   const connect: { lookup: LookupFunction } = { lookup: guardedLookup };
-  const agent = new Agent({ connect });
+  // Tune connection reuse for delivery throughput: a longer keep-alive window reuses TCP/TLS across
+  // bursts to the same host; `connections` (when set) caps per-origin sockets. `pipelining` stays at
+  // the undici default (1) since POST is not safe to pipeline.
+  const agent = new Agent({
+    connect,
+    keepAliveTimeout: delivery.keepAliveTimeoutMs,
+    ...(delivery.connections != null ? { connections: delivery.connections } : {}),
+  });
 
   return {
     async post({ url, headers, body }) {
