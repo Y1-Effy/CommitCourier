@@ -4,6 +4,7 @@
  * (06-testing section 4). Requires Docker; suites skip themselves when it is unavailable.
  */
 import { existsSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { GenericContainer, Wait, type StartedTestContainer } from "testcontainers";
 import { Pool, type PoolClient } from "pg";
@@ -22,10 +23,34 @@ export interface PgConn {
   database: string;
 }
 
-/** Best-effort Docker probe so the integration suite can skip cleanly without one. */
+let dockerProbe: boolean | undefined;
+
+/**
+ * Best-effort Docker probe so the integration suite can skip cleanly without one (cached).
+ *
+ * The unix socket is a cheap, reliable signal on Linux/macOS (and CI). On Windows, Docker Desktop
+ * exposes a named pipe (`\\.\pipe\dockerDesktopLinuxEngine`) that `existsSync` cannot stat, so we
+ * fall back to asking the Docker CLI whether a daemon is actually reachable — `docker info` exits
+ * non-zero when the daemon is down, which keeps suites skipping (not failing) without Docker.
+ */
 export function dockerAvailable(): boolean {
+  if (dockerProbe !== undefined) return dockerProbe;
+  dockerProbe = probeDocker();
+  return dockerProbe;
+}
+
+function probeDocker(): boolean {
   if (process.env.DOCKER_HOST) return true;
-  return existsSync("\\\\.\\pipe\\docker_engine") || existsSync("/var/run/docker.sock");
+  if (existsSync("/var/run/docker.sock")) return true;
+  try {
+    execFileSync("docker", ["info", "--format", "{{.ServerVersion}}"], {
+      stdio: ["ignore", "ignore", "ignore"],
+      timeout: 15_000,
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** The dispatch-path surface of {@link Store} (independent of the transaction-handle type). */
