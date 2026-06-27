@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { createEndpointCache } from "../../src/store/endpoint-cache";
 import type { EndpointRow } from "../../src/core/index";
 import type { Store } from "../../src/store/store";
@@ -21,9 +21,9 @@ function endpointRow(id: string, secret = "whsec_x"): EndpointRow {
 /** Minimal fake store: findEndpoint is a spy serving a mutable map; other methods are stubs. */
 function fakeStore(rows: Record<string, EndpointRow | null>): {
   store: Store;
-  findEndpoint: ReturnType<typeof vi.fn>;
-  updateEndpoint: ReturnType<typeof vi.fn>;
-  disableEndpoint: ReturnType<typeof vi.fn>;
+  findEndpoint: Mock<(id: string) => Promise<EndpointRow | null>>;
+  updateEndpoint: Mock<() => Promise<void>>;
+  disableEndpoint: Mock<() => Promise<void>>;
 } {
   const findEndpoint = vi.fn((id: string) => Promise.resolve(rows[id] ?? null));
   const updateEndpoint = vi.fn(() => Promise.resolve());

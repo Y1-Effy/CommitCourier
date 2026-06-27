@@ -30,9 +30,14 @@ const IV_BYTES = 12;
 /** AES-256 key length in bytes. */
 const KEY_BYTES = 32;
 
-/** Accept a raw 32-byte key or a base64 string that decodes to 32 bytes. */
-function coerceKey(key: Uint8Array | string): Uint8Array {
-  let bytes: Uint8Array;
+/**
+ * Accept a raw 32-byte key or a base64 string that decodes to 32 bytes.
+ *
+ * Returns an `ArrayBuffer`-backed view (a fresh copy for the raw-key case) so the result is
+ * assignable to WebCrypto's `BufferSource`, which rejects the generic `ArrayBufferLike` default.
+ */
+function coerceKey(key: Uint8Array | string): Uint8Array<ArrayBuffer> {
+  let bytes: Uint8Array<ArrayBuffer>;
   if (typeof key === "string") {
     try {
       bytes = base64ToBytes(key);
@@ -40,7 +45,7 @@ function coerceKey(key: Uint8Array | string): Uint8Array {
       throw new RelayError("CONFIG_INVALID", "cipher key string must be valid base64", cause);
     }
   } else {
-    bytes = key;
+    bytes = new Uint8Array(key);
   }
   if (bytes.length !== KEY_BYTES) {
     throw new RelayError(
@@ -86,7 +91,7 @@ export function createAesGcmCipher(key: Uint8Array | string): SecretCipher {
       if (!ciphertext.startsWith(ENVELOPE_PREFIX)) {
         throw new RelayError("CONFIG_INVALID", `ciphertext is not a ${ENVELOPE_PREFIX} envelope`);
       }
-      let envelope: Uint8Array;
+      let envelope: Uint8Array<ArrayBuffer>;
       try {
         envelope = base64ToBytes(ciphertext.slice(ENVELOPE_PREFIX.length));
       } catch (cause) {

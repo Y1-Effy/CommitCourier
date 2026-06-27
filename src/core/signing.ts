@@ -25,7 +25,7 @@ const WHSEC_PREFIX = "whsec_";
  * otherwise the raw UTF-8 bytes are used. A malformed Base64 key is a misconfiguration, so the
  * underlying decode error is normalised to a {@link RelayError} rather than a raw `DOMException`.
  */
-function decodeSecret(secret: string): Uint8Array {
+function decodeSecret(secret: string): Uint8Array<ArrayBuffer> {
   if (!secret.startsWith(WHSEC_PREFIX)) {
     return utf8ToBytes(secret);
   }
@@ -41,7 +41,7 @@ function decodeSecret(secret: string): Uint8Array {
 }
 
 /** Compute a single `v1,<base64>` HMAC-SHA256 signature over the signed content. */
-async function signOne(secret: string, signedContent: Uint8Array): Promise<string> {
+async function signOne(secret: string, signedContent: Uint8Array<ArrayBuffer>): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     decodeSecret(secret),

@@ -8,8 +8,13 @@
 const _enc = /* @__PURE__ */ new TextEncoder();
 const _dec = /* @__PURE__ */ new TextDecoder();
 
-/** Encode a string to its UTF-8 bytes. */
-export function utf8ToBytes(s: string): Uint8Array {
+/**
+ * Encode a string to its UTF-8 bytes.
+ *
+ * Typed as `Uint8Array<ArrayBuffer>` (not the generic `ArrayBufferLike` default) so the result
+ * is assignable to WebCrypto's `BufferSource`, which requires an `ArrayBuffer`-backed view.
+ */
+export function utf8ToBytes(s: string): Uint8Array<ArrayBuffer> {
   return _enc.encode(s);
 }
 
@@ -19,7 +24,7 @@ export function bytesToUtf8(bytes: Uint8Array): string {
 }
 
 /** Decode a standard (non-URL-safe) Base64 string to bytes. */
-export function base64ToBytes(b64: string): Uint8Array {
+export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer> {
   const bin = atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) {
