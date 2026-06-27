@@ -40,6 +40,7 @@ import { createEndpointCache } from "./store/endpoint-cache";
 import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
 import type { DeliveryHooks, DeliveryInstrument } from "./delivery/deliver";
+import { createCriticalLogger } from "./delivery/critical";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
 import type { Dispatcher, DispatcherOptions, RunOnceOptions } from "./dispatcher/dispatcher";
 import type { Accelerator } from "./accelerator/accelerator";
@@ -102,9 +103,17 @@ export interface RelayInit<TTx> {
   /**
    * Optional cipher for encrypting signing secrets at rest (`secretSnapshot`, endpoint `secret`).
    * When provided, the store is transparently wrapped so secrets are ciphertext in the backend.
-   * See {@link createAesGcmCipher}. When omitted, secrets are stored as-is (plaintext).
+   * See {@link createAesGcmCipher}. When omitted, secrets are stored as-is (plaintext), so at-rest
+   * encryption becomes the database's responsibility — `createRelay` warns about this at startup
+   * unless you acknowledge it with {@link RelayInit.unsafeAllowPlaintextSecrets}.
    */
   cipher?: SecretCipher;
+  /**
+   * Acknowledge that signing secrets are intentionally stored in plaintext (no `cipher`) because
+   * at-rest encryption is handled elsewhere (DB disk encryption, column encryption, etc.). Silences
+   * the startup plaintext-secret warning. Has no effect when `cipher` is set. Default false.
+   */
+  unsafeAllowPlaintextSecrets?: boolean;
   /**
    * Optional TTL (ms) for an in-process registered-endpoint lookup cache. Cuts the per-delivery
    * `findEndpoint` DB round trip on the registered-endpoint hot path; `updateEndpoint`/`disable`
@@ -247,18 +256,39 @@ function wrapStore<TTx>(
 }
 
 export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>> {
-  const { store: rawStore, cipher, endpointCacheTtlMs, ...rest } = config;
-  // Delivery is fail-open, so without a logger every delivery failure, DLQ transition and SSRF block
-  // is swallowed silently. Warn once at startup (straight to console, since the resolved logger is the
-  // no-op) so this is not a silent footgun; pass `logger` (e.g. `createConsoleLogger()`) to silence it.
-  if (config.logger === undefined) {
+  const {
+    store: rawStore,
+    cipher,
+    endpointCacheTtlMs,
+    unsafeAllowPlaintextSecrets,
+    ...rest
+  } = config;
+  // Delivery is fail-open, so without a logger routine failures/retries are swallowed silently. The
+  // two critical categories — security (SSRF blocks) and data loss (DLQ transitions) — fall back to
+  // the console even with no logger (see createCriticalLogger), but everything else stays silent, so
+  // warn once at startup; pass `logger` (e.g. `createConsoleLogger()`) to capture all operational logs.
+  const loggerConfigured = config.logger !== undefined;
+  if (!loggerConfigured) {
     console.warn(
-      "[commitcourier] no logger configured: delivery failures, DLQ transitions and SSRF blocks " +
-        "will be silent. Pass `logger` (e.g. createConsoleLogger() from commitcourier/core) to surface them.",
+      "[commitcourier] no logger configured: routine delivery failures and retries will be silent. " +
+        "Security events (SSRF blocks) and data loss (DLQ transitions) will fall back to console. " +
+        "Pass `logger` (e.g. createConsoleLogger() from commitcourier/core) to capture all operational logs.",
     );
   }
   // Resolve config first so the store decorators (encrypted store) can use the resolved logger.
   const resolved = resolveConfig(rest);
+  // Signing secrets are written in plaintext without a cipher. This is a security footgun, so warn at
+  // startup unless the caller acknowledges that at-rest encryption is handled elsewhere — symmetric to
+  // the no-logger warning above. Non-fatal: never breaks an existing deployment.
+  if (cipher === undefined && unsafeAllowPlaintextSecrets !== true) {
+    const msg =
+      "no cipher configured: signing secrets (secret_snapshot, endpoint secret) are stored in PLAINTEXT " +
+      "in your database. At-rest encryption is then a precondition you must meet elsewhere (DB disk " +
+      "encryption, column encryption, or pass `cipher` e.g. createAesGcmCipher). Set " +
+      "`unsafeAllowPlaintextSecrets: true` to acknowledge and silence this.";
+    if (loggerConfigured) resolved.logger.warn(msg);
+    else console.warn(`[commitcourier] ${msg}`);
+  }
   const store = wrapStore(rawStore, cipher, endpointCacheTtlMs, resolved.logger);
 
   const diag = await store.diagnose();
@@ -273,8 +303,19 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   const hooks = config.hooks;
   const instrument = config.instrument;
   const accelerator = config.accelerator;
+  // Surfaces security/data-loss events to the console when no logger was configured; otherwise routes
+  // to the configured logger only (see createCriticalLogger).
+  const critical = createCriticalLogger(resolved.logger, loggerConfigured);
   const deliver = (row: OutboxRow): Promise<void> =>
-    deliverOne(row, { store, http, config: resolved, clock: resolved.clock, hooks, instrument });
+    deliverOne(row, {
+      store,
+      http,
+      config: resolved,
+      clock: resolved.clock,
+      critical,
+      hooks,
+      instrument,
+    });
 
   /** Build the outbox row from enqueue input, snapshotting the inline secret at enqueue time. */
   function buildRow(input: EnqueueInput): NewOutboxRow {

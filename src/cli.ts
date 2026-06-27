@@ -97,6 +97,30 @@ function pickConfigKeys(loaded: Record<string, unknown>): Record<string, unknown
   return out;
 }
 
+/**
+ * Cipher readiness, symmetric to the logger check: at-rest encryption is a precondition, so an unset
+ * cipher is a `warn` unless the caller acknowledged plaintext storage (`unsafeAllowPlaintextSecrets`).
+ */
+function cipherItem(loaded: Record<string, unknown>): ConfigItem {
+  if (loaded.cipher != null) {
+    return { key: "cipher", status: "ok", detail: "set — signing secrets encrypted at rest" };
+  }
+  if (loaded.unsafeAllowPlaintextSecrets) {
+    return {
+      key: "cipher",
+      status: "default",
+      detail:
+        "unset but acknowledged (unsafeAllowPlaintextSecrets) — ensure the DB encrypts secrets at rest",
+    };
+  }
+  return {
+    key: "cipher",
+    status: "warn",
+    detail:
+      "unset — signing secrets are stored as PLAINTEXT; pass `cipher` or acknowledge with `unsafeAllowPlaintextSecrets`",
+  };
+}
+
 /** The recommended-but-optional checklist, derived from which keys the loaded config sets. */
 function readinessChecklist(loaded: Record<string, unknown>, effective: RelayConfig): ConfigItem[] {
   const has = (k: string): boolean => loaded[k] != null;
@@ -108,13 +132,7 @@ function readinessChecklist(loaded: Record<string, unknown>, effective: RelayCon
         ? "set"
         : "unset — the default logger is a no-op, so delivery/claim errors are SILENT in production",
     },
-    {
-      key: "cipher",
-      status: has("cipher") ? "ok" : "default",
-      detail: has("cipher")
-        ? "set — signing secrets encrypted at rest"
-        : "unset — signing secrets are stored as plaintext (at-rest encryption is the DB's job)",
-    },
+    cipherItem(loaded),
     {
       key: "circuitBreaker.failureThreshold",
       status: effective.circuitBreaker.failureThreshold > 0 ? "ok" : "default",

@@ -18,6 +18,8 @@ import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/in
 import type { Store, NewDeliveryAttempt } from "../store/store";
 import type { createHttpClient } from "./http";
 import { secretFreeSummary } from "./_error";
+import { createCriticalLogger } from "./critical";
+import type { CriticalLogger } from "./critical";
 
 /** A single delivery outcome reported to {@link DeliveryHooks}. Carries no secret. */
 export interface DeliveryEvent {
@@ -79,6 +81,12 @@ export interface DeliverDeps {
   http: ReturnType<typeof createHttpClient>;
   config: RelayConfig;
   clock: Clock;
+  /**
+   * Surfaces security (SSRF block) and data-loss (DLQ) events even when no logger is configured.
+   * Optional: when omitted it routes to `config.logger` as if a logger were configured (no console
+   * fallback). `createRelay` always supplies the misconfiguration-aware instance.
+   */
+  critical?: CriticalLogger;
   hooks?: DeliveryHooks;
   /** Optional tracing/metrics seam; see {@link DeliveryInstrument}. */
   instrument?: DeliveryInstrument;
@@ -87,6 +95,8 @@ export interface DeliverDeps {
 interface Ctx {
   row: OutboxRow;
   deps: DeliverDeps;
+  /** Resolved critical-event logger (from `deps.critical`, else a configured-logger fallback). */
+  critical: CriticalLogger;
   now: Date;
   /** Resolved destination host (no path/secret), refined once the target URL is known. */
   host: string | null;
@@ -109,6 +119,9 @@ function hostOf(url: string | null): string | null {
 type Resolved =
   | { ok: true; url: string; secrets: string[]; halfOpen: boolean }
   | { ok: false; error: string };
+
+/** Prefix the http client uses for an SSRF-blocked failure summary (e.g. `"SSRF_BLOCKED:metadata"`). */
+const SSRF_BLOCKED_PREFIX = "SSRF_BLOCKED:";
 
 /** Only a 2xx response is a success; everything else (including no response) is a retry. */
 function isSuccess(status: number | null): boolean {
@@ -262,6 +275,21 @@ async function applySuccess(
 }
 
 /**
+ * Surface a DLQ transition as a data-loss event: a message has reached the terminal `dead` state and
+ * will never be delivered. Always routed through the critical logger so it is visible even when no
+ * logger is configured (see {@link CriticalLogger}). The meta carries no secret.
+ */
+function noteDeadLetter(ctx: Ctx, summary: string): void {
+  ctx.critical.dataLoss("message moved to the DLQ and is permanently lost", {
+    id: ctx.row.id,
+    endpointId: ctx.row.endpointId,
+    eventType: ctx.row.eventType,
+    attempts: ctx.row.attempts + 1,
+    error: summary,
+  });
+}
+
+/**
  * Failure: write the ledger row and schedule the next retry or move to `dead` in one round trip
  * (guarded on `status = 'in_flight'`), then notify onRetry/onDead.
  */
@@ -285,6 +313,7 @@ async function applyFailure(
     onFailure(row, retry, now, summary, backoff),
     row.lockedBy,
   );
+  if (dead) noteDeadLetter(ctx, summary);
   await fireHook(ctx, dead ? deps.hooks?.onDead : deps.hooks?.onRetry, event);
 }
 
@@ -295,6 +324,7 @@ async function applyFailure(
  * passed `false` for a deterministic pre-HTTP failure (missing/invalid signing secret), where the
  * endpoint itself is not the problem and should stay enabled.
  */
+// eslint-disable-next-line max-params -- one optional endpoint-disable flag kept inline, mirroring applyFailure
 async function applyPermanentFailure(
   ctx: Ctx,
   attempt: NewDeliveryAttempt,
@@ -304,6 +334,7 @@ async function applyPermanentFailure(
 ): Promise<void> {
   const { row, deps, now } = ctx;
   await deps.store.completeAttempt(attempt, onPermanentFailure(row, summary), row.lockedBy);
+  noteDeadLetter(ctx, summary);
   if ((opts.disableEndpoint ?? true) && row.endpointId != null) {
     try {
       await deps.store.disableEndpoint(row.endpointId, now);
@@ -402,6 +433,19 @@ async function deliverHttp(
     return;
   }
   const event = eventFor(ctx, res.status, failure, res.durationMs);
+  // An SSRF block is a security event: the destination resolved to a blocked address and the POST was
+  // refused. Surface it every attempt (it stays retryable) so it is never silent on a misconfig.
+  if (res.error?.startsWith(SSRF_BLOCKED_PREFIX)) {
+    ctx.critical.securityBlocked(
+      "delivery refused: destination resolved to a blocked address (SSRF)",
+      {
+        id: row.id,
+        endpointId: row.endpointId,
+        host: ctx.host,
+        reason: res.error.slice(SSRF_BLOCKED_PREFIX.length),
+      },
+    );
+  }
   if (isPermanentFailure(res.status)) {
     // 410 Gone already disables the endpoint via applyPermanentFailure (which also re-arms the
     // cooldown by refreshing disabled_at); the breaker / half-open re-arm would be redundant.
@@ -443,7 +487,18 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
       });
     }
   }
-  const ctx: Ctx = { row, deps, now: deps.clock(), host, finish, settled: { done: false } };
+  // Without an explicit critical logger, route to the configured logger (no console fallback);
+  // createRelay always injects the misconfiguration-aware instance.
+  const critical = deps.critical ?? createCriticalLogger(deps.config.logger, true);
+  const ctx: Ctx = {
+    row,
+    deps,
+    critical,
+    now: deps.clock(),
+    host,
+    finish,
+    settled: { done: false },
+  };
   try {
     const resolved = await resolveTarget(row, deps.store, {
       cooldownMs: deps.config.circuitBreaker.cooldownMs,

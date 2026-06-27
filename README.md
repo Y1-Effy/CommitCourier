@@ -40,7 +40,7 @@ CommitCourier is the one embedded library that rides **your own DB transaction**
 - **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
 - **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
-- **Optional at-rest encryption** for signing secrets — plug in `cipher` (a built-in WebCrypto AES-256-GCM helper, or your own KMS/Vault adapter) to keep `secret_snapshot` / endpoint secrets as ciphertext in the DB.
+- **Built-in at-rest encryption** for signing secrets — plug in `cipher` (a built-in WebCrypto AES-256-GCM helper, or your own KMS/Vault adapter) to keep `secret_snapshot` / endpoint secrets as ciphertext in the DB. At-rest encryption is a precondition (this, DB disk encryption, or column encryption); skipping it triggers a startup warning.
 
 ## Install
 
@@ -255,7 +255,7 @@ Throughput is mostly about giving the dispatcher room to work:
 
 **Signing secret format:** a `whsec_`-prefixed secret is treated as Base64 per the Standard Webhooks convention and decoded to raw key bytes; any other string is used as raw UTF-8 bytes.
 
-**Encrypting secrets at rest:** pass `cipher` to `createRelay({ store, cipher })` to keep signing secrets as ciphertext in the DB. Use the built-in `createAesGcmCipher(key)` (WebCrypto AES-256-GCM; `generateSecretKey()` mints a key) or your own `SecretCipher` over a KMS/Vault. Managing the key is your responsibility; omitting `cipher` stores secrets as-is (plaintext).
+**Encrypting secrets at rest (precondition):** signing secrets (`secret_snapshot` / endpoint `secret`) are sensitive, so encryption at rest is a precondition — pick **one** of: ① database disk/volume encryption, ② column-level encryption, or ③ pass a `cipher` to `createRelay({ store, cipher })` so the library keeps them as ciphertext. For ③ use the built-in `createAesGcmCipher(key)` (WebCrypto AES-256-GCM; `generateSecretKey()` mints a key) or your own `SecretCipher` over a KMS/Vault — managing the key (storage, distribution, rotation) is then your responsibility. Without a `cipher`, secrets are stored as-is (plaintext), so `createRelay` **prints a startup warning**; if you are using ① or ②, acknowledge and silence it with `createRelay({ store, unsafeAllowPlaintextSecrets: true })`.
 
 ## Operations
 
@@ -335,7 +335,7 @@ Once an endpoint has been disabled for at least `cooldownMs`, the dispatcher let
 
 ### Logging & observability
 
-The dispatch path is **fail-open**: delivery, claim, and reclaim failures are never thrown — they are sent to the **logger**, which **defaults to a no-op**. If you don't inject a logger, delivery problems are silent, so `createRelay` prints a one-time startup warning when none is set. In production, always pass one. The bundled `createConsoleLogger()` is a safe copy-paste default:
+The dispatch path is **fail-open**: delivery, claim, and reclaim failures are never thrown — they are sent to the **logger**, which **defaults to a no-op**. If you don't inject a logger, routine delivery problems are silent, so `createRelay` prints a one-time startup warning when none is set. The two critical categories are an exception: a **security event** (an SSRF block) and **data loss** (a message reaching the DLQ) fall back to `console.warn`/`console.error` even with no logger configured — and say so — so a config slip can never silence them. In production, always pass a logger anyway to capture everything. The bundled `createConsoleLogger()` is a safe copy-paste default:
 
 ```ts
 import { createRelay, createConsoleLogger } from "commitcourier";
@@ -535,7 +535,7 @@ It returns `false` (never throws) for a stale timestamp (default tolerance 300s,
 - **Exactly-once _effects_** at the receiver. CommitCourier provides at-least-once + an idempotency key; final dedup is the receiver's responsibility.
 - **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is available as an opt-in feature: `createDispatcher({ ordering: "per-endpoint" })`).
 - **Unbounded scale.** This targets small-to-medium volume on your existing Postgres, not billions/sec.
-- **Encryption-key management.** Signing secrets can be encrypted at rest by configuring a `cipher` (see Configuration); managing the key itself — storage, distribution, rotation — is yours. Without a `cipher`, at-rest encryption is your database's responsibility.
+- **Encryption-key management.** At-rest encryption of signing secrets is a precondition you must meet — via DB disk encryption, column encryption, or a `cipher` (see Configuration). When you use a `cipher`, managing the key itself (storage, distribution, rotation) is yours. Without a `cipher`, `createRelay` warns at startup and at-rest encryption is your database's responsibility; acknowledge with `unsafeAllowPlaintextSecrets: true`.
 - Inbound webhook _receiving_ (an HTTP server / framework integration) and a customer-facing management portal UI. A receiver-side `verifySignature` helper _is_ provided (see [Verifying signatures](#verifying-signatures-receiver-side)); standing up the endpoint is yours.
 
 ## Removing CommitCourier

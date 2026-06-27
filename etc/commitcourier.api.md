@@ -25,6 +25,7 @@ export function bytesToUtf8(bytes: Uint8Array): string;
 
 // @public
 export interface CircuitBreakerConfig {
+    cooldownMs: number;
     failureThreshold: number;
 }
 
@@ -33,6 +34,9 @@ export type Clock = () => Date;
 
 // @public
 export function createAesGcmCipher(key: Uint8Array | string): SecretCipher;
+
+// @public
+export function createConsoleLogger(prefix?: string): Logger;
 
 // @public (undocumented)
 export function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>>;
@@ -526,6 +530,7 @@ export interface RelayInit<TTx> {
     ssrf?: Partial<SsrfConfig>;
     // (undocumented)
     store: Store<TTx>;
+    unsafeAllowPlaintextSecrets?: boolean;
 }
 
 // @public
@@ -650,6 +655,7 @@ export interface Store<TTx = unknown> {
     queryAttempts(opts: {
         outboxId: string;
     }): Promise<DeliveryAttempt[]>;
+    reactivateEndpoint(id: string): Promise<void>;
     reclaimStuck(opts: {
         reclaimAfterMs: number;
         now: Date;
@@ -680,6 +686,17 @@ export interface Transition {
 
 // @public
 export function utf8ToBytes(s: string): Uint8Array<ArrayBuffer>;
+
+// @public
+export function verifySignature(input: {
+    id: string;
+    timestamp: string | number;
+    payload: string;
+    header: string;
+    secrets: string[];
+    toleranceSec?: number;
+    nowSec?: number;
+}): Promise<boolean>;
 
 // @public
 export type WakeSignal = (onWake: () => void) => Promise<() => void>;
