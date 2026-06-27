@@ -27,7 +27,8 @@
     "commitcourier": "./dist/cli.js"
   },
   "publishConfig": {
-    "access": "public"
+    "access": "public",
+    "provenance": true
   },
   "exports": {
     ".": {

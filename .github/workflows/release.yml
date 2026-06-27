@@ -1,0 +1,46 @@
+name: Release
+
+# Publishes to npm when a version tag (e.g. v0.1.0) is pushed.
+# Provenance (SLSA build attestation) is emitted automatically via package.json
+# publishConfig.provenance + the id-token permission below.
+#
+# One-time setup: create an npm granular automation token and add it as the
+# repository secret NPM_TOKEN. The repository must be public for provenance.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22.19.0"
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+
+      # Fail early if the pushed tag does not match the package.json version,
+      # so a mistyped tag can never publish the wrong version.
+      - name: Verify tag matches package version
+        run: |
+          pkg="$(node -p "require('./package.json').version")"
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$pkg" != "$tag" ]; then
+            echo "Tag $GITHUB_REF_NAME ($tag) does not match package.json version $pkg" >&2
+            exit 1
+          fi
+
+      # prepublishOnly runs check + build + lint:publish + api:check before publishing.
+      - name: Publish to npm
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
