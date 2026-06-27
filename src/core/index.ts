@@ -4,6 +4,7 @@
  * Aggregated public API of the pure core (per 01-core section 1). Importing this entry
  * never pulls in `undici` / `p-limit` or any `node:*` builtin.
  */
+export { createConsoleLogger } from "./shared";
 export type { Clock, Logger, Status, Mode } from "./shared";
 export type {
   OutboxRow,
@@ -23,7 +24,7 @@ export type { RelayErrorCode } from "./errors";
 
 export { utf8ToBytes, base64ToBytes, bytesToBase64, bytesToUtf8 } from "./encoding";
 
-export { sign } from "./signing";
+export { sign, verifySignature } from "./signing";
 export type { SignatureHeaders } from "./signing";
 
 export { createAesGcmCipher, generateSecretKey } from "./cipher";

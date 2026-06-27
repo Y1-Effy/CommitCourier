@@ -113,3 +113,68 @@ export async function sign(opts: {
     "webhook-signature": signatures.join(" "),
   };
 }
+
+/** Default `webhook-timestamp` tolerance (seconds) — matches the Standard Webhooks recommendation. */
+const DEFAULT_TOLERANCE_SEC = 300;
+
+/**
+ * Length-checked, content-constant-time string compare. Returns early only on a length mismatch
+ * (which leaks nothing secret-dependent here, since every `v1,<base64>` MAC is the same length);
+ * for equal lengths it folds every char so the timing does not reveal where a forgery diverges.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/**
+ * Verify an inbound Standard Webhooks request — the receiver-side counterpart of {@link sign}.
+ *
+ * Recomputes the `v1,<base64>` HMAC over `{id}.{timestamp}.{payload}` for each candidate secret and
+ * constant-time compares it against every signature token in the `webhook-signature` header (which may
+ * carry several space-separated tokens during a key rotation). Passing more than one secret lets a
+ * receiver accept either key across a rotation window. Returns `false` (never throws) for a stale
+ * timestamp, a missing/garbled signature, or no match, so a caller can treat any non-`true` as a reject.
+ *
+ * `nowSec` defaults to the current wall clock; pass it explicitly to keep verification deterministic in
+ * tests. A `whsec_` secret that is not valid Base64 still rejects with `RelayError("CONFIG_INVALID")`,
+ * since that is a receiver misconfiguration rather than a forged request.
+ */
+export async function verifySignature(input: {
+  id: string;
+  /** The `webhook-timestamp` header value (Unix seconds), as sent. */
+  timestamp: string | number;
+  /** The raw request body exactly as received (verified before JSON parsing). */
+  payload: string;
+  /** The full `webhook-signature` header value (one or more space-separated `v1,<base64>` tokens). */
+  header: string;
+  secrets: string[];
+  /** Allowed clock skew in seconds. Default `300`. */
+  toleranceSec?: number;
+  /** Current time in Unix seconds. Default `Math.floor(Date.now() / 1000)`. */
+  nowSec?: number;
+}): Promise<boolean> {
+  if (input.secrets.length === 0) {
+    throw new RelayError("CONFIG_INVALID", "verifySignature requires at least one signing secret");
+  }
+  const ts = String(input.timestamp);
+  const tsSec = Number(ts);
+  if (!Number.isFinite(tsSec)) return false;
+  const tolerance = input.toleranceSec ?? DEFAULT_TOLERANCE_SEC;
+  const nowSec = input.nowSec ?? Math.floor(Date.now() / 1000);
+  if (Math.abs(nowSec - tsSec) > tolerance) return false;
+
+  const provided = input.header.split(" ").filter((t) => t.length > 0);
+  if (provided.length === 0) return false;
+
+  const signedContent = utf8ToBytes(`${input.id}.${ts}.${input.payload}`);
+  const expected = await Promise.all(input.secrets.map((s) => signOne(s, signedContent)));
+  // Fold over every pair (no early exit on a match) so timing does not reveal which key/token matched.
+  let ok = false;
+  for (const e of expected) {
+    for (const p of provided) ok = timingSafeEqual(e, p) || ok;
+  }
+  return ok;
+}

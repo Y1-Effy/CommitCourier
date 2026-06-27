@@ -21,6 +21,30 @@ export interface Logger {
   error(msg: string, meta?: Record<string, unknown>): void;
 }
 
+/**
+ * A ready-made {@link Logger} backed by the `console` global — a safe, copy-paste default so a relay
+ * is not silent in production. Because delivery is fail-open, an unset logger swallows every delivery
+ * failure, DLQ transition and SSRF block; passing this (or any `Logger`) makes those observable.
+ *
+ * Messages are prefixed with `commitcourier`; `debug`/`info`/`warn`/`error` map to the matching console
+ * method (`debug` falls back to `console.log`). The library never logs signing secrets, so this is safe
+ * to wire directly. For structured logging, adapt your own logger to the {@link Logger} interface instead.
+ */
+export function createConsoleLogger(prefix = "commitcourier"): Logger {
+  const emit =
+    (method: "log" | "info" | "warn" | "error") =>
+    (msg: string, meta?: Record<string, unknown>): void => {
+      if (meta === undefined) console[method](`[${prefix}] ${msg}`);
+      else console[method](`[${prefix}] ${msg}`, meta);
+    };
+  return {
+    debug: emit("log"),
+    info: emit("info"),
+    warn: emit("warn"),
+    error: emit("error"),
+  };
+}
+
 /** Lifecycle status of an outbox row (basic design section 7). */
 export type Status = "pending" | "in_flight" | "delivered" | "dead" | "observed" | "cancelled";
 

@@ -248,6 +248,15 @@ function wrapStore<TTx>(
 
 export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>> {
   const { store: rawStore, cipher, endpointCacheTtlMs, ...rest } = config;
+  // Delivery is fail-open, so without a logger every delivery failure, DLQ transition and SSRF block
+  // is swallowed silently. Warn once at startup (straight to console, since the resolved logger is the
+  // no-op) so this is not a silent footgun; pass `logger` (e.g. `createConsoleLogger()`) to silence it.
+  if (config.logger === undefined) {
+    console.warn(
+      "[commitcourier] no logger configured: delivery failures, DLQ transitions and SSRF blocks " +
+        "will be silent. Pass `logger` (e.g. createConsoleLogger() from commitcourier/core) to surface them.",
+    );
+  }
   // Resolve config first so the store decorators (encrypted store) can use the resolved logger.
   const resolved = resolveConfig(rest);
   const store = wrapStore(rawStore, cipher, endpointCacheTtlMs, resolved.logger);
