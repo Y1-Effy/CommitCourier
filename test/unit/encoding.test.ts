@@ -27,4 +27,19 @@ describe("encoding", () => {
     // atob rejects "@" (not a base64 character); the contract is to surface that, not silently truncate.
     expect(() => base64ToBytes("@@@@")).toThrow();
   });
+
+  it("emits and round-trips standard padding for non-3-multiple lengths", () => {
+    // length % 3 == 1 -> two pad chars; length % 3 == 2 -> one pad char.
+    expect(bytesToBase64(utf8ToBytes("f"))).toBe("Zg==");
+    expect(bytesToBase64(utf8ToBytes("fo"))).toBe("Zm8=");
+    expect(bytesToBase64(utf8ToBytes("foo"))).toBe("Zm9v"); // exact multiple, no padding
+    expect(new TextDecoder().decode(base64ToBytes("Zg=="))).toBe("f");
+    expect(new TextDecoder().decode(base64ToBytes("Zm8="))).toBe("fo");
+  });
+
+  it("round-trips a large binary buffer without corruption (per-byte loop holds)", () => {
+    // Exercises the char-by-char btoa/atob loops at a size well beyond the small fixtures above.
+    const bytes = crypto.getRandomValues(new Uint8Array(50_000));
+    expect(base64ToBytes(bytesToBase64(bytes))).toEqual(bytes);
+  });
 });
