@@ -6,6 +6,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { onSuccess } from "../../src/core/index";
+import type { NewDeliveryAttempt } from "../../src/store/store";
 import {
   dockerAvailable,
   drizzleHarness,
@@ -294,6 +295,7 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
           error: null,
         },
         onSuccess(new Date()),
+        "w1",
       );
 
       expect((await h().getOutbox(r.id))?.status).toBe("delivered");
@@ -314,8 +316,37 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
           error: "HTTP 500",
         },
         onSuccess(new Date()),
+        "w1",
       );
       expect((await h().getOutbox(r.id))?.status).toBe("delivered"); // unchanged
+      expect(await h().store.queryAttempts({ outboxId: r.id })).toHaveLength(2);
+    });
+
+    it("completeAttempt with a stale locked_by appends the ledger but does not transition", async () => {
+      const r = sampleRow();
+      await h().enqueue(r);
+      await h().store.claimDue({ limit: 10, lockedBy: "w1", now: new Date() });
+
+      const attempt = (n: number): NewDeliveryAttempt => ({
+        outboxId: r.id,
+        attemptNo: n,
+        requestHeaders: {},
+        responseStatus: 200,
+        responseBodySnippet: "ok",
+        durationMs: 1,
+        error: null,
+      });
+
+      // A worker that no longer holds the lock (e.g. the row was reclaimed and re-locked by another
+      // worker) must NOT transition the row, even though it is still in_flight. The ledger row is
+      // still recorded so the attempt is not lost.
+      await h().store.completeAttempt(attempt(1), onSuccess(new Date()), "w-stale");
+      expect((await h().getOutbox(r.id))?.status).toBe("in_flight"); // not transitioned
+      expect(await h().store.queryAttempts({ outboxId: r.id })).toHaveLength(1); // ledger recorded
+
+      // The worker that actually holds the lock transitions it.
+      await h().store.completeAttempt(attempt(2), onSuccess(new Date()), "w1");
+      expect((await h().getOutbox(r.id))?.status).toBe("delivered");
       expect(await h().store.queryAttempts({ outboxId: r.id })).toHaveLength(2);
     });
 
@@ -341,6 +372,57 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(stats.counts.dead).toBe(1);
       expect(stats.counts.delivered).toBe(0); // zero-filled
       expect(stats.oldestPendingAt).toEqual(t1);
+    });
+
+    it("listOutbox returns dead rows newest-first, secret-free, and pages by the seq cursor", async () => {
+      // Three dead rows (the DLQ) plus a pending row that must be filtered out. Enqueued in order,
+      // so seq increases d1 < d2 < d3; newest-first lists them d3, d2, d1.
+      const d1 = sampleRow({ status: "dead" });
+      const d2 = sampleRow({ status: "dead" });
+      const d3 = sampleRow({ status: "dead" });
+      await h().enqueue(d1);
+      await h().enqueue(d2);
+      await h().enqueue(d3);
+      await h().enqueue(sampleRow({ status: "pending" }));
+
+      const all = await h().store.listOutbox({ status: "dead" });
+      expect(all.items.map((r) => r.id)).toEqual([d3.id, d2.id, d1.id]);
+      expect(all.nextCursor).toBeNull();
+      // Secret-free and carries the cursor key.
+      const first = all.items[0]!;
+      expect(first).not.toHaveProperty("secretSnapshot");
+      expect(typeof first.seq).toBe("string");
+
+      // Page 1 of 2 returns a cursor; page 2 returns the remainder and a null cursor.
+      const page1 = await h().store.listOutbox({ status: "dead", limit: 2 });
+      expect(page1.items.map((r) => r.id)).toEqual([d3.id, d2.id]);
+      expect(page1.nextCursor).not.toBeNull();
+      const page2 = await h().store.listOutbox({
+        status: "dead",
+        limit: 2,
+        cursor: page1.nextCursor!,
+      });
+      expect(page2.items.map((r) => r.id)).toEqual([d1.id]);
+      expect(page2.nextCursor).toBeNull();
+    });
+
+    it("listEndpoints returns secret-free summaries and filters by status", async () => {
+      const a = sampleRow().id;
+      const b = sampleRow().id;
+      await h().store.insertEndpoint({ id: a, url: "https://a.test/h", secret: "whsec_a" });
+      await h().store.insertEndpoint({ id: b, url: "https://b.test/h", secret: "whsec_b" });
+      await h().store.disableEndpoint(b, new Date());
+
+      const all = await h().store.listEndpoints({});
+      expect(all.items.map((e) => e.id).sort()).toEqual([a, b].sort());
+      for (const e of all.items) {
+        expect(e).not.toHaveProperty("secret");
+        expect(e).not.toHaveProperty("secretSecondary");
+      }
+
+      const disabled = await h().store.listEndpoints({ status: "disabled" });
+      expect(disabled.items.map((e) => e.id)).toEqual([b]);
+      expect(disabled.items[0]?.disabledAt).toBeInstanceOf(Date);
     });
   });
 });

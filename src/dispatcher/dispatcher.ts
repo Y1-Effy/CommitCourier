@@ -93,6 +93,23 @@ function fail(message: string): never {
   throw new RelayError("CONFIG_INVALID", message);
 }
 
+/**
+ * At-least-once correctness rests on an unenforced invariant: the visibility timeout
+ * (`reclaimAfterMs`) must comfortably exceed the worst-case delivery time (`delivery.timeoutMs`). If
+ * it does not, an in-flight delivery can be reclaimed and re-delivered by another worker while the
+ * first is still running. This is dangerous-but-valid config (like the SSRF warnings in core), so
+ * warn rather than fail — a margin of 1.5x flags the obviously-too-tight settings.
+ */
+function warnIfReclaimTooTight(opts: ResolvedOptions, config: RelayConfig): void {
+  const { timeoutMs } = config.delivery;
+  if (opts.reclaimAfterMs <= timeoutMs * 1.5) {
+    config.logger.warn(
+      "dispatcher reclaimAfterMs is not safely above delivery.timeoutMs; an in-flight delivery may be reclaimed and double-delivered",
+      { reclaimAfterMs: opts.reclaimAfterMs, timeoutMs },
+    );
+  }
+}
+
 /** Worker identity for `locked_by`: helps identify stuck locks across instances. */
 function makeLockedBy(): string {
   return `${hostname()}:${String(process.pid)}:${randomBytes(4).toString("hex")}`;
@@ -193,6 +210,7 @@ export function createDispatcher(deps: {
 }): Dispatcher {
   const { store, deliver, config } = deps;
   const opts = resolveOptions(deps.options);
+  warnIfReclaimTooTight(opts, config);
   const limit = pLimit(opts.concurrency);
   const lockedBy = makeLockedBy();
 

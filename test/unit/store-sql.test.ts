@@ -25,6 +25,19 @@ describe("completeAttemptSql", () => {
     // 8 attempt values + 2 SET values + 1 id = 11 placeholders.
     expect((sql.match(/\?/g) ?? []).length).toBe(11);
   });
+
+  it("appends the locked_by guard as the final placeholder when guardLockedBy is set (pg)", () => {
+    const sql = completeAttemptSql(["status"], "numbered", { guardLockedBy: true });
+    // 8 attempt values + 1 SET value + id ($10) + locked_by ($11).
+    expect(sql).toContain("WHERE id = $10 AND status = 'in_flight' AND locked_by = $11");
+  });
+
+  it("appends the locked_by guard as a trailing ? for knex.raw when guardLockedBy is set", () => {
+    const sql = completeAttemptSql(["status"], "qmark", { guardLockedBy: true });
+    expect(sql).toContain("AND status = 'in_flight' AND locked_by = ?");
+    // 8 attempt + 1 SET + 1 id + 1 locked_by = 11 placeholders.
+    expect((sql.match(/\?/g) ?? []).length).toBe(11);
+  });
 });
 
 describe("per-endpoint FIFO claim SQL", () => {

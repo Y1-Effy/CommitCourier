@@ -25,6 +25,10 @@ export interface DeliveryEvent {
   eventType: string;
   /** 1-based attempt number this outcome corresponds to. */
   attempt: number;
+  /** Registered endpoint id, or null for an inline `{ url, secret }` destination. */
+  endpointId: string | null;
+  /** Destination host only (no path/query/secret), or null when not resolved (e.g. bad target). */
+  host: string | null;
   /** HTTP status, or null when no response was received (network/timeout/SSRF/pre-HTTP failure). */
   status: number | null;
   /** Secret-free failure summary, or null on success. */
@@ -46,18 +50,59 @@ export interface DeliveryHooks {
   onDead?: (event: DeliveryEvent) => void | Promise<void>;
 }
 
+/** Secret-free context for the start of a delivery attempt, passed to a {@link DeliveryInstrument}. */
+export interface DeliveryStart {
+  /** Outbox row id (also the signature `webhook-id`). */
+  id: string;
+  eventType: string;
+  /** 1-based attempt number. */
+  attempt: number;
+  endpointId: string | null;
+  /** Destination host if already known (inline rows), else null (registered endpoint, resolved later). */
+  host: string | null;
+}
+
+/**
+ * Optional, fail-open instrumentation seam for tracing/metrics (the OpenTelemetry seam). Called once
+ * just before a delivery attempt with secret-free start info; the returned finaliser, if any, is
+ * called exactly once with the terminal {@link DeliveryEvent}. Designed so an implementation can
+ * start a span on call and end it in the finaliser. Both the factory and the finaliser are wrapped
+ * fail-open: a throw is logged and swallowed so it cannot stall the dispatcher loop.
+ */
+export type DeliveryInstrument = (
+  start: DeliveryStart,
+) => ((event: DeliveryEvent) => void) | undefined;
+
 export interface DeliverDeps {
   store: Store;
   http: ReturnType<typeof createHttpClient>;
   config: RelayConfig;
   clock: Clock;
   hooks?: DeliveryHooks;
+  /** Optional tracing/metrics seam; see {@link DeliveryInstrument}. */
+  instrument?: DeliveryInstrument;
 }
 
 interface Ctx {
   row: OutboxRow;
   deps: DeliverDeps;
   now: Date;
+  /** Resolved destination host (no path/secret), refined once the target URL is known. */
+  host: string | null;
+  /** Instrumentation finaliser for this delivery (from `deps.instrument`), or null. Called once. */
+  finish: ((event: DeliveryEvent) => void) | null;
+  /** One-shot guard so the instrumentation finaliser runs exactly once. */
+  settled: { done: boolean };
+}
+
+/** Parse the host from a URL without throwing (returns null on a malformed/absent URL). */
+function hostOf(url: string | null): string | null {
+  if (url == null) return null;
+  try {
+    return new URL(url).host;
+  } catch {
+    return null;
+  }
 }
 
 type Resolved = { ok: true; url: string; secrets: string[] } | { ok: false; error: string };
@@ -124,18 +169,43 @@ function eventFor(
     id: ctx.row.id,
     eventType: ctx.row.eventType,
     attempt: ctx.row.attempts + 1,
+    endpointId: ctx.row.endpointId,
+    host: ctx.host,
     status,
     error,
     durationMs,
   };
 }
 
-/** Invoke a delivery hook fail-open: a hook error is logged and swallowed, never propagated. */
+/**
+ * Finalise the instrumentation seam exactly once with the terminal event (fail-open). A finaliser
+ * error is logged and swallowed so it cannot stall the dispatcher loop.
+ */
+function settle(ctx: Ctx, event: DeliveryEvent): void {
+  if (ctx.settled.done) return;
+  ctx.settled.done = true;
+  if (!ctx.finish) return;
+  try {
+    ctx.finish(event);
+  } catch (err) {
+    ctx.deps.config.logger.error("delivery instrumentation failed", {
+      id: ctx.row.id,
+      error: secretFreeSummary(err),
+    });
+  }
+}
+
+/**
+ * Invoke a delivery hook fail-open: a hook error is logged and swallowed, never propagated. Also
+ * finalises the instrumentation seam with this terminal `event` — `fireHook` is reached exactly once
+ * per delivery on every normal path, so the span/metric is settled with the real outcome here.
+ */
 async function fireHook(
   ctx: Ctx,
   hook: ((event: DeliveryEvent) => void | Promise<void>) | undefined,
   event: DeliveryEvent,
 ): Promise<void> {
+  settle(ctx, event);
   if (!hook) return;
   try {
     await hook(event);
@@ -156,7 +226,7 @@ async function applySuccess(
   attempt: NewDeliveryAttempt,
   event: DeliveryEvent,
 ): Promise<void> {
-  await ctx.deps.store.completeAttempt(attempt, onSuccess(ctx.now));
+  await ctx.deps.store.completeAttempt(attempt, onSuccess(ctx.now), ctx.row.lockedBy);
   await fireHook(ctx, ctx.deps.hooks?.onDelivered, event);
 }
 
@@ -179,7 +249,11 @@ async function applyFailure(
   // hostile/buggy header cannot park a row indefinitely.
   const base = backoffMs(row.attempts + 1, retry);
   const backoff = Math.min(Math.max(base, retryAfterMs ?? 0), retry.capMs);
-  await deps.store.completeAttempt(attempt, onFailure(row, retry, now, summary, backoff));
+  await deps.store.completeAttempt(
+    attempt,
+    onFailure(row, retry, now, summary, backoff),
+    row.lockedBy,
+  );
   await fireHook(ctx, dead ? deps.hooks?.onDead : deps.hooks?.onRetry, event);
 }
 
@@ -195,7 +269,7 @@ async function applyPermanentFailure(
   event: DeliveryEvent,
 ): Promise<void> {
   const { row, deps, now } = ctx;
-  await deps.store.completeAttempt(attempt, onPermanentFailure(row, summary));
+  await deps.store.completeAttempt(attempt, onPermanentFailure(row, summary), row.lockedBy);
   if (row.endpointId != null) {
     try {
       await deps.store.disableEndpoint(row.endpointId, now);
@@ -213,6 +287,9 @@ async function applyPermanentFailure(
 /** Run the POST, then write the ledger row and apply the success/failure transition in one round trip. */
 async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<void> {
   const { row, now } = ctx;
+  // Refine the instrumentation host now that the destination is resolved (registered endpoints
+  // only have their URL after findEndpoint).
+  ctx.host = hostOf(url);
   const body = JSON.stringify(row.payload);
   const sig = await sign({
     id: row.id,
@@ -254,7 +331,26 @@ async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<vo
  * neither written — exactly one ledger row is produced per invocation with no partial state.
  */
 export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<void> {
-  const ctx: Ctx = { row, deps, now: deps.clock() };
+  const host = hostOf(row.targetUrl);
+  let finish: ((event: DeliveryEvent) => void) | null = null;
+  if (deps.instrument) {
+    try {
+      finish =
+        deps.instrument({
+          id: row.id,
+          eventType: row.eventType,
+          attempt: row.attempts + 1,
+          endpointId: row.endpointId,
+          host,
+        }) ?? null;
+    } catch (err) {
+      deps.config.logger.error("delivery instrument start failed", {
+        id: row.id,
+        error: secretFreeSummary(err),
+      });
+    }
+  }
+  const ctx: Ctx = { row, deps, now: deps.clock(), host, finish, settled: { done: false } };
   try {
     const resolved = await resolveTarget(row, deps.store);
     if (!resolved.ok) {
@@ -284,5 +380,9 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
         error: secretFreeSummary(inner),
       });
     }
+  } finally {
+    // Safety net: every normal path settles via fireHook; only an unrecoverable double-write failure
+    // reaches here unsettled. Finalise so an instrumentation span is never leaked.
+    settle(ctx, eventFor(ctx, null, "delivery did not settle", 0));
   }
 }

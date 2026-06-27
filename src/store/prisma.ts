@@ -19,6 +19,8 @@ import type {
   EndpointPatch,
   ReplayFilter,
   OutboxStats,
+  OutboxListFilter,
+  EndpointListFilter,
   Store,
 } from "./store";
 import {
@@ -39,6 +41,11 @@ import {
   insertClause,
   insertManyClause,
   replayWhere,
+  buildOutboxListQuery,
+  buildEndpointListQuery,
+  outboxListPage,
+  endpointListPage,
+  clampListLimit,
   countsFromRows,
   mapOutboxRow,
   mapAttemptRow,
@@ -49,6 +56,8 @@ import {
   type RawOutboxRow,
   type RawAttemptRow,
   type RawEndpointRow,
+  type RawOutboxListRow,
+  type RawEndpointSummaryRow,
 } from "./_shared";
 import { postgres } from "./sql/postgres";
 
@@ -198,16 +207,15 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
       await prisma.$executeRawUnsafe(INSERT_ATTEMPT_SQL, ...attemptValuesStringified(newId(), a));
     },
 
-    async completeAttempt(a: NewDeliveryAttempt, t: Transition) {
-      // One round trip via the shared CTE: INSERT the ledger row + apply the transition.
+    async completeAttempt(a: NewDeliveryAttempt, t: Transition, expectedLockedBy) {
+      // One round trip via the shared CTE: INSERT the ledger row + apply the transition (guarded on
+      // in_flight, and on locked_by when the claiming worker is known).
       const { columns, values } = transitionColumns(t);
-      const sql = completeAttemptSql(columns, "numbered");
-      await prisma.$executeRawUnsafe(
-        sql,
-        ...attemptValuesStringified(newId(), a),
-        ...values,
-        a.outboxId,
-      );
+      const guardLockedBy = expectedLockedBy != null;
+      const sql = completeAttemptSql(columns, "numbered", { guardLockedBy });
+      const params = [...attemptValuesStringified(newId(), a), ...values, a.outboxId];
+      if (guardLockedBy) params.push(expectedLockedBy);
+      await prisma.$executeRawUnsafe(sql, ...params);
     },
 
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {
@@ -230,6 +238,18 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
         }
       });
       return rows.map((r) => r.id);
+    },
+
+    async listOutbox(filter: OutboxListFilter) {
+      const { sql, params } = buildOutboxListQuery(filter, "numbered");
+      const rows = await prisma.$queryRawUnsafe<RawOutboxListRow>(sql, ...params);
+      return outboxListPage(rows, clampListLimit(filter.limit));
+    },
+
+    async listEndpoints(filter: EndpointListFilter) {
+      const { sql, params } = buildEndpointListQuery(filter, "numbered");
+      const rows = await prisma.$queryRawUnsafe<RawEndpointSummaryRow>(sql, ...params);
+      return endpointListPage(rows, clampListLimit(filter.limit));
     },
 
     ...endpointAndStatsMethods(prisma),

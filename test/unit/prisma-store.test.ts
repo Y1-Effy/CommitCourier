@@ -102,28 +102,47 @@ describe("prismaStore", () => {
     expect(call.values).toContain(JSON.stringify({ hello: "world" }));
   });
 
-  it("completeAttempt passes the combined ledger+transition CTE with id last", async () => {
+  const sampleAttempt = {
+    outboxId: "out-1",
+    attemptNo: 1,
+    requestHeaders: { a: "b" },
+    responseStatus: 200,
+    responseBodySnippet: "ok",
+    durationMs: 5,
+    error: null,
+  };
+  const deliveredTransition = {
+    status: "delivered" as const,
+    dispatchedAt: new Date(0),
+    lockedAt: null,
+    lockedBy: null,
+  };
+
+  it("completeAttempt passes the combined ledger+transition CTE with id last (no lock guard when null)", async () => {
     const fake = new FakePrisma();
     const store = prismaStore({ prisma: fake });
-    await store.completeAttempt(
-      {
-        outboxId: "out-1",
-        attemptNo: 1,
-        requestHeaders: { a: "b" },
-        responseStatus: 200,
-        responseBodySnippet: "ok",
-        durationMs: 5,
-        error: null,
-      },
-      { status: "delivered", dispatchedAt: new Date(0), lockedAt: null, lockedBy: null },
-    );
+    await store.completeAttempt(sampleAttempt, deliveredTransition, null);
     const call = fake.calls[0]!;
     expect(call.query).toContain("WITH ins AS");
     expect(call.query).toContain("status = 'in_flight'");
+    // null expectedLockedBy => status-only guard (no `AND locked_by` in the WHERE; note the SET may
+    // still clear locked_by as part of the transition).
+    expect(call.query).not.toContain("AND locked_by =");
     // request_headers is stringified for the jsonb column.
     expect(call.values).toContain(JSON.stringify({ a: "b" }));
     // outboxId is the final bound value (the UPDATE's WHERE id).
     expect(call.values[call.values.length - 1]).toBe("out-1");
+  });
+
+  it("completeAttempt adds the locked_by guard and binds it last when a worker is given", async () => {
+    const fake = new FakePrisma();
+    const store = prismaStore({ prisma: fake });
+    await store.completeAttempt(sampleAttempt, deliveredTransition, "w1");
+    const call = fake.calls[0]!;
+    expect(call.query).toContain("status = 'in_flight' AND locked_by =");
+    // locked_by is the final bound value (after the id).
+    expect(call.values[call.values.length - 1]).toBe("w1");
+    expect(call.values[call.values.length - 2]).toBe("out-1");
   });
 
   it("migrate splits the DDL into individual statements (no trailing semicolons)", async () => {
@@ -140,6 +159,50 @@ describe("prismaStore", () => {
     expect(all).toContain("CREATE TABLE IF NOT EXISTS webhook_outbox");
     expect(all).toContain("secret_secondary");
     expect(all).toContain("ix_outbox_ep_head");
+  });
+
+  it("listOutbox selects a secret-free column set and normalises the BigInt seq to a string cursor", async () => {
+    const fake = new FakePrisma();
+    fake.rows = [
+      {
+        id: "abc",
+        event_type: "e",
+        payload: { a: 1 },
+        endpoint_id: null,
+        target_url: "https://x.test",
+        status: "dead",
+        attempts: 3,
+        available_at: new Date(0),
+        locked_at: null,
+        locked_by: null,
+        idempotency_key: null,
+        last_error: "boom",
+        created_at: new Date(0),
+        dispatched_at: null,
+        // Prisma returns Postgres bigint as a JS BigInt.
+        seq: 42n,
+      },
+    ];
+    const store = prismaStore({ prisma: fake });
+    const page = await store.listOutbox({ status: "dead", limit: 1 });
+    const call = fake.calls[0]!;
+    expect(call.query).not.toContain("secret_snapshot");
+    expect(call.query).toContain("ORDER BY seq DESC");
+    expect(call.values).toEqual(["dead", 1]);
+    expect(page.items[0]).not.toHaveProperty("secretSnapshot");
+    expect(page.items[0]?.seq).toBe("42");
+    expect(page.nextCursor).toBe("42"); // a full page (limit 1, 1 row) yields a cursor
+  });
+
+  it("listEndpoints selects a secret-free column set", async () => {
+    const fake = new FakePrisma();
+    fake.rows = [];
+    const store = prismaStore({ prisma: fake });
+    await store.listEndpoints({ status: "active" });
+    const call = fake.calls[0]!;
+    expect(call.query).not.toContain("secret");
+    expect(call.query).toContain("ORDER BY id ASC");
+    expect(call.values).toEqual(["active", 50]);
   });
 
   it("stats coerces the bigint count and zero-fills missing statuses", async () => {

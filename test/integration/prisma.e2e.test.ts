@@ -10,6 +10,7 @@
  */
 import http from "node:http";
 import { existsSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
@@ -220,6 +221,42 @@ describe.skipIf(!dockerAvailable() || !prismaClientAvailable)(
 
       expect(received).toHaveLength(1);
       expect(await endpointStatusOf(endpointId)).toBe("disabled");
+    });
+
+    it("list / endpoints.list page secret-free over real Prisma (seq-cursor cast included)", async () => {
+      // Seed two dead rows directly; the IDENTITY seq increments d1 < d2, so newest-first is d2, d1.
+      const seedDead = async (): Promise<string> => {
+        const id = randomUUID();
+        await admin.query(
+          `INSERT INTO webhook_outbox
+             (id, event_type, payload, target_url, secret_snapshot, status, attempts, available_at)
+           VALUES ($1, 'order.created', '{"n":1}'::jsonb, 'https://x.test/h', 'whsec', 'dead', 3, now())`,
+          [id],
+        );
+        return id;
+      };
+      const d1 = await seedDead();
+      const d2 = await seedDead();
+      const { id: epId } = await api.endpoints.register({
+        url: "https://x.test/h",
+        secret: "whsec_x",
+      });
+
+      // Page 1 (newest first) returns d2 and a cursor; page 2 uses the seq cursor (::bigint cast path).
+      const page1 = await api.list({ status: "dead", limit: 1 });
+      expect(page1.items.map((r) => r.id)).toEqual([d2]);
+      expect(page1.items[0]).not.toHaveProperty("secretSnapshot");
+      expect(typeof page1.items[0]?.seq).toBe("string");
+      expect(page1.nextCursor).not.toBeNull();
+
+      const page2 = await api.list({ status: "dead", limit: 1, cursor: page1.nextCursor! });
+      expect(page2.items.map((r) => r.id)).toEqual([d1]);
+
+      // endpoints.list is secret-free.
+      const eps = await api.endpoints.list({});
+      const found = eps.items.find((e) => e.id === epId);
+      expect(found).toBeTruthy();
+      expect(found).not.toHaveProperty("secret");
     });
     /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
   },

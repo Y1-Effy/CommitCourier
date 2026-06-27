@@ -75,6 +75,8 @@ function recorder(): Recorder {
     recordAttempt: () => Promise.resolve(),
     completeAttempt: () => Promise.resolve(),
     queryAttempts: () => Promise.resolve([]),
+    listOutbox: () => Promise.resolve({ items: [], nextCursor: null }),
+    listEndpoints: () => Promise.resolve({ items: [], nextCursor: null }),
     disableEndpoint: () => Promise.resolve(),
     stats: () => Promise.resolve({ counts: {} as never, oldestPendingAt: null }),
     diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),

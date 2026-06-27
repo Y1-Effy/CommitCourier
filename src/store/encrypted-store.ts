@@ -91,11 +91,16 @@ export function createEncryptedStore<TTx>(inner: Store<TTx>, cipher: SecretCiphe
     },
 
     // --- pass-through: no secret columns involved ---
+    // listOutbox/listEndpoints are secret-free by construction (the store never selects the secret
+    // columns), so they pass straight through with no decryption.
     applyTransition: (id, t) => inner.applyTransition(id, t),
     reclaimStuck: (opts) => inner.reclaimStuck(opts),
     recordAttempt: (attempt) => inner.recordAttempt(attempt),
-    completeAttempt: (attempt, transition) => inner.completeAttempt(attempt, transition),
+    completeAttempt: (attempt, transition, expectedLockedBy) =>
+      inner.completeAttempt(attempt, transition, expectedLockedBy),
     queryAttempts: (opts) => inner.queryAttempts(opts),
+    listOutbox: (filter) => inner.listOutbox(filter),
+    listEndpoints: (filter) => inner.listEndpoints(filter),
     disableEndpoint: (id, now) => inner.disableEndpoint(id, now),
     stats: () => inner.stats(),
     diagnose: () => inner.diagnose(),

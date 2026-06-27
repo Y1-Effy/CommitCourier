@@ -14,6 +14,8 @@ import type {
   EndpointPatch,
   ReplayFilter,
   OutboxStats,
+  OutboxListFilter,
+  EndpointListFilter,
   Store,
 } from "./store";
 import {
@@ -33,6 +35,11 @@ import {
   insertClause,
   insertManyClause,
   replayWhere,
+  buildOutboxListQuery,
+  buildEndpointListQuery,
+  outboxListPage,
+  endpointListPage,
+  clampListLimit,
   countsFromRows,
   mapOutboxRow,
   mapAttemptRow,
@@ -43,6 +50,8 @@ import {
   type RawOutboxRow,
   type RawAttemptRow,
   type RawEndpointRow,
+  type RawOutboxListRow,
+  type RawEndpointSummaryRow,
 } from "./_shared";
 import { postgres } from "./sql/postgres";
 
@@ -181,11 +190,15 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
       await pool.query(INSERT_ATTEMPT_SQL, attemptValues(newId(), a));
     },
 
-    async completeAttempt(a: NewDeliveryAttempt, t: Transition) {
-      // One round trip: INSERT the ledger row and apply the transition (guarded on in_flight).
+    async completeAttempt(a: NewDeliveryAttempt, t: Transition, expectedLockedBy) {
+      // One round trip: INSERT the ledger row and apply the transition (guarded on in_flight, and on
+      // locked_by when the claiming worker is known, so a reclaimed+re-locked row is not clobbered).
       const { columns, values } = transitionColumns(t);
-      const sql = completeAttemptSql(columns, "numbered");
-      await pool.query(sql, [...attemptValues(newId(), a), ...values, a.outboxId]);
+      const guardLockedBy = expectedLockedBy != null;
+      const sql = completeAttemptSql(columns, "numbered", { guardLockedBy });
+      const params = [...attemptValues(newId(), a), ...values, a.outboxId];
+      if (guardLockedBy) params.push(expectedLockedBy);
+      await pool.query(sql, params);
     },
 
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {
@@ -208,6 +221,18 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
         }
         return rows.map((r) => r.id);
       });
+    },
+
+    async listOutbox(filter: OutboxListFilter) {
+      const { sql, params } = buildOutboxListQuery(filter, "numbered");
+      const res = await pool.query(sql, params);
+      return outboxListPage(res.rows as RawOutboxListRow[], clampListLimit(filter.limit));
+    },
+
+    async listEndpoints(filter: EndpointListFilter) {
+      const { sql, params } = buildEndpointListQuery(filter, "numbered");
+      const res = await pool.query(sql, params);
+      return endpointListPage(res.rows as RawEndpointSummaryRow[], clampListLimit(filter.limit));
     },
 
     ...endpointAndStatsMethods(pool),

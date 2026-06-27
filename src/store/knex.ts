@@ -13,6 +13,8 @@ import type {
   EndpointPatch,
   ReplayFilter,
   OutboxStats,
+  OutboxListFilter,
+  EndpointListFilter,
   Store,
 } from "./store";
 import {
@@ -26,6 +28,11 @@ import {
   transitionColumns,
   completeAttemptSql,
   attemptValuesStringified,
+  buildOutboxListQuery,
+  buildEndpointListQuery,
+  outboxListPage,
+  endpointListPage,
+  clampListLimit,
   countsFromRows,
   mapOutboxRow,
   mapAttemptRow,
@@ -36,6 +43,8 @@ import {
   type RawOutboxRow,
   type RawAttemptRow,
   type RawEndpointRow,
+  type RawOutboxListRow,
+  type RawEndpointSummaryRow,
 } from "./_shared";
 import { postgres } from "./sql/postgres";
 
@@ -158,11 +167,14 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       await knex(ATTEMPTS_TABLE).insert(attemptObject(newId(), a));
     },
 
-    async completeAttempt(a: NewDeliveryAttempt, t: Transition) {
-      // One round trip via the shared CTE: INSERT the ledger row + apply the transition.
+    async completeAttempt(a: NewDeliveryAttempt, t: Transition, expectedLockedBy) {
+      // One round trip via the shared CTE: INSERT the ledger row + apply the transition (guarded on
+      // in_flight, and on locked_by when the claiming worker is known).
       const { columns, values } = transitionColumns(t);
-      const sql = completeAttemptSql(columns, "qmark");
+      const guardLockedBy = expectedLockedBy != null;
+      const sql = completeAttemptSql(columns, "qmark", { guardLockedBy });
       const bindings = [...attemptValuesStringified(newId(), a), ...values, a.outboxId];
+      if (guardLockedBy) bindings.push(expectedLockedBy);
       await knex.raw(sql, bindings as Knex.RawBinding[]);
     },
 
@@ -187,6 +199,22 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
         }
       });
       return rows.map((r) => r.id);
+    },
+
+    async listOutbox(filter: OutboxListFilter) {
+      const { sql, params } = buildOutboxListQuery(filter, "qmark");
+      const res = (await knex.raw(sql, params as Knex.RawBinding[])) as unknown as {
+        rows: RawOutboxListRow[];
+      };
+      return outboxListPage(res.rows, clampListLimit(filter.limit));
+    },
+
+    async listEndpoints(filter: EndpointListFilter) {
+      const { sql, params } = buildEndpointListQuery(filter, "qmark");
+      const res = (await knex.raw(sql, params as Knex.RawBinding[])) as unknown as {
+        rows: RawEndpointSummaryRow[];
+      };
+      return endpointListPage(res.rows, clampListLimit(filter.limit));
     },
 
     ...endpointAndStatsMethods(knex),

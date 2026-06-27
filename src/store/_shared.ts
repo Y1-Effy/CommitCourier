@@ -15,6 +15,10 @@ import type {
   NewEndpointRow,
   EndpointPatch,
   ReplayFilter,
+  OutboxListItem,
+  OutboxListFilter,
+  EndpointSummary,
+  EndpointListFilter,
 } from "./store";
 
 /** Re-exported so the pg/knex adapters keep importing `newId` from a single store-local module. */
@@ -322,25 +326,35 @@ const ATTEMPT_JSON_COLUMN = "request_headers";
  * Build the `completeAttempt` CTE for the given transition SET columns and placeholder style.
  * Bindings order follows textual order so it works for both `$n` and positional `?`: the
  * {@link ATTEMPT_COLUMNS} values, then the transition values (matching `setColumns`), then the
- * outbox id. `numbered` is pg (`$1`…); `qmark` is knex.raw (`?`).
+ * outbox id, then (when `opts.guardLockedBy`) the expected `locked_by`. `numbered` is pg (`$1`…);
+ * `qmark` is knex.raw (`?`).
+ *
+ * `opts.guardLockedBy` adds `AND locked_by = $k` to the transition's WHERE so a delivery only
+ * transitions a row that is *still the one it claimed*. After a visibility-timeout reclaim re-locks
+ * the row to a different worker, the stale worker's transition becomes a no-op (its ledger row is
+ * still inserted — every attempt is recorded; only the state write is guarded). The guard is
+ * evaluated against the pre-UPDATE row, so a transition that clears `locked_by` is unaffected.
+ * Omitted (the default) preserves the status-only guard for backward compatibility.
  */
 export function completeAttemptSql(
   setColumns: string[],
   placeholder: "numbered" | "qmark",
+  opts: { guardLockedBy?: boolean } = {},
 ): string {
   const ph = (n: number): string => (placeholder === "numbered" ? `$${String(n)}` : "?");
   const values = ATTEMPT_COLUMNS.map((c, i) =>
     c === ATTEMPT_JSON_COLUMN ? `${ph(i + 1)}::jsonb` : ph(i + 1),
   );
-  // Placeholders follow textual order (attempt values, then SET values, then id) so a single
-  // binding order works for both `$n` and positional `?`.
+  // Placeholders follow textual order (attempt values, then SET values, then id, then locked_by) so
+  // a single binding order works for both `$n` and positional `?`.
   const setStart = ATTEMPT_COLUMNS.length + 1;
   const set = setColumns.map((c, i) => `${c} = ${ph(setStart + i)}`).join(", ");
   const idPos = setStart + setColumns.length;
+  const lockGuard = opts.guardLockedBy ? ` AND locked_by = ${ph(idPos + 1)}` : "";
   return `WITH ins AS (
   INSERT INTO ${ATTEMPTS_TABLE} (${ATTEMPT_COLUMNS.join(", ")}) VALUES (${values.join(", ")})
 )
-UPDATE ${OUTBOX_TABLE} SET ${set} WHERE id = ${ph(idPos)} AND status = 'in_flight'`;
+UPDATE ${OUTBOX_TABLE} SET ${set} WHERE id = ${ph(idPos)} AND status = 'in_flight'${lockGuard}`;
 }
 
 /** Ordered attempt values for a knex.raw bind (jsonb column stringified), matching {@link ATTEMPT_COLUMNS}. */
@@ -411,6 +425,208 @@ export function replayWhere(filter: ReplayFilter): { sql: string; params: unknow
     conds.push(`created_at >= $${String(params.length)}`);
   }
   return { sql: conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "", params };
+}
+
+// --- Read-only list/DLQ queries (admin). Both list surfaces are secret-free: the SELECT column
+// lists below deliberately omit every secret column, so the encrypted-store decorator can pass the
+// rows through untouched (no decryption) and secrets never reach the list API. Keyset pagination
+// uses a unique, monotonic column (outbox: `seq`; endpoints: `id`) so paging is stable. ---
+
+/** Default page size for the list APIs when the caller omits `limit`. */
+export const LIST_DEFAULT_LIMIT = 50;
+/** Hard ceiling on a list page so a caller cannot ask for an unbounded scan. */
+export const LIST_MAX_LIMIT = 500;
+
+/** Clamp a requested page size into `(0, LIST_MAX_LIMIT]`, defaulting when absent/invalid. */
+export function clampListLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return LIST_DEFAULT_LIMIT;
+  return Math.min(Math.floor(limit), LIST_MAX_LIMIT);
+}
+
+/** Secret-free outbox columns (omits `secret_snapshot`), plus `seq` for the keyset cursor. */
+export const OUTBOX_LIST_COLUMNS = [
+  "id",
+  "event_type",
+  "payload",
+  "endpoint_id",
+  "target_url",
+  "status",
+  "attempts",
+  "available_at",
+  "locked_at",
+  "locked_by",
+  "idempotency_key",
+  "last_error",
+  "created_at",
+  "dispatched_at",
+  "seq",
+] as const;
+
+/** Secret-free endpoint columns (omits `secret`/`secret_secondary`). */
+export const ENDPOINT_LIST_COLUMNS = [
+  "id",
+  "url",
+  "status",
+  "description",
+  "consecutive_failures",
+  "disabled_at",
+  "metadata",
+  "created_at",
+] as const;
+
+/** Outbox list row as returned by the driver (snake_case, secret-free; `seq` is a bigint). */
+interface RawOutboxListRow {
+  id: string;
+  event_type: string;
+  payload: unknown;
+  endpoint_id: string | null;
+  target_url: string | null;
+  status: string;
+  attempts: number;
+  available_at: Date;
+  locked_at: Date | null;
+  locked_by: string | null;
+  idempotency_key: string | null;
+  last_error: string | null;
+  created_at: Date;
+  dispatched_at: Date | null;
+  /** bigint: node-postgres returns it as a string, Prisma as a JS BigInt. */
+  seq: string | number | bigint;
+}
+
+/** Endpoint summary row as returned by the driver (snake_case, secret-free). */
+interface RawEndpointSummaryRow {
+  id: string;
+  url: string;
+  status: string;
+  description: string | null;
+  consecutive_failures: number;
+  disabled_at: Date | null;
+  metadata: Record<string, unknown> | null;
+  created_at: Date;
+}
+
+export function mapOutboxListItem(r: RawOutboxListRow): OutboxListItem {
+  return {
+    id: r.id,
+    eventType: r.event_type,
+    payload: r.payload,
+    endpointId: r.endpoint_id,
+    targetUrl: r.target_url,
+    status: r.status as OutboxListItem["status"],
+    attempts: r.attempts,
+    availableAt: r.available_at,
+    lockedAt: r.locked_at,
+    lockedBy: r.locked_by,
+    idempotencyKey: r.idempotency_key,
+    lastError: r.last_error,
+    createdAt: r.created_at,
+    dispatchedAt: r.dispatched_at,
+    // Normalise the bigint cursor to a decimal string across drivers (string | number | BigInt).
+    seq: String(r.seq),
+  };
+}
+
+export function mapEndpointSummary(r: RawEndpointSummaryRow): EndpointSummary {
+  return {
+    id: r.id,
+    url: r.url,
+    status: r.status as EndpointSummary["status"],
+    description: r.description,
+    consecutiveFailures: r.consecutive_failures,
+    disabledAt: r.disabled_at,
+    metadata: r.metadata,
+    createdAt: r.created_at,
+  };
+}
+
+export { type RawOutboxListRow, type RawEndpointSummaryRow };
+
+/** A built statement with its ordered bindings, for either placeholder convention. */
+interface BuiltQuery {
+  sql: string;
+  params: unknown[];
+}
+
+/**
+ * Build the secret-free outbox list query for either placeholder style. Newest-first by `seq`
+ * (a stable, monotonic keyset), filtered by the optional status/since/endpointId, with seq-keyset
+ * paging (`seq < cursor`). The cursor placeholder is cast to `::bigint` so Prisma — which would
+ * otherwise infer text — compares it against the bigint column. Bindings follow textual order so a
+ * single order works for `$n` and positional `?`.
+ */
+export function buildOutboxListQuery(
+  filter: OutboxListFilter,
+  placeholder: "numbered" | "qmark",
+): BuiltQuery {
+  const params: unknown[] = [];
+  const ph = (): string => (placeholder === "numbered" ? `$${String(params.length)}` : "?");
+  const conds: string[] = [];
+  if (filter.status !== undefined) {
+    params.push(filter.status);
+    conds.push(`status = ${ph()}`);
+  }
+  if (filter.since !== undefined) {
+    params.push(filter.since);
+    conds.push(`created_at >= ${ph()}`);
+  }
+  if (filter.endpointId !== undefined) {
+    params.push(filter.endpointId);
+    conds.push(`endpoint_id = ${ph()}`);
+  }
+  if (filter.cursor !== undefined) {
+    params.push(filter.cursor);
+    conds.push(`seq < (${ph()})::bigint`);
+  }
+  const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
+  params.push(clampListLimit(filter.limit));
+  const sql = `SELECT ${OUTBOX_LIST_COLUMNS.join(", ")} FROM ${OUTBOX_TABLE} ${where} ORDER BY seq DESC LIMIT ${ph()}`;
+  return { sql, params };
+}
+
+/**
+ * Build the secret-free endpoint list query for either placeholder style. Ordered by `id`
+ * (a unique keyset), filtered by the optional status, with id-keyset paging (`id > cursor`).
+ */
+export function buildEndpointListQuery(
+  filter: EndpointListFilter,
+  placeholder: "numbered" | "qmark",
+): BuiltQuery {
+  const params: unknown[] = [];
+  const ph = (): string => (placeholder === "numbered" ? `$${String(params.length)}` : "?");
+  const conds: string[] = [];
+  if (filter.status !== undefined) {
+    params.push(filter.status);
+    conds.push(`status = ${ph()}`);
+  }
+  if (filter.cursor !== undefined) {
+    params.push(filter.cursor);
+    conds.push(`id > ${ph()}`);
+  }
+  const where = conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "";
+  params.push(clampListLimit(filter.limit));
+  const sql = `SELECT ${ENDPOINT_LIST_COLUMNS.join(", ")} FROM ${ENDPOINTS_TABLE} ${where} ORDER BY id ASC LIMIT ${ph()}`;
+  return { sql, params };
+}
+
+/** Fold a page of outbox list rows into a {@link Page}: map rows, derive `nextCursor` from `seq`. */
+export function outboxListPage(
+  rows: RawOutboxListRow[],
+  limit: number,
+): { items: OutboxListItem[]; nextCursor: string | null } {
+  const items = rows.map(mapOutboxListItem);
+  const nextCursor = items.length === limit ? (items[items.length - 1]?.seq ?? null) : null;
+  return { items, nextCursor };
+}
+
+/** Fold a page of endpoint summary rows into a {@link Page}: map rows, derive `nextCursor` from `id`. */
+export function endpointListPage(
+  rows: RawEndpointSummaryRow[],
+  limit: number,
+): { items: EndpointSummary[]; nextCursor: string | null } {
+  const items = rows.map(mapEndpointSummary);
+  const nextCursor = items.length === limit ? (items[items.length - 1]?.id ?? null) : null;
+  return { items, nextCursor };
 }
 
 // --- Diagnose-result computation. The dialect supplies the existence-probe SQL (see

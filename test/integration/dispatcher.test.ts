@@ -84,6 +84,8 @@ function queueStore(seed: OutboxRow[]): {
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: () => Promise.resolve([]),
+    listOutbox: () => Promise.resolve({ items: [], nextCursor: null }),
+    listEndpoints: () => Promise.resolve({ items: [], nextCursor: null }),
     insertEndpoint: () => Promise.resolve(),
     updateEndpoint: () => Promise.resolve(),
     findEndpoint: () => Promise.resolve(null),

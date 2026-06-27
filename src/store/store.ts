@@ -15,6 +15,74 @@
  */
 import type { Status, OutboxRow, DeliveryAttempt, EndpointRow, Transition } from "../core/index";
 
+/**
+ * A read-only outbox row for the admin DLQ/list API: an {@link OutboxRow} minus the signing-key
+ * snapshot (`secretSnapshot`) so the list surface never exposes secrets, plus the monotonic
+ * insertion sequence `seq` used as the pagination cursor. Because no secret column is selected,
+ * the encrypted-store decorator passes this through without any decryption.
+ */
+export interface OutboxListItem {
+  id: string;
+  eventType: string;
+  payload: unknown;
+  endpointId: string | null;
+  targetUrl: string | null;
+  status: Status;
+  attempts: number;
+  availableAt: Date;
+  lockedAt: Date | null;
+  lockedBy: string | null;
+  idempotencyKey: string | null;
+  lastError: string | null;
+  createdAt: Date;
+  dispatchedAt: Date | null;
+  /** Monotonic insertion sequence (bigint rendered as a decimal string); also the list cursor. */
+  seq: string;
+}
+
+/** Filter/paging options for {@link Store.listOutbox}. All fields optional; newest-first by `seq`. */
+export interface OutboxListFilter {
+  status?: Status;
+  /** Lower bound on `created_at` (inclusive). */
+  since?: Date;
+  endpointId?: string;
+  /** Max rows to return; the store clamps to a safe ceiling. Defaults to 50. */
+  limit?: number;
+  /** Opaque cursor from a prior page's `nextCursor` (the last `seq` seen). */
+  cursor?: string;
+}
+
+/**
+ * A registered endpoint without its signing secrets: an {@link EndpointRow} minus `secret` and
+ * `secretSecondary`, so the list surface never exposes secrets. The encrypted-store decorator
+ * passes it through without decryption.
+ */
+export interface EndpointSummary {
+  id: string;
+  url: string;
+  status: EndpointRow["status"];
+  description: string | null;
+  consecutiveFailures: number;
+  disabledAt: Date | null;
+  metadata: Record<string, unknown> | null;
+  createdAt: Date;
+}
+
+/** Filter/paging options for {@link Store.listEndpoints}. Ordered by `id`; cursor is the last id. */
+export interface EndpointListFilter {
+  status?: EndpointRow["status"];
+  /** Max rows to return; the store clamps to a safe ceiling. Defaults to 50. */
+  limit?: number;
+  /** Opaque cursor from a prior page's `nextCursor` (the last `id` seen). */
+  cursor?: string;
+}
+
+/** A page of results: the items plus the cursor to pass for the next page (null when exhausted). */
+export interface Page<T> {
+  items: T[];
+  nextCursor: string | null;
+}
+
 /** Row to INSERT into the outbox. `id`/`status`/`availableAt` are decided by core, not the DB. */
 export interface NewOutboxRow {
   id: string;
@@ -142,8 +210,18 @@ export interface Store<TTx = unknown> {
    * idempotency guard as {@link Store.applyTransition}. Equivalent to {@link Store.recordAttempt}
    * then {@link Store.applyTransition} but in one DB round trip. SQL adapters use a CTE; a NoSQL
    * backend uses a transaction over the two documents.
+   *
+   * `expectedLockedBy` is the worker that claimed the row (the claimed row's `lockedBy`). When
+   * non-null it tightens the transition guard to also require `locked_by = expectedLockedBy`, so a
+   * row reclaimed and re-locked by another worker (visibility-timeout race under a too-tight
+   * `reclaimAfterMs`) cannot be transitioned by the stale worker — its ledger row is still recorded.
+   * Pass `null` to keep only the `status = 'in_flight'` guard.
    */
-  completeAttempt(attempt: NewDeliveryAttempt, transition: Transition): Promise<void>;
+  completeAttempt(
+    attempt: NewDeliveryAttempt,
+    transition: Transition,
+    expectedLockedBy: string | null,
+  ): Promise<void>;
 
   /** Admin: read the ledger for one outbox row, ordered by attempt number. */
   queryAttempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
@@ -162,6 +240,19 @@ export interface Store<TTx = unknown> {
 
   /** Admin: look up a registered endpoint. */
   findEndpoint(id: string): Promise<EndpointRow | null>;
+
+  /**
+   * Admin (read-only): page through outbox rows newest-first (by the monotonic `seq`), for DLQ
+   * inspection and monitoring. Never returns the signing-key snapshot. Honours the optional
+   * status/since/endpointId filters and seq-keyset paging in {@link OutboxListFilter}.
+   */
+  listOutbox(filter: OutboxListFilter): Promise<Page<OutboxListItem>>;
+
+  /**
+   * Admin (read-only): page through registered endpoints (by `id`). Never returns signing secrets.
+   * Honours the optional status filter and id-keyset paging in {@link EndpointListFilter}.
+   */
+  listEndpoints(filter: EndpointListFilter): Promise<Page<EndpointSummary>>;
 
   /** Admin: disable a registered endpoint. */
   disableEndpoint(id: string, now: Date): Promise<void>;

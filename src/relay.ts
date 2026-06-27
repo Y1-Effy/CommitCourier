@@ -22,17 +22,30 @@ import type {
   Clock,
   Logger,
 } from "./core/index";
-import type { Store, NewOutboxRow, ReplayFilter, EndpointPatch, OutboxStats } from "./store/store";
+import type {
+  Store,
+  NewOutboxRow,
+  ReplayFilter,
+  EndpointPatch,
+  OutboxStats,
+  OutboxListFilter,
+  OutboxListItem,
+  EndpointListFilter,
+  EndpointSummary,
+  Page,
+} from "./store/store";
 import { createEncryptedStore } from "./store/encrypted-store";
 import { createEndpointCache } from "./store/endpoint-cache";
 import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
-import type { DeliveryHooks } from "./delivery/deliver";
+import type { DeliveryHooks, DeliveryInstrument } from "./delivery/deliver";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
 import type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
 import {
   attempts as adminAttempts,
   replay as adminReplay,
+  listOutbox as adminListOutbox,
+  listEndpoints as adminListEndpoints,
   registerEndpoint as adminRegister,
   updateEndpoint as adminUpdate,
   enableEndpoint as adminEnable,
@@ -63,9 +76,14 @@ export interface EndpointAdmin {
   /** Look up a registered endpoint, or null when absent. */
   get(endpointId: string): Promise<EndpointRow | null>;
   /**
+   * List registered endpoints (read-only, secret-free). Ordered by id; pass the returned
+   * `nextCursor` for the next page (null when the last page was returned).
+   */
+  list(filter?: EndpointListFilter): Promise<Page<EndpointSummary>>;
+  /**
    * Begin a signing-key rotation: promote the current secret to the secondary slot and set
-   * `newSecret` as primary, so deliveries are dual-signed with both keys. Call {@link finalizeRotation}
-   * once receivers have migrated to drop the old key.
+   * `newSecret` as primary, so deliveries are dual-signed with both keys. Call
+   * {@link EndpointAdmin.finalizeRotation} once receivers have migrated to drop the old key.
    */
   rotateSecret(endpointId: string, newSecret: string): Promise<void>;
   /** Finish a rotation: drop the secondary secret so deliveries sign with the new key only. */
@@ -97,6 +115,12 @@ export interface RelayInit<TTx> {
   logger?: Logger;
   /** Optional delivery-outcome callbacks (fail-open) applied to every dispatcher from this relay. */
   hooks?: DeliveryHooks;
+  /**
+   * Optional, fail-open tracing/metrics seam applied to every delivery from this relay (the
+   * OpenTelemetry seam). See {@link DeliveryInstrument}; wire it with `createOtelInstrumentation`
+   * from `commitcourier/otel`.
+   */
+  instrument?: DeliveryInstrument;
 }
 
 /** The public surface returned by {@link createRelay}. */
@@ -113,7 +137,12 @@ export interface Relay<TTx> {
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
   /** Replay matching rows as fresh pending copies; returns the new ids. */
   replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
-  /** Registered-endpoint admin: register / update / enable / disable / get. */
+  /**
+   * List outbox rows (read-only, secret-free) for DLQ inspection/monitoring; newest-first by `seq`.
+   * Pass `{ status: "dead" }` to inspect the DLQ; page with the returned `nextCursor`.
+   */
+  list(filter?: OutboxListFilter): Promise<Page<OutboxListItem>>;
+  /** Registered-endpoint admin: register / update / enable / disable / get / list. */
   endpoints: EndpointAdmin;
   /** Aggregate queue statistics (status counts and oldest-pending age) for monitoring. */
   stats(): Promise<OutboxStats>;
@@ -184,8 +213,9 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
 
   const http = createHttpClient({ ssrf: resolved.ssrf, delivery: resolved.delivery });
   const hooks = config.hooks;
+  const instrument = config.instrument;
   const deliver = (row: OutboxRow): Promise<void> =>
-    deliverOne(row, { store, http, config: resolved, clock: resolved.clock, hooks });
+    deliverOne(row, { store, http, config: resolved, clock: resolved.clock, hooks, instrument });
 
   /** Build the outbox row from enqueue input, snapshotting the inline secret at enqueue time. */
   function buildRow(input: EnqueueInput): NewOutboxRow {
@@ -239,6 +269,9 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     replay(opts) {
       return adminReplay(store, resolved.clock(), opts);
     },
+    list(filter) {
+      return adminListOutbox(store, filter);
+    },
     endpoints: endpointAdmin(store, resolved.clock),
     stats() {
       return store.stats();
@@ -254,6 +287,7 @@ function endpointAdmin(store: Store, clock: Clock): EndpointAdmin {
     enable: (id) => adminEnable(store, id),
     disable: (id) => adminDisable(store, id, clock()),
     get: (id) => adminGet(store, id),
+    list: (filter) => adminListEndpoints(store, filter),
     rotateSecret: (id, newSecret) => adminRotate(store, id, newSecret),
     finalizeRotation: (id) => adminFinalizeRotation(store, id),
   };

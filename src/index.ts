@@ -14,9 +14,19 @@ export type {
   EndpointPatch,
   OutboxStats,
   ReplayFilter,
+  OutboxListItem,
+  OutboxListFilter,
+  EndpointSummary,
+  EndpointListFilter,
+  Page,
 } from "./store/store";
 
 export { createRelay } from "./relay";
 export type { Relay, RelayInit, EndpointAdmin, RegisterEndpointInput } from "./relay";
-export type { DeliveryHooks, DeliveryEvent } from "./delivery/deliver";
+export type {
+  DeliveryHooks,
+  DeliveryEvent,
+  DeliveryStart,
+  DeliveryInstrument,
+} from "./delivery/deliver";
 export type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";

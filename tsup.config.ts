@@ -10,6 +10,7 @@ export default defineConfig({
     "src/store/knex.ts",
     "src/store/drizzle.ts",
     "src/store/prisma.ts",
+    "src/otel/index.ts",
   ],
   format: ["esm", "cjs"],
   dts: true,

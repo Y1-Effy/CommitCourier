@@ -43,6 +43,8 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
       captured.replayCopies.push(...rows);
       return Promise.resolve(rows.map((r) => r.id));
     },
+    listOutbox: () => Promise.resolve({ items: [], nextCursor: null }),
+    listEndpoints: () => Promise.resolve({ items: [], nextCursor: null }),
     insertEndpoint: () => Promise.resolve(),
     updateEndpoint: () => Promise.resolve(),
     findEndpoint: () => Promise.resolve(null),
