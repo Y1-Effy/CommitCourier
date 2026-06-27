@@ -155,6 +155,8 @@ await knex.transaction(async (trx) => {
 });
 ```
 
+> Prefer a runnable file? See [`examples/basic-pg`](./examples/basic-pg) for the full migrate → enqueue → dispatch flow against a throwaway Postgres.
+
 ## How it works
 
 ```
@@ -550,6 +552,9 @@ CommitCourier is non-invasive and reversible. Everything lives in three dedicate
 | `commitcourier/core`           | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
 | `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                              |
 | `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                            |
+| `commitcourier/store/drizzle`  | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                       |
+| `commitcourier/store/prisma`   | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                               |
+| `commitcourier/otel`           | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                      |
 | `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                     |
 
 Key signatures:

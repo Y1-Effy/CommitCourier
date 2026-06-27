@@ -155,6 +155,8 @@ await knex.transaction(async (trx) => {
 });
 ```
 
+> 実行可能なファイルが欲しい場合は [`examples/basic-pg`](./examples/basic-pg) を参照（使い捨て Postgres に対する migrate → enqueue → dispatch の一連の流れ）。
+
 ## 仕組み
 
 ```
@@ -549,6 +551,9 @@ CommitCourier は非侵襲かつ可逆です。すべては 3 つの専用テー
 | `commitcourier/core`           | 純粋・依存ゼロのドメイン層（`sign`、`verifySignature`、`createConsoleLogger`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
 | `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                        |
 | `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                      |
+| `commitcourier/store/drizzle`  | `drizzleStore({ db })` — `Store<DrizzleTx>`（node-postgres 上の Drizzle）。                                                                                              |
+| `commitcourier/store/prisma`   | `prismaStore({ prisma })` — `Store<PrismaTx>`（Prisma の interactive transaction）。                                                                                    |
+| `commitcourier/otel`           | `createOtelInstrumentation({ tracer, meter })` — 任意の OpenTelemetry 計装。`createRelay({ instrument, hooks })` に渡す。                                                |
 | `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — Postgres LISTEN/NOTIFY による任意の低遅延 wake。`createRelay({ accelerator })` に渡す。                                        |
 
 主要シグネチャ：
