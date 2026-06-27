@@ -228,7 +228,15 @@ export function createHttpClient(
           signal: controller.signal,
           dispatcher: agent,
         });
-        const bodySnippet = await readSnippet(res.body, delivery.bodySnippetBytes);
+        // The status is authoritative once the response headers arrive: a slow/stalled body (or the
+        // timeout firing mid-stream) must not discard a known 2xx and force a needless redelivery.
+        // Read the snippet best-effort; on failure keep the status and drop the body.
+        let bodySnippet: string | null = null;
+        try {
+          bodySnippet = await readSnippet(res.body, delivery.bodySnippetBytes);
+        } catch {
+          res.body.destroy();
+        }
         return {
           status: res.statusCode,
           bodySnippet,

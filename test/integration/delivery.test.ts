@@ -212,6 +212,28 @@ describe("deliverOne (integration)", () => {
     expect(captured.transitions[0]?.t.status).toBe("pending");
   });
 
+  it("keeps a 2xx status when the body read stalls past the timeout (no false retry)", async () => {
+    // Headers arrive immediately, then the body stalls open (a small chunk below bodySnippetBytes,
+    // never ended). The delivery timeout fires mid-stream: the status must remain authoritative so a
+    // receiver that already accepted (200) is not redelivered to.
+    const srv = await startServer((_req, res) => {
+      res.writeHead(200);
+      res.write("partial"); // < bodySnippetBytes, so readSnippet keeps waiting until the abort
+      // intentionally no res.end(): the connection is torn down by the client abort / afterEach.
+    });
+    const config = resolveConfig({
+      ssrf: { allowlist: ["127.0.0.1"] },
+      delivery: { timeoutMs: 80 },
+    });
+    const { store, captured } = fakeStore();
+
+    await deliverOne(outboxRow({ targetUrl: srv.url() }), makeDeps(store, config));
+
+    expect(captured.attempts[0]?.responseStatus).toBe(200);
+    expect(captured.attempts[0]?.error).toBeNull();
+    expect(captured.transitions[0]?.t.status).toBe("delivered");
+  });
+
   it("treats 5xx as a retryable failure", async () => {
     const srv = await startServer(respond(500, "boom"));
     const config = resolveConfig({ ssrf: { allowlist: ["127.0.0.1"] } });
