@@ -10,14 +10,6 @@ updates:
       dev-dependencies:
         dependency-type: development
     ignore:
-      # eslint 10 is not yet supported by eslint-plugin-import (peer allows up to eslint 9), so a
-      # major bump breaks `npm ci` with ERESOLVE. Hold the major until the plugin supports v10.
-      - dependency-name: "eslint"
-        update-types: ["version-update:semver-major"]
-      # @eslint/js 10 requires eslint ^10, which is held above, so its major is blocked too.
-      # Lift this together with the eslint hold once eslint-plugin-import supports v10.
-      - dependency-name: "@eslint/js"
-        update-types: ["version-update:semver-major"]
       # typescript 6 is rejected by typescript-eslint's peer range (>=4.8.4 <6.0.0), which would
       # break type-aware linting. Hold the major until typescript-eslint ships TypeScript 6 support.
       - dependency-name: "typescript"

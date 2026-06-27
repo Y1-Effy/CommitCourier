@@ -1,7 +1,8 @@
 // @ts-check
 import js from "@eslint/js";
 import tseslint from "typescript-eslint";
-import importPlugin from "eslint-plugin-import";
+import importX from "eslint-plugin-import-x";
+import { createTypeScriptImportResolver } from "eslint-import-resolver-typescript";
 import tsdoc from "eslint-plugin-tsdoc";
 import prettier from "eslint-config-prettier";
 
@@ -36,13 +37,11 @@ export default tseslint.config(
       },
     },
     plugins: {
-      import: importPlugin,
+      "import-x": importX,
       tsdoc,
     },
     settings: {
-      "import/resolver": {
-        typescript: { project: "./tsconfig.json" },
-      },
+      "import-x/resolver-next": [createTypeScriptImportResolver({ project: "./tsconfig.json" })],
     },
     rules: {
       // --- Correctness ---
@@ -58,8 +57,8 @@ export default tseslint.config(
       "prefer-const": "error",
 
       // --- Separation of concerns: no cycles, and layer direction (core <- store <- delivery <- dispatcher <- admin) ---
-      "import/no-cycle": ["error", { maxDepth: Infinity }],
-      "import/no-restricted-paths": [
+      "import-x/no-cycle": ["error", { maxDepth: Infinity }],
+      "import-x/no-restricted-paths": [
         "error",
         {
           zones: [
