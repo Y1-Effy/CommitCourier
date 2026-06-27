@@ -288,7 +288,27 @@ const relay = await createRelay({
 });
 ```
 
-The logger also surfaces startup warnings for dangerous-but-valid config (e.g. a disabled SSRF guard). You can inject `clock?: () => Date` too — useful for deterministic tests. (Structured tracing / OpenTelemetry is on the v2 roadmap.)
+The logger also surfaces startup warnings for dangerous-but-valid config (e.g. a disabled SSRF guard). You can inject `clock?: () => Date` too — useful for deterministic tests.
+
+### OpenTelemetry (tracing & metrics)
+
+The optional `commitcourier/otel` adapter (v1.2) maps deliveries onto OpenTelemetry spans and metrics. It depends on `@opentelemetry/api` as an optional peer dependency, so the main entry never pulls OTel into scope. Wire the result into `createRelay`:
+
+```ts
+import { trace, metrics } from "@opentelemetry/api";
+import { createRelay } from "commitcourier";
+import { createOtelInstrumentation } from "commitcourier/otel";
+
+const { instrument, hooks } = createOtelInstrumentation({
+  tracer: trace.getTracer("commitcourier"),
+  meter: metrics.getMeter("commitcourier"),
+});
+const relay = await createRelay({ store, instrument, hooks });
+```
+
+Each delivery attempt emits one CLIENT span with secret-free attributes (`webhook.id`, `webhook.event_type`, `webhook.attempt`, `http.response.status_code`, `server.address` / `server.port`, `endpoint.id`); the same outcome increments a `commitcourier.deliveries` counter (`outcome = delivered | retry | dead`) and records a `commitcourier.delivery.duration` histogram. The seam is fail-open: an instrumentation error is logged and swallowed, never stalling the dispatcher. For low-level use you can pass your own `instrument` / `hooks` without OTel.
+
+The counter and histogram are recorded **per delivery attempt** (each retry counts again, plus the rare re-delivery after a worker crash) — they are attempt counts, not unique-row counts.
 
 ### Data retention
 
@@ -296,28 +316,34 @@ CommitCourier never deletes rows on its own. `webhook_outbox` (including `delive
 
 ### Inspecting the DLQ (`dead` rows)
 
-v1 exposes `replay({ filter })`, which **re-enqueues** matching rows (a write). There is no read-only "list dead rows" API yet, so to inspect the DLQ before replaying, query the tables directly:
+Use the read-only `relay.list({ filter })` API (v1.2) to inspect dead rows before replaying. It returns secret-free rows newest-first (by a monotonic `seq`) with keyset pagination — `replay({ filter })` then **re-enqueues** the ones you choose (a write):
 
-```sql
-SELECT id, event_type, attempts, last_error, created_at
-FROM webhook_outbox
-WHERE status = 'dead'
-ORDER BY created_at DESC;
+```ts
+// First page of the DLQ, newest first.
+const { items, nextCursor } = await relay.list({ status: "dead", limit: 100 });
+for (const r of items) {
+  console.log(r.id, r.eventType, r.attempts, r.lastError);
+}
+// Next page (when nextCursor is non-null).
+if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCursor });
 ```
+
+`list` accepts `{ status, since, endpointId, limit, cursor }` and never returns the signing-key snapshot. (You can still query `webhook_outbox` directly if you prefer raw SQL.)
 
 ## Error handling
 
 Every error the library throws is a `RelayError` with a stable, machine-readable `code`:
 
-| Code                 | Thrown by                       | Meaning                                                      |
-| -------------------- | ------------------------------- | ------------------------------------------------------------ |
-| `CONFIG_INVALID`     | `createRelay` (startup)         | Invalid configuration (fail-fast).                           |
-| `MISSING_TABLES`     | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.              |
-| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided. |
-| `SSRF_BLOCKED`       | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                     |
-| `ENDPOINT_NOT_FOUND` | dispatch (recorded, not thrown) | `endpointId` is not registered.                              |
-| `ENDPOINT_DISABLED`  | dispatch (recorded, not thrown) | The registered endpoint is disabled.                         |
-| `MISSING_SECRET`     | dispatch (recorded, not thrown) | An inline destination has no stored secret to sign with.     |
+| Code                 | Thrown by                       | Meaning                                                                      |
+| -------------------- | ------------------------------- | ---------------------------------------------------------------------------- |
+| `CONFIG_INVALID`     | `createRelay` (startup)         | Invalid configuration (fail-fast).                                           |
+| `MISSING_TABLES`     | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.                              |
+| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided.                 |
+| `INVALID_ARGUMENT`   | `list` / `endpoints.list`       | A list filter was malformed (e.g. a non-numeric `cursor`, unknown `status`). |
+| `SSRF_BLOCKED`       | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                                     |
+| `ENDPOINT_NOT_FOUND` | dispatch (recorded, not thrown) | `endpointId` is not registered.                                              |
+| `ENDPOINT_DISABLED`  | dispatch (recorded, not thrown) | The registered endpoint is disabled.                                         |
+| `MISSING_SECRET`     | dispatch (recorded, not thrown) | An inline destination has no stored secret to sign with.                     |
 
 The split mirrors the architecture: **enqueue-path** errors are _thrown_ so they roll back your transaction (fail-closed), while **dispatch-path** failures are _recorded in the ledger_ and retried, never thrown into your app (fail-open). Inspect the latter with `relay.attempts({ outboxId })`.
 
@@ -387,7 +413,8 @@ interface Relay<TTx> {
 
 - **v1 (current):** Postgres store, `pg` + Knex adapters, transactional enqueue, poller-based dispatcher (no external queue), Standard Webhooks signing (single key), retry / backoff / jitter / DLQ, delivery ledger, replay by id, SSRF protection, observe mode, a registered-endpoint admin API (`register` / `update` / `enable` / `disable` / `get`), optional at-rest secret encryption (`cipher`), and throughput tuning (partial claim/reclaim indexes, undici keep-alive, an optional registered-endpoint cache, adaptive idle polling).
 - **v1.1:** key rotation / dual signing (`endpoints.rotateSecret` / `finalizeRotation`), `Retry-After` support, immediate `410 Gone` endpoint invalidation, opt-in per-endpoint FIFO (`createDispatcher({ ordering: "per-endpoint" })`), and Drizzle (`commitcourier/store/drizzle`) + Prisma (`commitcourier/store/prisma`) adapters.
-- **v2:** Optional BullMQ accelerator adapter (the outbox row stays the source of truth), a richer endpoint-management API, OpenTelemetry hooks.
+- **v1.2:** read-only DLQ/outbox list API (`relay.list({ status: "dead", … })`, secret-free, seq-keyset paging), endpoint listing (`endpoints.list({ status, … })`), and the OpenTelemetry adapter (`commitcourier/otel` — span per delivery + outcome counter/duration histogram, via the fail-open `instrument` / `hooks` seam).
+- **v2:** Optional BullMQ accelerator adapter (the outbox row stays the source of truth), further endpoint-management API surface.
 
 ## Security
 

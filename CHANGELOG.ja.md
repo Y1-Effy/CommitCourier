@@ -11,6 +11,19 @@
 
 ### Added（追加）
 
+- **読み取り専用 DLQ／outbox 一覧 API（v1.2）**：`relay.list({ status, since, endpointId, limit, cursor })`
+  が outbox 行を単調増加 `seq` の新しい順でページングします（DLQ 調査・監視向け）。行は secret 非露出
+  （署名鍵スナップショットは選択しない）、ページングは seq キーセット（`nextCursor`）。
+- **エンドポイント一覧（v1.2）**：`endpoints.list({ status, limit, cursor })` が secret 非露出の
+  サマリ（`secret`/`secret_secondary` を含まない）を id キーセットで返します。どちらの一覧メソッドも
+  4 アダプタ（`pg`/`knex`/`drizzle`/`prisma`）すべてに実装。一覧フィルタは事前検証され、不正な
+  `cursor`/`status` は生の Postgres キャストエラーではなく新しい `INVALID_ARGUMENT` `RelayError` になります。
+- **OpenTelemetry アダプタ（v1.2）**：`commitcourier/otel` が `createOtelInstrumentation({ tracer, meter })`
+  を公開し、`createRelay` に渡す `{ instrument, hooks }` を返します。各配信試行は secret 非露出属性を持つ
+  CLIENT span を 1 本発行し、結果で `commitcourier.deliveries` カウンター（`outcome = delivered | retry | dead`）と
+  `commitcourier.delivery.duration` ヒストグラムを更新します。`@opentelemetry/api` は optional peer。シーム本体
+  （`RelayInit.instrument` ＋ `endpointId`/`host` を持つ secret 非露出の `DeliveryStart`/`DeliveryEvent`）は
+  依存ゼロ・fail-open です。
 - **鍵ローテーション／二重署名（v1.1）**：ローテーション中は登録エンドポイントへの配信を現行鍵と
   旧鍵の両方で署名します（Standard Webhooks のスペース区切り `v1,…` 複数署名）。受信側はどちらの鍵
   でも検証可能。管理操作 `endpoints.rotateSecret(id, newSecret)` と `endpoints.finalizeRotation(id)`

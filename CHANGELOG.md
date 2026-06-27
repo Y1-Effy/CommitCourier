@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Read-only DLQ / outbox list API (v1.2):** `relay.list({ status, since, endpointId, limit, cursor })`
+  pages outbox rows newest-first by a monotonic `seq`, for DLQ inspection and monitoring. Rows are
+  secret-free (the signing-key snapshot is never selected) and paging is seq-keyset (`nextCursor`).
+- **Endpoint listing (v1.2):** `endpoints.list({ status, limit, cursor })` returns secret-free endpoint
+  summaries (no `secret`/`secret_secondary`), id-keyset paged. Both list methods are implemented across
+  all four adapters (`pg`/`knex`/`drizzle`/`prisma`). List filters are validated up front, so a malformed
+  `cursor`/`status` fails as a new `INVALID_ARGUMENT` `RelayError` instead of a raw Postgres cast error.
+- **OpenTelemetry adapter (v1.2):** `commitcourier/otel` exports `createOtelInstrumentation({ tracer, meter })`,
+  returning `{ instrument, hooks }` to pass to `createRelay`. Each delivery attempt emits one CLIENT span
+  with secret-free attributes; the outcome updates a `commitcourier.deliveries` counter
+  (`outcome = delivered | retry | dead`) and a `commitcourier.delivery.duration` histogram.
+  `@opentelemetry/api` is an optional peer; the seam itself (`RelayInit.instrument` + secret-free
+  `DeliveryStart`/`DeliveryEvent` carrying `endpointId`/`host`) is dependency-free and fail-open.
 - **Key rotation / dual signing (v1.1):** during a rotation, deliveries to a registered endpoint are
   signed with both the current and previous keys (Standard Webhooks space-separated `v1,…` signatures),
   so a receiver on either key verifies. New admin ops `endpoints.rotateSecret(id, newSecret)` and

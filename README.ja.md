@@ -288,7 +288,27 @@ const relay = await createRelay({
 });
 ```
 
-logger は、危険だが有効な設定（例：SSRF 防御の無効化）に対する起動時警告も出します。`clock?: () => Date` も注入でき、決定的なテストに便利です。（構造化トレーシング／OpenTelemetry は v2 ロードマップ。）
+logger は、危険だが有効な設定（例：SSRF 防御の無効化）に対する起動時警告も出します。`clock?: () => Date` も注入でき、決定的なテストに便利です。
+
+### OpenTelemetry（トレース＆メトリクス）
+
+任意の `commitcourier/otel` アダプタ（v1.2）が、配信を OpenTelemetry の span とメトリクスに対応づけます。`@opentelemetry/api` を optional peer dependency として参照するため、メインエントリが OTel を巻き込むことはありません。結果を `createRelay` に渡します。
+
+```ts
+import { trace, metrics } from "@opentelemetry/api";
+import { createRelay } from "commitcourier";
+import { createOtelInstrumentation } from "commitcourier/otel";
+
+const { instrument, hooks } = createOtelInstrumentation({
+  tracer: trace.getTracer("commitcourier"),
+  meter: metrics.getMeter("commitcourier"),
+});
+const relay = await createRelay({ store, instrument, hooks });
+```
+
+各配信試行は、secret を含まない属性（`webhook.id`・`webhook.event_type`・`webhook.attempt`・`http.response.status_code`・`server.address` / `server.port`・`endpoint.id`）を持つ CLIENT span を 1 本発行します。同じ結果で `commitcourier.deliveries` カウンター（`outcome = delivered | retry | dead`）と `commitcourier.delivery.duration` ヒストグラムを記録します。このシームは fail-open で、計装エラーはログして握りつぶし、dispatcher を止めません。低レベル用途では OTel なしで独自の `instrument` / `hooks` を渡せます。
+
+カウンターとヒストグラムは**配信試行ごと**に記録されます（リトライは都度カウント、ワーカークラッシュ後の希少な再配信も含む）。ユニーク行数ではなく試行回数です。
 
 ### データ保持
 
@@ -296,28 +316,34 @@ CommitCourier は行を自動削除しません。`webhook_outbox`（`delivered`
 
 ### DLQ（`dead` 行）の調査
 
-v1 が提供する `replay({ filter })` は該当行を**再 enqueue**（書き込み）します。読み取り専用の「dead 行一覧」API はまだ無いため、リプレイ前に DLQ を調査するにはテーブルを直接参照してください。
+読み取り専用の `relay.list({ filter })` API（v1.2）で、リプレイ前に dead 行を調査できます。単調増加の `seq` による新しい順・キーセットページングで、secret を含まない行を返します。選んだ行を `replay({ filter })` で**再 enqueue**（書き込み）します。
 
-```sql
-SELECT id, event_type, attempts, last_error, created_at
-FROM webhook_outbox
-WHERE status = 'dead'
-ORDER BY created_at DESC;
+```ts
+// DLQ の最初のページ（新しい順）。
+const { items, nextCursor } = await relay.list({ status: "dead", limit: 100 });
+for (const r of items) {
+  console.log(r.id, r.eventType, r.attempts, r.lastError);
+}
+// 次のページ（nextCursor が非 null のとき）。
+if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCursor });
 ```
+
+`list` は `{ status, since, endpointId, limit, cursor }` を受け取り、署名鍵スナップショットは決して返しません。（生 SQL で `webhook_outbox` を直接参照しても構いません。）
 
 ## エラーハンドリング
 
 ライブラリが throw するエラーはすべて `RelayError` で、安定した機械可読の `code` を持ちます。
 
-| code                 | 発生元                         | 意味                                                       |
-| -------------------- | ------------------------------ | ---------------------------------------------------------- |
-| `CONFIG_INVALID`     | `createRelay`（起動時）        | 設定が不正（fail-fast）。                                  |
-| `MISSING_TABLES`     | `createRelay`（起動時）        | コアテーブルが存在しない。`store.migrate()` を実行。       |
-| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`    | `{ url, secret }` も `{ endpointId }` も指定されていない。 |
-| `SSRF_BLOCKED`       | dispatch（throw せず台帳記録） | 宛先が遮断レンジに解決された。                             |
-| `ENDPOINT_NOT_FOUND` | dispatch（throw せず台帳記録） | `endpointId` が未登録。                                    |
-| `ENDPOINT_DISABLED`  | dispatch（throw せず台帳記録） | 登録済みエンドポイントが無効化されている。                 |
-| `MISSING_SECRET`     | dispatch（throw せず台帳記録） | inline 宛先に署名用の secret スナップショットが無い。      |
+| code                 | 発生元                         | 意味                                                             |
+| -------------------- | ------------------------------ | ---------------------------------------------------------------- |
+| `CONFIG_INVALID`     | `createRelay`（起動時）        | 設定が不正（fail-fast）。                                        |
+| `MISSING_TABLES`     | `createRelay`（起動時）        | コアテーブルが存在しない。`store.migrate()` を実行。             |
+| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`    | `{ url, secret }` も `{ endpointId }` も指定されていない。       |
+| `INVALID_ARGUMENT`   | `list` / `endpoints.list`      | 一覧フィルタが不正（例：数値でない `cursor`、未知の `status`）。 |
+| `SSRF_BLOCKED`       | dispatch（throw せず台帳記録） | 宛先が遮断レンジに解決された。                                   |
+| `ENDPOINT_NOT_FOUND` | dispatch（throw せず台帳記録） | `endpointId` が未登録。                                          |
+| `ENDPOINT_DISABLED`  | dispatch（throw せず台帳記録） | 登録済みエンドポイントが無効化されている。                       |
+| `MISSING_SECRET`     | dispatch（throw せず台帳記録） | inline 宛先に署名用の secret スナップショットが無い。            |
 
 この区別はアーキテクチャを反映しています。**enqueue 経路**のエラーは _throw_ され、トランザクションを rollback させます（fail-closed）。一方 **dispatch 経路**の失敗は *配信台帳に記録*されてリトライされ、アプリには throw されません（fail-open）。後者は `relay.attempts({ outboxId })` で確認します。
 
@@ -387,7 +413,8 @@ interface Relay<TTx> {
 
 - **v1（現行）**：Postgres ストア、`pg` ＋ Knex アダプタ、トランザクショナル enqueue、ポーラー型 dispatcher（外部キュー不要）、Standard Webhooks 署名（単一鍵）、リトライ／バックオフ／ジッター／DLQ、配信台帳、ID 指定リプレイ、SSRF 防御、観測モード、登録エンドポイント管理 API（`register` / `update` / `enable` / `disable` / `get`）、任意の保管時 secret 暗号化（`cipher`）、スループット調整（claim/reclaim の部分インデックス、undici keep-alive、任意の登録エンドポイントキャッシュ、適応ポーリング）。
 - **v1.1**：鍵ローテーション／二重署名（`endpoints.rotateSecret` / `finalizeRotation`）、`Retry-After` 尊重、`410 Gone` での即時エンドポイント無効化、オプトインのエンドポイント単位 FIFO（`createDispatcher({ ordering: "per-endpoint" })`）、Drizzle（`commitcourier/store/drizzle`）＋ Prisma（`commitcourier/store/prisma`）アダプタ。
-- **v2**：任意の BullMQ アクセラレータ・アダプタ（Outbox 行は引き続き真実の源泉）、より高機能なエンドポイント管理 API、OpenTelemetry フック。
+- **v1.2**：読み取り専用の DLQ／outbox 一覧 API（`relay.list({ status: "dead", … })`、secret 非露出・seq キーセットページング）、エンドポイント一覧（`endpoints.list({ status, … })`）、OpenTelemetry アダプタ（`commitcourier/otel` — 配信ごとの span ＋ outcome カウンター／duration ヒストグラム。fail-open な `instrument` / `hooks` シーム経由）。
+- **v2**：任意の BullMQ アクセラレータ・アダプタ（Outbox 行は引き続き真実の源泉）、さらなるエンドポイント管理 API。
 
 ## セキュリティ
 
