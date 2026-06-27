@@ -1,7 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi, type Mock } from "vitest";
 import { createAesGcmCipher, generateSecretKey } from "../../src/core/cipher";
 import { createEncryptedStore } from "../../src/store/encrypted-store";
-import type { OutboxRow, EndpointRow, Transition, SecretCipher } from "../../src/core/index";
+import type {
+  OutboxRow,
+  EndpointRow,
+  Transition,
+  SecretCipher,
+  Logger,
+} from "../../src/core/index";
 import type { NewOutboxRow, NewEndpointRow, EndpointPatch, Store } from "../../src/store/store";
 
 const PLAINTEXT = "whsec_topsecret";
@@ -230,5 +236,114 @@ describe("createEncryptedStore decryption isolation", () => {
     const enc = createEncryptedStore(rec.store, throwingCipher);
 
     await expect(enc.findEndpoint("ep-1")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+describe("createEncryptedStore pass-through delegation", () => {
+  it("delegates secret-free methods straight through to the inner store", async () => {
+    const make = (ret: unknown): Mock => vi.fn(() => Promise.resolve(ret));
+    const inner = {
+      insertOutbox: make(undefined),
+      insertOutboxMany: make(undefined),
+      insertOutboxAutonomous: make(undefined),
+      insertReplayCopies: make(["id1"]),
+      insertEndpoint: make(undefined),
+      updateEndpoint: make(undefined),
+      claimDue: make([]),
+      selectForReplay: make([]),
+      findEndpoint: make(null),
+      applyTransition: make(undefined),
+      cancel: make(false),
+      reclaimStuck: make(0),
+      recordAttempt: make(undefined),
+      completeAttempt: make(undefined),
+      queryAttempts: make([]),
+      getOutbox: make(null),
+      listOutbox: make({ items: [], nextCursor: null }),
+      listEndpoints: make({ items: [], nextCursor: null }),
+      disableEndpoint: make(undefined),
+      noteEndpointSuccess: make(undefined),
+      noteEndpointFailure: make(undefined),
+      reactivateEndpoint: make(undefined),
+      prune: make({ deleted: 0 }),
+      stats: make({ counts: {}, oldestPendingAt: null }),
+      diagnose: make({ ok: true, missingTables: [] }),
+      migrate: make(undefined),
+    };
+    const enc = createEncryptedStore(inner as unknown as Store, cipher);
+
+    // Secret-bearing writes with a null secret exercise the encrypt wrappers without touching the cipher.
+    await enc.insertOutboxMany("trx", [newOutbox(null)]);
+    await enc.insertOutboxAutonomous(newOutbox(null));
+    // Pure pass-throughs.
+    await enc.applyTransition("o1", {} as never);
+    await enc.cancel("o1");
+    await enc.reclaimStuck({} as never);
+    await enc.recordAttempt({} as never);
+    await enc.completeAttempt({} as never, {} as never, "w");
+    await enc.queryAttempts({ outboxId: "o1" });
+    await enc.getOutbox("o1");
+    await enc.listOutbox({});
+    await enc.listEndpoints({});
+    await enc.disableEndpoint("e1", new Date());
+    await enc.noteEndpointSuccess("e1");
+    await enc.noteEndpointFailure("e1", new Date(), 3);
+    await enc.reactivateEndpoint("e1");
+    await enc.prune({} as never);
+    await enc.stats();
+    await enc.diagnose();
+    await enc.migrate();
+
+    const delegated = [
+      "insertOutboxMany",
+      "insertOutboxAutonomous",
+      "applyTransition",
+      "cancel",
+      "reclaimStuck",
+      "recordAttempt",
+      "completeAttempt",
+      "queryAttempts",
+      "getOutbox",
+      "listOutbox",
+      "listEndpoints",
+      "disableEndpoint",
+      "noteEndpointSuccess",
+      "noteEndpointFailure",
+      "reactivateEndpoint",
+      "prune",
+      "stats",
+      "diagnose",
+      "migrate",
+    ] as const;
+    for (const name of delegated) {
+      expect(inner[name]).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("logs an error when quarantining an undecryptable claimed row itself fails (no throw)", async () => {
+    // decrypt always fails, so the claimed row is undecryptable; applyTransition (the quarantine)
+    // then also fails, exercising the inner catch that logs an error and drops the row.
+    const failingCipher: SecretCipher = {
+      encrypt: (s: string) => Promise.resolve(s),
+      decrypt: () => Promise.reject(new Error("bad key")),
+    };
+    const errors: { msg: string }[] = [];
+    const logger: Logger = {
+      debug() {},
+      info() {},
+      warn() {},
+      error: (msg) => void errors.push({ msg }),
+    };
+    const inner: Store = {
+      ...recorder().store,
+      claimDue: () => Promise.resolve([outboxRow("ciphertext")]),
+      applyTransition: () => Promise.reject(new Error("db down")),
+    };
+    const enc = createEncryptedStore(inner, failingCipher, logger);
+
+    const out = await enc.claimDue({ limit: 1, lockedBy: "w", now: new Date() });
+
+    expect(out).toEqual([]); // the bad row is dropped, not thrown
+    expect(errors).toHaveLength(1); // logger.error on the failed quarantine
   });
 });
