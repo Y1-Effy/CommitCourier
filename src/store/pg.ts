@@ -1,5 +1,5 @@
 /**
- * pg adapter (per 02-store section 3.1). `postgresStore({ pool })`.
+ * pg adapter. `postgresStore({ pool })`.
  *
  * `TTx = PoolClient`: `insertOutbox` runs on the caller's client and joins the user's TX
  * (fail-closed). dispatch-path methods acquire their own connection from the pool. `pg` is an

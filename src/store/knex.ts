@@ -1,5 +1,5 @@
 /**
- * knex adapter (per 02-store section 3.2). `knexStore({ knex })`.
+ * knex adapter. `knexStore({ knex })`.
  *
  * `TTx = Knex.Transaction`: `insertOutbox` runs on the caller's transaction (fail-closed).
  * dispatch-path methods open their own transaction. Semantics match the pg adapter: the claim

@@ -1,5 +1,5 @@
 /**
- * Admin operations (per 05-admin-api sections 5-7): ledger queries, replay, and endpoint
+ * Admin operations: ledger queries, replay, and endpoint
  * disabling. These are thin, side-effect-light wrappers over the {@link Store}; the root
  * {@link "../relay".createRelay} composes them into the public `Relay`.
  */
@@ -26,7 +26,7 @@ import type {
   Page,
 } from "../store/store";
 
-/** Read the delivery ledger for one outbox row (05 section 5). */
+/** Read the delivery ledger for one outbox row. */
 export function attempts(store: Store, outboxId: string): Promise<DeliveryAttempt[]> {
   return store.queryAttempts({ outboxId });
 }
@@ -98,7 +98,7 @@ export async function listEndpoints(
 }
 
 /**
- * Cancel a not-yet-sent outbox row (05 section 6): moves it `pending` -&gt; `cancelled` only while it is
+ * Cancel a not-yet-sent outbox row: moves it `pending` -&gt; `cancelled` only while it is
  * still pending. Returns `{ cancelled }` — false when the row was already claimed/sent or the id is
  * unknown, so a caller can tell "stopped in time" from "too late". Validates the id up front so a
  * malformed value fails as a clean `INVALID_ARGUMENT` rather than a raw uuid-cast error.
@@ -122,7 +122,7 @@ export async function getOutbox(store: Store, outboxId: string): Promise<OutboxL
 }
 
 /**
- * Replay matching rows by inserting fresh `pending` copies (05 section 6). The original (e.g.
+ * Replay matching rows by inserting fresh `pending` copies. The original (e.g.
  * dead) rows are kept as history; each copy inherits the destination, payload, eventType and
  * `idempotencyKey` so the receiver can dedupe a re-send. The selection is always clamped to a safe
  * ceiling so a broad filter can never fan out into an unbounded mass re-send.
@@ -203,7 +203,7 @@ export async function prune(store: Store, opts: PruneOptions): Promise<{ deleted
   return store.prune({ olderThan: opts.olderThan, statuses, limit: clampPruneLimit(opts.limit) });
 }
 
-/** Register a new endpoint (status defaults to `active`). Returns the generated id (05 section 7). */
+/** Register a new endpoint (status defaults to `active`). Returns the generated id. */
 export async function registerEndpoint(
   store: Store,
   input: {
@@ -224,7 +224,7 @@ export async function registerEndpoint(
   return { id: ep.id };
 }
 
-/** Patch a registered endpoint; only the provided fields change (05 section 7). */
+/** Patch a registered endpoint; only the provided fields change. */
 export function updateEndpoint(store: Store, id: string, patch: EndpointPatch): Promise<void> {
   return store.updateEndpoint(id, patch);
 }
@@ -249,17 +249,17 @@ export function finalizeRotation(store: Store, id: string): Promise<void> {
   return store.updateEndpoint(id, { secretSecondary: null });
 }
 
-/** Re-enable a disabled endpoint (clears the disabled marker) (05 section 7). */
+/** Re-enable a disabled endpoint (clears the disabled marker). */
 export function enableEndpoint(store: Store, id: string): Promise<void> {
   return store.updateEndpoint(id, { status: "active", disabledAt: null });
 }
 
-/** Look up a registered endpoint (05 section 7). */
+/** Look up a registered endpoint. */
 export function getEndpoint(store: Store, id: string): Promise<EndpointRow | null> {
   return store.findEndpoint(id);
 }
 
-/** Disable a registered endpoint so no further deliveries target it (05 section 7). */
+/** Disable a registered endpoint so no further deliveries target it. */
 export function disableEndpoint(store: Store, endpointId: string, now: Date): Promise<void> {
   return store.disableEndpoint(endpointId, now);
 }

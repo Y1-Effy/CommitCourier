@@ -1,4 +1,4 @@
--- 002: allow target-less rows for the sink transport (08-forward-sink).
+-- 002: allow target-less rows for the sink transport.
 -- The original table CHECK required a per-event target (endpoint_id or target_url). The `sink`
 -- transport has neither -- the destination is the configured sink/SaaS -- so a sink row is target-less.
 -- Drop the constraint; the application layer (buildRow) still requires a target for `http` mode.

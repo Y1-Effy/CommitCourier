@@ -1,5 +1,5 @@
 /**
- * Generic delivery sink abstraction (`commitcourier/forward`, per 08-forward-sink section 4).
+ * Generic delivery sink abstraction (`commitcourier/forward`).
  *
  * A `Sink` is a port abstraction (like `Store` or `Accelerator`): the user or a third party implements
  * it to hand each event off to an external webhook-delivery SaaS (Svix, Outpost, Hookdeck, ...) at

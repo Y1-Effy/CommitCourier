@@ -1,5 +1,5 @@
 /**
- * Root public API (per 05-admin-api): `createRelay` and the `Relay<TTx>` it returns.
+ * Root public API: `createRelay` and the `Relay<TTx>` it returns.
  *
  * `createRelay` is the single entry point. It resolves/validates config, fails fast if the core
  * tables are missing, wires the HTTP client and bound `deliver`, and exposes enqueue (TX-riding,
@@ -150,7 +150,7 @@ export interface RelayInit<TTx> {
    */
   accelerator?: Accelerator<TTx>;
   /**
-   * Delivery sink for `sink` transport (08-forward-sink). Required when
+   * Delivery sink for `sink` transport. Required when
    * `delivery.transport === "sink"` — each event is handed to it instead of being delivered over HTTP,
    * and CommitCourier's signing/SSRF/circuit breaker are delegated. Ignored for the default `http`
    * transport. Each handoff is bounded by `delivery.timeoutMs`, but the sink is also responsible for
@@ -161,7 +161,7 @@ export interface RelayInit<TTx> {
 
 /** The public surface returned by {@link createRelay}. */
 export interface Relay<TTx> {
-  /** Ride the business TX (fail-closed). `trx` is required (basic design section 8.1). */
+  /** Ride the business TX (fail-closed). `trx` is required. */
   enqueue(trx: TTx, input: EnqueueInput): Promise<{ id: string }>;
   /** Bulk enqueue inside the business TX (fail-closed): one round trip, returns ids in input order. */
   enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
@@ -455,7 +455,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   };
 }
 
-/** Compose the registered-endpoint admin surface over the store (05-admin-api section 7). */
+/** Compose the registered-endpoint admin surface over the store. */
 function endpointAdmin(store: Store, clock: Clock): EndpointAdmin {
   return {
     register: (input) => adminRegister(store, input),

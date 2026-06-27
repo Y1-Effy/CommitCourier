@@ -1,5 +1,5 @@
 /**
- * At-rest secret encryption (per the at-rest encryption design).
+ * At-rest secret encryption.
  *
  * Signing secrets (`webhook_outbox.secret_snapshot`, `webhook_endpoints.secret`) are encrypted
  * before they reach the store and decrypted at the point of use, so the value at rest in the DB

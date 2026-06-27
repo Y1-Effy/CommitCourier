@@ -1,5 +1,5 @@
 /**
- * Postgres LISTEN/NOTIFY accelerator (per 07-accelerator). `createPgAccelerator({ pool, listen })`.
+ * Postgres LISTEN/NOTIFY accelerator. `createPgAccelerator({ pool, listen })`.
  *
  * Signal side: a transactional `pg_notify` issued on the enqueue handle, so the wake is delivered on
  * COMMIT and can never precede the row's visibility. Listen side: a dedicated `Client` running

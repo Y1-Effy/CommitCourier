@@ -1,5 +1,5 @@
 /**
- * Official sample sink adapter for Svix (`commitcourier/forward/svix`, per 08-forward-sink section 9).
+ * Official sample sink adapter for Svix (`commitcourier/forward/svix`).
  *
  * Hands each event to `svix.message.create`, forwarding CommitCourier's `idempotencyKey` to Svix's
  * dedup key so an at-least-once redelivery is collapsed on the Svix side. `svix` is an optional peer

@@ -1,5 +1,5 @@
 /**
- * Postgres SQL dialect (per the store-generalization design).
+ * Postgres SQL dialect.
  *
  * Holds the Postgres-specific SQL that was previously inlined in `../_shared`: the claim CTE
  * (`FOR UPDATE SKIP LOCKED` + `RETURNING`) and the `to_regclass` existence probe. The DDL is applied
@@ -24,7 +24,7 @@ interface PerEndpointClaimPlaceholders {
 }
 
 /**
- * Claim query (02-store section 6). One CTE: `SELECT ... FOR UPDATE SKIP LOCKED`, then `UPDATE`
+ * Claim query. One CTE: `SELECT ... FOR UPDATE SKIP LOCKED`, then `UPDATE`
  * to `in_flight`, `RETURNING` the claimed rows. Rendered per placeholder style so both driver
  * adapters share identical semantics.
  */
@@ -44,7 +44,7 @@ RETURNING o.*`;
 }
 
 /**
- * Per-endpoint FIFO claim (02-store section 6.1). For each registered endpoint, the candidate is its
+ * Per-endpoint FIFO claim. For each registered endpoint, the candidate is its
  * earliest-inserted (smallest `seq`) non-terminal row (`pending` or `in_flight`); it is claimable only
  * when that head row is itself `pending` and due — so an in-flight row blocks the endpoint, and a row
  * awaiting retry (future `available_at`) holds the line until it is due. The head is ordered by `seq`

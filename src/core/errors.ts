@@ -1,5 +1,5 @@
 /**
- * Error model (per 00-overview section 5).
+ * Error model.
  *
  * Every error thrown by the library extends {@link RelayError} and carries a stable,
  * machine-readable {@link RelayErrorCode}.

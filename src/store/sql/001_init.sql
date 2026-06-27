@@ -1,4 +1,4 @@
--- commitcourier schema (detailed design 02-store section 4 / basic design section 6).
+-- commitcourier schema.
 -- All statements are idempotent (IF NOT EXISTS) so migrate() can run repeatedly.
 
 CREATE TABLE IF NOT EXISTS webhook_outbox (

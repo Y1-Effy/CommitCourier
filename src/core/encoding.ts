@@ -1,5 +1,5 @@
 /**
- * Pure UTF-8 / Base64 conversion (per 01-core section 5.1).
+ * Pure UTF-8 / Base64 conversion.
  *
  * Uses only Web standard globals (`TextEncoder` / `atob` / `btoa`) so that core stays
  * cross-runtime and import-free. `Buffer` is intentionally not used.

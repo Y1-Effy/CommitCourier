@@ -1,5 +1,5 @@
 /**
- * State machine as pure functions (per 01-core section 3, basic design section 7).
+ * State machine as pure functions.
  *
  * Each function returns the field delta to persist; the actual DB update is done by the
  * store. Invariants: `delivered` / `dead` / `cancelled` are terminal (never claimed);
@@ -47,7 +47,7 @@ export function onSuccess(now: Date): Transition {
  * Delivery failure: increments `attempts`. If still below `maxAttempts` the row goes back
  * to `pending` with a backoff delay; otherwise it moves to the dead-letter state `dead`.
  */
-// eslint-disable-next-line max-params -- signature fixed by detailed design 01-core section 3
+// eslint-disable-next-line max-params -- the state-transition signature is intentionally wide (one argument per transition input)
 export function onFailure(
   row: Pick<OutboxRow, "attempts">,
   cfg: RetryConfig,

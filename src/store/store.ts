@@ -1,5 +1,5 @@
 /**
- * The universal persistence port (per 02-store section 2).
+ * The universal persistence port.
  *
  * This is the single, storage-paradigm-neutral contract every backend implements. It is NOT tied
  * to SQL: the relational adapters (`pg`, `knex`) implement it on top of the shared SQL plumbing

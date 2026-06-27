@@ -1,5 +1,5 @@
 /**
- * HTTP client with SSRF-pinned connections (per 03-delivery section 2).
+ * HTTP client with SSRF-pinned connections.
  *
  * native `fetch` cannot control the connected IP, so a DNS-rebinding window stays open between
  * resolution and connection. Instead an undici `Agent` is given a custom `connect.lookup` that

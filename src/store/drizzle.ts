@@ -1,5 +1,5 @@
 /**
- * Drizzle adapter (per 02-store section 3.3). `drizzleStore({ db })`.
+ * Drizzle adapter. `drizzleStore({ db })`.
  *
  * `TTx = DrizzleTx` (a drizzle node-postgres transaction): `insertOutbox` runs on the caller's
  * drizzle transaction and joins the user's TX (fail-closed). Drizzle sits on node-postgres, so the

@@ -1,5 +1,5 @@
 /**
- * SSRF range evaluation as pure matchers (per 01-core section 6, basic design section 12).
+ * SSRF range evaluation as pure matchers.
  *
  * Real DNS resolution happens in the delivery layer; core only decides whether a given
  * IP / host is allowed. Allowlist has top priority, then blocklist, then private ranges.

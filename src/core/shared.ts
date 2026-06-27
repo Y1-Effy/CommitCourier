@@ -2,7 +2,7 @@
  * Cross-cutting primitive types shared across all modules.
  *
  * Kept in a separate file from {@link "./types"} so that lower-level helpers can
- * depend on these primitives without creating an import cycle (per 00-overview section 4).
+ * depend on these primitives without creating an import cycle.
  */
 
 /** Injectable clock. Can be fixed in tests. Defaults to `() => new Date()`. */
@@ -49,8 +49,8 @@ export function createConsoleLogger(prefix = "commitcourier"): Logger {
   };
 }
 
-/** Lifecycle status of an outbox row (basic design section 7). */
+/** Lifecycle status of an outbox row. */
 export type Status = "pending" | "in_flight" | "delivered" | "dead" | "observed" | "cancelled";
 
-/** Delivery mode. `observe` records without ever sending (staged rollout, section 15). */
+/** Delivery mode. `observe` records without ever sending (staged rollout). */
 export type Mode = "observe" | "active";

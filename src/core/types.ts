@@ -1,12 +1,12 @@
 /**
- * Domain types shared across modules (per 01-core section 2).
+ * Domain types shared across modules.
  *
  * These are pure data shapes with no behaviour. State transitions live in
  * {@link "./state"}, validation in {@link "./config"}.
  */
 import type { Clock, Logger, Status, Mode } from "./shared";
 
-/** A single Outbox row (1:1 with basic design section 6.1). */
+/** A single Outbox row. */
 export interface OutboxRow {
   /** uuid. Also used as the signature `webhook-id`. */
   id: string;
@@ -33,13 +33,13 @@ export interface OutboxRow {
   dispatchedAt: Date | null;
 }
 
-/** enqueue input (basic design section 9). */
+/** enqueue input. */
 export interface EnqueueInput {
   eventType: string;
   payload: unknown;
   /**
    * Per-event destination. Required for the `http` transport (inline `{ url, secret }` or a registered
-   * `{ endpointId }`). Omit for the `sink` transport (08-forward-sink): the destination is the
+   * `{ endpointId }`). Omit for the `sink` transport: the destination is the
    * configured sink/SaaS, so the row carries no per-event target. In `sink` mode any `endpoint` passed
    * here is ignored (and a stray `secret` would be stored unused), so omit it.
    */
@@ -47,7 +47,7 @@ export interface EnqueueInput {
   idempotencyKey?: string;
 }
 
-/** A single delivery-ledger row (basic design section 6.2). */
+/** A single delivery-ledger row. */
 export interface DeliveryAttempt {
   id: string;
   outboxId: string;
@@ -61,7 +61,7 @@ export interface DeliveryAttempt {
   attemptedAt: Date;
 }
 
-/** A registered endpoint row (basic design section 6.3). Optional registered-endpoint workflow. */
+/** A registered endpoint row. Optional registered-endpoint workflow. */
 export interface EndpointRow {
   id: string;
   url: string;
@@ -85,7 +85,7 @@ export interface EndpointRow {
   createdAt: Date;
 }
 
-/** Retry/backoff policy (basic design section 10). */
+/** Retry/backoff policy. */
 export interface RetryConfig {
   maxAttempts: number;
   backoff: "exponential";
@@ -95,10 +95,10 @@ export interface RetryConfig {
   jitter: number;
 }
 
-/** HTTP delivery policy (basic design section 9). */
+/** HTTP delivery policy. */
 export interface DeliveryConfig {
   /**
-   * Delivery transport (08-forward-sink section 5). `"http"` (default) delivers directly: CommitCourier
+   * Delivery transport. `"http"` (default) delivers directly: CommitCourier
    * signs, applies SSRF protection and the circuit breaker. `"sink"` hands each event off to a `Sink`
    * (e.g. a webhook-delivery SaaS) instead — signing/SSRF/circuit breaker are then delegated and not
    * applied by CommitCourier. Relay-wide: a single relay cannot mix `http` and `sink`.
@@ -118,14 +118,14 @@ export interface DeliveryConfig {
   connections?: number;
 }
 
-/** SSRF guard policy (basic design section 12). */
+/** SSRF guard policy. */
 export interface SsrfConfig {
   blockPrivateRanges: boolean;
   allowlist: readonly string[];
   blocklist: readonly string[];
 }
 
-/** Signature scheme (basic design section 11). Only Standard Webhooks is supported. */
+/** Signature scheme. Only Standard Webhooks is supported. */
 export interface SigningConfig {
   scheme: "standard-webhooks";
 }

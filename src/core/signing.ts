@@ -1,5 +1,5 @@
 /**
- * Standard Webhooks signing (per 01-core section 5, basic design section 11).
+ * Standard Webhooks signing.
  *
  * Signed content is `{id}.{timestamp}.{body}`, HMAC-SHA256, Base64-encoded.
  * Implemented with the WebCrypto global (`crypto.subtle`) so core stays cross-runtime

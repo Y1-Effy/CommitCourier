@@ -1,7 +1,7 @@
 /**
- * Optional low-latency wake seam (per 07-accelerator).
+ * Optional low-latency wake seam.
  *
- * The dispatcher runs on adaptive polling alone (04-dispatcher), so a row enqueued onto a quiet
+ * The dispatcher runs on adaptive polling alone, so a row enqueued onto a quiet
  * queue waits up to `pollIntervalMs` before delivery starts. An {@link Accelerator} cuts that idle
  * wait short: the signal side fires right after the outbox INSERT, and the listen side hands the
  * dispatcher a wake callback. The accelerator is a pure performance hint — the outbox row stays the

@@ -1,5 +1,5 @@
 /**
- * Background delivery loop (per 04-dispatcher).
+ * Background delivery loop.
  *
  * The loop keeps the p-limit queue continuously filled rather than draining one batch at a time:
  * it claims due rows up to the free capacity, dispatches them without waiting, and claims again as
@@ -257,7 +257,7 @@ export function createDispatcher(deps: {
   config: RelayConfig;
   options?: DispatcherOptions;
   /**
-   * Optional accelerator subscription (07-accelerator). When present, the dispatcher subscribes on
+   * Optional accelerator subscription. When present, the dispatcher subscribes on
    * `start()` and unsubscribes on `stop()`; an incoming wake cuts the idle backoff short so a
    * freshly enqueued row is dispatched with low latency. Omitted keeps pure adaptive polling.
    */

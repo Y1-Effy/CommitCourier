@@ -1,5 +1,5 @@
 /**
- * Prisma adapter (per 02-store section 3.4). `prismaStore({ prisma })`.
+ * Prisma adapter. `prismaStore({ prisma })`.
  *
  * `TTx = PrismaTx` (a Prisma interactive-transaction client): `insertOutbox` runs on the caller's
  * `prisma.$transaction(async (tx) => …)` client and joins the user's TX (fail-closed); dispatch/admin

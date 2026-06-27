@@ -1,10 +1,9 @@
 /**
- * Config resolution, defaulting and startup validation (per 01-core section 7,
- * basic design section 17).
+ * Config resolution, defaulting and startup validation.
  *
  * Invalid configuration is rejected fail-fast with `RelayError("CONFIG_INVALID")`.
  * Dangerous-but-valid settings (e.g. disabling SSRF protection) are allowed but warned
- * through the logger. Defaults mirror the single-source table in 00-overview section 6.
+ * through the logger. Defaults come from a single source of truth (see {@link DEFAULTS}).
  */
 import { RelayError } from "./errors";
 import type { Logger } from "./shared";
@@ -27,7 +26,7 @@ const NOOP_LOGGER: Logger = {
   error() {},
 };
 
-/** Default configuration values (single source of truth: 00-overview section 6). */
+/** Default configuration values (the single source of truth for defaults). */
 const DEFAULTS = {
   mode: "active",
   signing: { scheme: "standard-webhooks" },

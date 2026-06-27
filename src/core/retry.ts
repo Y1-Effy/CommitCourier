@@ -1,5 +1,5 @@
 /**
- * Exponential backoff with jitter (per 01-core section 4, basic design section 10).
+ * Exponential backoff with jitter.
  */
 import type { RetryConfig } from "./types";
 

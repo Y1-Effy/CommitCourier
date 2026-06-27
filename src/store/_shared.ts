@@ -42,7 +42,7 @@ export function loadInitSql(): string {
   return initSql;
 }
 
-// --- Migration tracking (02-store section 5). A lightweight version table records which migration
+// --- Migration tracking. A lightweight version table records which migration
 // scripts have been applied, so `migrate()` applies only the not-yet-applied ones in order. v1's
 // whole schema is `001_init`; future schema changes append `00N_*` entries to MIGRATIONS. Every
 // migration's DDL is itself idempotent (IF NOT EXISTS), so an existing deployment that pre-dates the
@@ -88,7 +88,7 @@ const MIGRATION_NAME_RE = /^[0-9a-z_]+$/;
 /** The ordered migration list. Append `00N_*` entries here for future schema changes. */
 export const MIGRATIONS: readonly Migration[] = [
   { name: "001_init", sql: initSql },
-  // 002: drop the target CHECK so the `sink` transport can enqueue target-less rows (08-forward-sink).
+  // 002: drop the target CHECK so the `sink` transport can enqueue target-less rows.
   { name: "002_sink_targetless", sql: sinkTargetlessSql },
 ];
 

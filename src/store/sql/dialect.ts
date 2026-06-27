@@ -1,5 +1,5 @@
 /**
- * SQL dialect seam for the relational store family (per the store-generalization design).
+ * SQL dialect seam for the relational store family.
  *
  * The Postgres-specific SQL — the claim CTE, the existence probe used by `diagnose()`, and the
  * DDL — lives behind this interface so the dialect can be swapped without touching the shared

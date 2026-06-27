@@ -1,5 +1,5 @@
 /**
- * Single-row delivery orchestration (per 03-delivery section 3, basic design section 8.2).
+ * Single-row delivery orchestration.
  *
  * Resolves the destination/key, signs, POSTs, records the ledger, and applies the state
  * transition for one claimed row. {@link deliverOne} is strictly fail-open: it never throws, so
@@ -92,7 +92,7 @@ export interface DeliverDeps {
   /** Optional tracing/metrics seam; see {@link DeliveryInstrument}. */
   instrument?: DeliveryInstrument;
   /**
-   * Delivery sink for `sink` transport (08-forward-sink). Required when
+   * Delivery sink for `sink` transport. Required when
    * `config.delivery.transport === "sink"`; `createRelay` fails fast if it is missing. Unused for the
    * default `http` transport. Each handoff is bounded by `config.delivery.timeoutMs`.
    */
@@ -154,7 +154,7 @@ function isPermanentResolveError(error: string): boolean {
 }
 
 /**
- * Map a {@link SinkResult} onto success (08-forward-sink section 4). A present `error` is always a
+ * Map a {@link SinkResult} onto success. A present `error` is always a
  * failure; otherwise a present `status` defers to the HTTP 2xx rule, and a bare result (no error, no
  * status) is a success.
  */
@@ -164,7 +164,7 @@ function isSinkSuccess(r: SinkResult): boolean {
 }
 
 /**
- * Map a failed {@link SinkResult} onto a permanent failure (08-forward-sink section 4). A present
+ * Map a failed {@link SinkResult} onto a permanent failure. A present
  * `status` defers to the HTTP permanent rule (410); otherwise an explicit `retryable === false` sends
  * the row straight to the DLQ. Everything else stays retryable.
  */
@@ -515,7 +515,7 @@ async function deliverHttp(
 }
 
 /**
- * `sink` transport (08-forward-sink section 6): hand the row to the configured sink, then write the
+ * `sink` transport: hand the row to the configured sink, then write the
  * ledger and apply the transition atomically. No signing, SSRF or circuit breaker — those are delegated
  * to the sink/SaaS. A throwing adapter is normalised to a retryable failure (fail-open). Signing/SSRF
  * are skipped entirely so a sink delivery never resolves a target URL or secret. The handoff is bounded
@@ -588,7 +588,7 @@ async function deliverSink(ctx: Ctx, sink: Sink | undefined): Promise<void> {
 
 /**
  * Deliver one claimed row, writing the ledger and applying the transition. Never throws: a
- * delivery-side failure is logged and persisted as a retryable failure (fail-open, section 4).
+ * delivery-side failure is logged and persisted as a retryable failure (fail-open).
  *
  * The ledger write and the transition are a single atomic `completeAttempt`, so a failure leaves
  * neither written — exactly one ledger row is produced per invocation with no partial state.
@@ -626,7 +626,7 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
     settled: { done: false },
   };
   try {
-    // `sink` transport bypasses target/secret resolution, signing and SSRF entirely (08-forward-sink).
+    // `sink` transport bypasses target/secret resolution, signing and SSRF entirely.
     if (deps.config.delivery.transport === "sink") {
       await deliverSink(ctx, deps.sink);
       return;
