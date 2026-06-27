@@ -11,6 +11,31 @@
 
 ### Added（追加）
 
+- **Cancel API（v2.1）**：`relay.cancel(outboxId)` が未送信の行を取り消します。`pending → cancelled` へは
+  `pending` のときのみ遷移し、既にクレーム済み（`in_flight`）や終端状態の行は変更しません。`{ cancelled }` を
+  返すので「間に合った」か「既に送信済み／不明な id」かを呼び出し側で判別できます。4 アダプタすべてに実装し、
+  不正な id は事前検証で `INVALID_ARGUMENT` になります。
+- **Auto-disable 回路遮断（v2.1）**：`createRelay({ circuitBreaker: { failureThreshold: N } })`（既定 `0` =
+  無効）で、登録エンドポイントへの連続配信失敗が `N` 回に達すると自動で disable し、成功で counter をリセット
+  します。インクリメントと disable は、これまで未使用だった `consecutive_failures` 列に対する単一の原子的
+  UPDATE です。fail-open（counter 更新失敗が配信を止めない）で、影響は登録エンドポイント経路のみ。`410 Gone`
+  経路は従来どおり直接 disable します。
+- **サーバーレス／cron 向け 1 回実行（v2.1）**：`dispatcher.runOnce({ reclaim, maxRows })` と糖衣の
+  `relay.dispatchOnce(options, runOptions)` が、常駐ループ無しでキューを 1 回ドレインして返します
+  （`concurrency`/`batchSize`/`ordering` を尊重）。返り値は `{ processed }`。連続ループ稼働中は拒否します。
+  常駐 Dispatcher を持てない Lambda/cron に好適。
+- **運用フットガン対策（v2.1）**：`relay.get(outboxId)` が単一の outbox 行を取得（読み取り専用・secret 非露出）。
+  `relay.replay(...)` は選択件数を安全上限にクランプし `{ ids, capped }` を返すため、広い `{ status: "dead" }`
+  の replay が無制限な大量再送に膨らむことはありません（`capped` が true の間はページングして継続）。
+- **組込みの保持/削除（v2.1）**：`relay.prune({ olderThan, statuses?, limit? })` が、しきい日時より古い終端行を
+  古い順にバッチ削除し（配信台帳は CASCADE）、`{ deleted }` を返します。対象は非アクティブ状態のみ（既定
+  `delivered`/`dead`/`cancelled`）で、`pending`/`in_flight` を渡すと `INVALID_ARGUMENT`＝稼働中の行は決して
+  削除されません。4 アダプタすべてに実装。1 回の呼び出しは上限（既定 10,000・最大 100,000）でクランプされ、
+  無制限な削除やテーブル全体ロックを起こしません。
+- **`commitcourier doctor` CLI（v2.1）**：ローカル開発と CI 向けの bin。DB スキーマ・適用済み/未適用マイグレーション・
+  配信インデックス・キュー健全性・設定（既定 vs 上書き、推奨だが未設定のチェックリストと理由、リスク警告）の
+  レディネスを点検します。`--config <file>`／`--skip-db`／`--database-url`／`--json` に対応し、コアテーブル欠落や
+  設定不正で非ゼロ終了（デプロイのゲートに使用可）。`pg` は DB 検査時のみ必要です。
 - **低遅延 配信アクセラレータ（v2）**：optional・fail-open な wake シーム。`createRelay({ accelerator })`
   が enqueue ごとにアクセラレータへ signal し、生成する各 Dispatcher を購読させるため、enqueue 直後の行が
   ポーリング間隔を待たず near-immediate に配信されます。第一実装の `commitcourier/accelerator/pg` の
@@ -62,6 +87,9 @@
 
 ### Changed（変更）
 
+- 署名で、import 済みの HMAC `CryptoKey` を secret ごとにメモ化（境界付き・プロセス内 LRU）するように変更。
+  配信ごと（ローテーション中は鍵ごと）の `crypto.subtle.importKey` を削減し、高スループット時の CPU を低減します。
+  署名出力は不変で、鍵は非抽出（extractable: false）のままです。
 - claim と reclaim のクエリを `pending` / `in_flight` 行のみの部分インデックスに変更。delivered/dead
   行が増えても高速なまま保たれます。
 - dispatcher のアイドル待機を約 50ms から `pollIntervalMs` までの適応バックオフに変更。アイドル後の

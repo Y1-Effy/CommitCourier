@@ -11,6 +11,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Cancel API (v2.1):** `relay.cancel(outboxId)` stops a not-yet-sent row, moving it `pending → cancelled`
+  only while it is still pending (an already-claimed `in_flight` or terminal row is left untouched). Returns
+  `{ cancelled }` so a caller can tell "stopped in time" from "already sent / unknown id". Implemented across
+  all four adapters and validated up front (a malformed id fails as `INVALID_ARGUMENT`).
+- **Auto-disable circuit breaker (v2.1):** `createRelay({ circuitBreaker: { failureThreshold: N } })` (default
+  `0` = off) auto-disables a registered endpoint after `N` consecutive failed deliveries; a success resets the
+  counter. The increment-and-disable is a single atomic UPDATE on the previously inert `consecutive_failures`
+  column. Fail-open (a counter-update error never stalls a delivery) and only affects the registered-endpoint
+  workflow; the `410 Gone` path still disables directly.
+- **One-shot dispatch for serverless/cron (v2.1):** `dispatcher.runOnce({ reclaim, maxRows })` and the
+  convenience `relay.dispatchOnce(options, runOptions)` drain the queue once and return (no long-lived loop),
+  honouring `concurrency`/`batchSize`/`ordering`. Returns `{ processed }`; refuses to run while the continuous
+  loop is active. Suitable for Lambda/cron where a persistent dispatcher cannot run.
+- **Operability guards (v2.1):** `relay.get(outboxId)` fetches a single outbox row (read-only, secret-free), and
+  `relay.replay(...)` now clamps its selection to a safe ceiling and returns `{ ids, capped }` so a broad
+  `{ status: "dead" }` replay can never fan out into an unbounded mass re-send — page on while `capped` is true.
+- **Built-in retention / pruning (v2.1):** `relay.prune({ olderThan, statuses?, limit? })` deletes terminal rows
+  older than a cutoff in bounded, oldest-first batches (ledger attempts cascade), returning `{ deleted }`. Only
+  non-active statuses are eligible (default `delivered`/`dead`/`cancelled`); passing `pending`/`in_flight` fails as
+  `INVALID_ARGUMENT`, so a live row is never deleted. Implemented across all four adapters; each call is capped
+  (default 10 000, max 100 000) so it never deletes — or locks — an unbounded set.
+- **`commitcourier doctor` CLI (v2.1):** a `bin` for local dev and CI that checks readiness — database schema,
+  applied vs pending migrations, dispatch indexes, queue health, and configuration (defaults vs overrides, the
+  recommended-but-unset checklist with rationale, and risk warnings). Supports `--config <file>`, `--skip-db`,
+  `--database-url`, and `--json`, and exits non-zero when the core tables are missing or the config is invalid
+  (so a deploy can gate on it). `pg` is needed only for the database checks.
 - **Low-latency delivery accelerator (v2):** an optional, fail-open wake seam. `createRelay({ accelerator })`
   signals the accelerator after each enqueue and subscribes every dispatcher it creates, so a freshly
   enqueued row is delivered near-immediately instead of after the poll interval. The first
@@ -66,6 +92,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Signing now memoises the imported HMAC `CryptoKey` per secret (bounded, process-wide LRU), removing a
+  `crypto.subtle.importKey` from every delivery (and from each key during a dual-signing rotation) — a CPU
+  win at high throughput. The signature output is unchanged; keys stay non-extractable.
 - The dispatch claim and reclaim queries now use partial indexes over only the `pending` /
   `in_flight` rows, so they stay fast as delivered/dead rows accumulate.
 - The dispatcher's idle wait now backs off adaptively from ~50ms up to `pollIntervalMs`, lowering the

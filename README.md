@@ -32,7 +32,11 @@ CommitCourier is the one embedded library that rides **your own DB transaction**
 - **Standard Webhooks signing** — receivers verify with any off-the-shelf Standard Webhooks library.
 - **Retries with exponential backoff + jitter, and a DLQ** for exhausted rows.
 - **Delivery ledger** — every attempt's request headers, response status, body snippet, and duration are recorded for support and audit.
-- **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time).
+- **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time), with a built-in safety cap so a broad replay never fans out into an unbounded mass re-send.
+- **Cancel** — stop a not-yet-sent row before it leaves (`relay.cancel(id)`); already-sent / in-flight rows are untouched.
+- **Serverless / cron friendly** — `relay.dispatchOnce()` drains the queue once and returns, so you can deliver from a Lambda or cron tick without a long-lived process.
+- **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops filling the DLQ.
+- **Built-in retention** — `relay.prune({ olderThan })` deletes old terminal rows in bounded batches (active rows are never touched), so tables don't grow forever.
 - **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
 - **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
@@ -260,10 +264,20 @@ Throughput is mostly about giving the dispatcher room to work:
 // Delivery ledger for one outbox row (every attempt, response, duration).
 const attempts = await relay.attempts({ outboxId });
 
+// Inspect one row (read-only, secret-free), or null when unknown.
+const row = await relay.get(outboxId);
+
+// Cancel a not-yet-sent row. { cancelled: false } if it was already claimed / sent / unknown.
+const { cancelled } = await relay.cancel(outboxId);
+
 // Replay: re-enqueue as fresh pending copies. By id…
 const { ids } = await relay.replay({ outboxId });
-// …or by filter (e.g. everything dead since a timestamp):
-await relay.replay({ filter: { status: "dead", since: new Date(Date.now() - 86_400_000) } });
+// …or by filter (e.g. everything dead since a timestamp). The selection is capped for safety:
+const res = await relay.replay({ filter: { status: "dead", since: new Date(Date.now() - 86_400_000) } });
+// `res.capped === true` means the cap truncated the match set, so not everything was re-sent. To
+// replay more, NARROW the filter (e.g. by `endpointId` or a tighter `since`) or raise `filter.limit` —
+// do NOT loop on the same filter: replay leaves the source rows untouched (the dead rows stay dead),
+// so an identical call re-selects the same head rows and would re-send them (duplicates).
 
 // Disable a registered endpoint.
 await relay.endpoints.disable(endpointId);
@@ -271,6 +285,28 @@ await relay.endpoints.disable(endpointId);
 // Graceful shutdown.
 await dispatcher.stop();
 ```
+
+### Serverless / cron delivery (one-shot)
+
+When you can't host a long-lived dispatcher (AWS Lambda, a cron job, a scheduled task), drain the queue once and return instead of running the loop:
+
+```ts
+// Reclaims stale locks, claims due rows in waves (honouring concurrency/batchSize/ordering),
+// delivers them, and resolves once the queue is empty (or maxRows is hit).
+const { processed } = await relay.dispatchOnce({ concurrency: 8 }, { maxRows: 500 });
+```
+
+`dispatchOnce` returns the number of rows dispatched this run. It refuses to run while a continuous `createDispatcher().start()` loop is active — use one model or the other.
+
+### Auto-disabling failing endpoints (circuit breaker)
+
+A permanently-down registered endpoint otherwise keeps receiving (and failing) every retry until each row exhausts its budget into the DLQ. Enable the circuit breaker to auto-disable it after N consecutive failures (a success resets the count):
+
+```ts
+const relay = await createRelay({ store, circuitBreaker: { failureThreshold: 20 } });
+```
+
+Default `failureThreshold: 0` keeps it off. It only applies to the registered-endpoint workflow (inline `{ url, secret }` deliveries have no endpoint to disable), is fail-open, and re-enabling is a normal `relay.endpoints.enable(endpointId)`.
 
 ### Logging & observability
 
@@ -344,7 +380,45 @@ Two operational notes: (1) the transactional wake rides your enqueue transaction
 
 ### Data retention
 
-CommitCourier never deletes rows on its own. `webhook_outbox` (including `delivered`/`dead` rows) and `webhook_delivery_attempts` grow over time, so schedule your own pruning — for example, delete `delivered` outbox rows older than your retention window. Deleting an outbox row cascades to its ledger attempts (`ON DELETE CASCADE`).
+CommitCourier never deletes rows automatically — `webhook_outbox` (including `delivered`/`dead`/`cancelled` rows) and `webhook_delivery_attempts` grow over time — so schedule your own pruning. Use the built-in `relay.prune(...)` from a cron/scheduled job:
+
+```ts
+// Delete terminal rows older than 30 days, in bounded batches. Ledger attempts cascade.
+const cutoff = new Date(Date.now() - 30 * 86_400_000);
+let res = await relay.prune({ olderThan: cutoff });
+while (res.deleted === 10_000) res = await relay.prune({ olderThan: cutoff }); // page until drained
+```
+
+`prune` only deletes **non-active** statuses (default `delivered` / `dead` / `cancelled`; pass `statuses` to narrow or to include `observed`). A `pending` / `in_flight` row is **never** deleted — passing one fails as `INVALID_ARGUMENT`. Each call is bounded by `limit` (default 10 000, capped at 100 000) and returns `{ deleted }`; when it equals the limit, call again to keep pruning. Deleting an outbox row cascades to its ledger attempts (`ON DELETE CASCADE`). You can still prune with raw SQL if you prefer.
+
+## CLI: `commitcourier doctor`
+
+A readiness check for local dev and CI. It inspects the database (schema, applied migrations, dispatch indexes, queue health) and your configuration (which settings are at their defaults, which recommended-but-optional ones are unset and why that matters, and any risky settings):
+
+```sh
+# Database + config readiness (uses $DATABASE_URL; the DB checks need the `pg` peer dep):
+npx commitcourier doctor
+
+# Config readiness only (no DB), or inspect a specific config file, or machine-readable output:
+npx commitcourier doctor --skip-db
+npx commitcourier doctor --config ./commitcourier.config.js   # default-exports a partial config
+npx commitcourier doctor --json
+```
+
+It exits non-zero when the core tables are missing or the config is invalid, so you can gate a deploy on it. Example (abridged):
+
+```text
+Database
+  [ ok ] core tables present
+  [warn] pending migrations: 002_… — run migrate()
+  [ ok ] dispatch indexes present
+  [info] queue: pending=3 in_flight=0 delivered=120 dead=2 …
+  [warn] 2 dead rows in the DLQ
+Configuration
+  [warn] logger: unset — the default logger is a no-op, so delivery/claim errors are SILENT in production
+  [info] circuitBreaker.failureThreshold: 0 — failing endpoints are never auto-disabled
+[ !! ] doctor: problems found (see above)
+```
 
 ### Inspecting the DLQ (`dead` rows)
 
@@ -439,10 +513,15 @@ interface Relay<TTx> {
   enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   createDispatcher(options?: DispatcherOptions): Dispatcher;
+  dispatchOnce(options?: DispatcherOptions, runOptions?: RunOnceOptions): Promise<{ processed: number }>;
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
-  replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
+  replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[]; capped: boolean }>;
+  cancel(outboxId: string): Promise<{ cancelled: boolean }>;
+  get(outboxId: string): Promise<OutboxListItem | null>;
+  list(filter?: OutboxListFilter): Promise<Page<OutboxListItem>>;
+  prune(opts: PruneOptions): Promise<{ deleted: number }>; // retention: delete old terminal rows
   stats(): Promise<OutboxStats>;
-  endpoints: EndpointAdmin; // register / update / enable / disable / get
+  endpoints: EndpointAdmin; // register / update / enable / disable / get / list
 }
 ```
 
@@ -452,6 +531,7 @@ interface Relay<TTx> {
 - **v1.1:** key rotation / dual signing (`endpoints.rotateSecret` / `finalizeRotation`), `Retry-After` support, immediate `410 Gone` endpoint invalidation, opt-in per-endpoint FIFO (`createDispatcher({ ordering: "per-endpoint" })`), and Drizzle (`commitcourier/store/drizzle`) + Prisma (`commitcourier/store/prisma`) adapters.
 - **v1.2:** read-only DLQ/outbox list API (`relay.list({ status: "dead", … })`, secret-free, seq-keyset paging), endpoint listing (`endpoints.list({ status, … })`), and the OpenTelemetry adapter (`commitcourier/otel` — span per delivery + outcome counter/duration histogram, via the fail-open `instrument` / `hooks` seam).
 - **v2:** Low-latency delivery accelerator (generic `Accelerator` seam + Postgres LISTEN/NOTIFY adapter `commitcourier/accelerator/pg`; the outbox row stays the source of truth), schema migration version table (`commitcourier_migrations` + incremental `migrate()`). A BullMQ accelerator and further endpoint-management API remain planned on the same seams.
+- **v2.1:** operability — cancel a not-yet-sent row (`relay.cancel`), one-shot serverless/cron drain (`relay.dispatchOnce` / `dispatcher.runOnce`), single-row read (`relay.get`), a replay safety cap (`replay` returns `{ ids, capped }`), an opt-in endpoint circuit breaker (`createRelay({ circuitBreaker: { failureThreshold } })`), and built-in retention/pruning (`relay.prune({ olderThan })`).
 
 ## Security
 

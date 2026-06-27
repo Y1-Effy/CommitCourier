@@ -32,7 +32,11 @@ CommitCourier は、**あなた自身の DB トランザクションに相乗り
 - **Standard Webhooks 署名** — 受信側は既存の Standard Webhooks 検証ライブラリでそのまま検証可能。
 - **指数バックオフ＋ジッターのリトライと DLQ**（試行上限超過分の退避）。
 - **配信台帳** — 試行ごとのリクエストヘッダ・応答ステータス・本文スニペット・所要時間を記録（サポート・監査用）。
-- **リプレイ** — ID 指定、またはフィルタ指定（例：特定時刻以降の `dead` 全件）で再 enqueue。
+- **リプレイ** — ID 指定、またはフィルタ指定（例：特定時刻以降の `dead` 全件）で再 enqueue。安全上限を内蔵し、広いリプレイが無制限な大量再送に膨らみません。
+- **キャンセル** — 未送信の行を送信前に止める（`relay.cancel(id)`）。送信済み／配信中の行は変更しません。
+- **サーバーレス／cron 対応** — `relay.dispatchOnce()` がキューを 1 回ドレインして返すので、常駐プロセス無しに Lambda や cron tick から配信できます。
+- **エンドポイント回路遮断** — 連続失敗が N 回に達した登録エンドポイントを任意で自動 disable し、恒久ダウン宛先が DLQ を埋め続けるのを防止。
+- **組込みの保持/削除** — `relay.prune({ olderThan })` が古い終端行をバッチ削除（アクティブ行は対象外）。テーブルの無限肥大を防止。
 - **SSRF 防御は既定 ON** — プライベート／ループバック／リンクローカル／クラウドメタデータ宛先を遮断。
 - **複数インスタンスでの単一配信**を `FOR UPDATE SKIP LOCKED` で担保。可視性タイムアウト回収で at-least-once。
 - **観測（observe）モード** — 実送信せずに「送るはずの内容」を記録し、安全に段階導入。
@@ -260,10 +264,19 @@ dispatcher のオプション（`relay.createDispatcher({ … })`）：
 // 1 つの outbox 行の配信台帳（全試行・応答・所要時間）。
 const attempts = await relay.attempts({ outboxId });
 
+// 1 行を参照（読み取り専用・secret 非露出）。不明な id は null。
+const row = await relay.get(outboxId);
+
+// 未送信の行をキャンセル。既にクレーム済み／送信済み／不明な場合は { cancelled: false }。
+const { cancelled } = await relay.cancel(outboxId);
+
 // リプレイ：新しい pending コピーとして再 enqueue。ID 指定…
 const { ids } = await relay.replay({ outboxId });
-// …またはフィルタ指定（例：特定時刻以降の dead 全件）：
-await relay.replay({ filter: { status: "dead", since: new Date(Date.now() - 86_400_000) } });
+// …またはフィルタ指定（例：特定時刻以降の dead 全件）。選択は安全のため上限でクランプされる：
+const res = await relay.replay({ filter: { status: "dead", since: new Date(Date.now() - 86_400_000) } });
+// `res.capped === true` は上限で打ち切られた印（全件は再送されていない）。さらに replay するには
+// フィルタを絞る（`endpointId` やより狭い `since`）か `filter.limit` を上げる。同一フィルタでループしては
+// いけない：replay は元行を変更しない（dead は dead のまま）ので、同じ先頭行を再選択して重複再送になる。
 
 // 登録済みエンドポイントを無効化。
 await relay.endpoints.disable(endpointId);
@@ -271,6 +284,28 @@ await relay.endpoints.disable(endpointId);
 // graceful シャットダウン。
 await dispatcher.stop();
 ```
+
+### サーバーレス／cron 配信（1 回実行）
+
+常駐 Dispatcher を持てない場合（AWS Lambda・cron・スケジュールタスク）、ループの代わりにキューを 1 回ドレインして返します：
+
+```ts
+// 滞留ロックを回収し、due 行を波状にクレーム（concurrency/batchSize/ordering を尊重）して配信し、
+// キューが空（または maxRows 到達）になったら解決します。
+const { processed } = await relay.dispatchOnce({ concurrency: 8 }, { maxRows: 500 });
+```
+
+`dispatchOnce` はその実行で配信した行数を返します。連続ループ（`createDispatcher().start()`）の稼働中は拒否します — どちらか一方のモデルを使ってください。
+
+### 失敗エンドポイントの自動 disable（回路遮断）
+
+恒久ダウンの登録エンドポイントは、放置すると各行が retry budget を使い切って DLQ に落ちるまで配信（と失敗）を受け続けます。回路遮断を有効にすると、連続 N 回失敗で自動 disable します（成功で counter リセット）：
+
+```ts
+const relay = await createRelay({ store, circuitBreaker: { failureThreshold: 20 } });
+```
+
+既定の `failureThreshold: 0` は無効。登録エンドポイント経路のみに適用（インライン `{ url, secret }` には disable 対象が無い）、fail-open で、再有効化は通常の `relay.endpoints.enable(endpointId)` です。
 
 ### ロギングと可観測性
 
@@ -344,7 +379,45 @@ relay.createDispatcher({ pollIntervalMs: 10_000 }).start();
 
 ### データ保持
 
-CommitCourier は行を自動削除しません。`webhook_outbox`（`delivered`/`dead` 行を含む）と `webhook_delivery_attempts` は時間とともに増えるため、定期的なプルーニングは利用者側で行ってください（例：保持期間を超えた `delivered` の outbox 行を削除）。outbox 行を削除すると、その配信台帳も連動して削除されます（`ON DELETE CASCADE`）。
+CommitCourier は行を自動削除しません。`webhook_outbox`（`delivered`/`dead`/`cancelled` 行を含む）と `webhook_delivery_attempts` は時間とともに増えるため、定期的なプルーニングが必要です。組込みの `relay.prune(...)` を cron／スケジュールジョブから使えます：
+
+```ts
+// 30 日より古い終端行をバッチ削除。配信台帳は連動削除。
+const cutoff = new Date(Date.now() - 30 * 86_400_000);
+let res = await relay.prune({ olderThan: cutoff });
+while (res.deleted === 10_000) res = await relay.prune({ olderThan: cutoff }); // 残りが無くなるまでページング
+```
+
+`prune` は**非アクティブ**ステータスのみ削除します（既定 `delivered`／`dead`／`cancelled`。`statuses` で絞り込み、または `observed` を含めることも可能）。`pending`／`in_flight` の行は**決して削除されません**（渡すと `INVALID_ARGUMENT`）。1 回の呼び出しは `limit`（既定 10,000・上限 100,000）で上限化され `{ deleted }` を返すので、limit と一致する間は再度呼んで消し切れます。outbox 行を削除するとその配信台帳も連動削除されます（`ON DELETE CASCADE`）。従来どおり生 SQL での prune も可能です。
+
+## CLI：`commitcourier doctor`
+
+ローカル開発と CI 向けのレディネス診断。DB（スキーマ・適用済みマイグレーション・配信インデックス・キュー健全性）と設定（どの項目が既定のままか、推奨だが未設定の項目とその理由、リスク設定）を点検します：
+
+```sh
+# DB ＋ 設定レディネス（$DATABASE_URL を使用。DB 検査には pg peer dep が必要）：
+npx commitcourier doctor
+
+# 設定のみ（DB なし）／特定の設定ファイルを検査／機械可読出力：
+npx commitcourier doctor --skip-db
+npx commitcourier doctor --config ./commitcourier.config.js   # 部分設定を default export
+npx commitcourier doctor --json
+```
+
+コアテーブル欠落や設定不正のとき非ゼロ終了するので、デプロイのゲートに使えます。出力例（抜粋）：
+
+```text
+Database
+  [ ok ] core tables present
+  [warn] pending migrations: 002_… — run migrate()
+  [ ok ] dispatch indexes present
+  [info] queue: pending=3 in_flight=0 delivered=120 dead=2 …
+  [warn] 2 dead rows in the DLQ
+Configuration
+  [warn] logger: unset — the default logger is a no-op, so delivery/claim errors are SILENT in production
+  [info] circuitBreaker.failureThreshold: 0 — failing endpoints are never auto-disabled
+[ !! ] doctor: problems found (see above)
+```
 
 ### DLQ（`dead` 行）の調査
 
@@ -439,10 +512,15 @@ interface Relay<TTx> {
   enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   createDispatcher(options?: DispatcherOptions): Dispatcher;
+  dispatchOnce(options?: DispatcherOptions, runOptions?: RunOnceOptions): Promise<{ processed: number }>;
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
-  replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
+  replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[]; capped: boolean }>;
+  cancel(outboxId: string): Promise<{ cancelled: boolean }>;
+  get(outboxId: string): Promise<OutboxListItem | null>;
+  list(filter?: OutboxListFilter): Promise<Page<OutboxListItem>>;
+  prune(opts: PruneOptions): Promise<{ deleted: number }>; // 保持：古い終端行を削除
   stats(): Promise<OutboxStats>;
-  endpoints: EndpointAdmin; // register / update / enable / disable / get
+  endpoints: EndpointAdmin; // register / update / enable / disable / get / list
 }
 ```
 
@@ -452,6 +530,7 @@ interface Relay<TTx> {
 - **v1.1**：鍵ローテーション／二重署名（`endpoints.rotateSecret` / `finalizeRotation`）、`Retry-After` 尊重、`410 Gone` での即時エンドポイント無効化、オプトインのエンドポイント単位 FIFO（`createDispatcher({ ordering: "per-endpoint" })`）、Drizzle（`commitcourier/store/drizzle`）＋ Prisma（`commitcourier/store/prisma`）アダプタ。
 - **v1.2**：読み取り専用の DLQ／outbox 一覧 API（`relay.list({ status: "dead", … })`、secret 非露出・seq キーセットページング）、エンドポイント一覧（`endpoints.list({ status, … })`）、OpenTelemetry アダプタ（`commitcourier/otel` — 配信ごとの span ＋ outcome カウンター／duration ヒストグラム。fail-open な `instrument` / `hooks` シーム経由）。
 - **v2**：低遅延配信アクセラレータ（汎用 `Accelerator` シーム＋ Postgres LISTEN/NOTIFY 実装 `commitcourier/accelerator/pg`。Outbox 行は引き続き真実の源泉）、スキーマバージョン管理テーブル（`commitcourier_migrations` ＋ 増分 `migrate()`）。BullMQ アクセラレータとさらなるエンドポイント管理 API は同じシーム上の将来課題。
+- **v2.1**：運用性 — 未送信行のキャンセル（`relay.cancel`）、サーバーレス／cron 向け 1 回実行（`relay.dispatchOnce` / `dispatcher.runOnce`）、単一行取得（`relay.get`）、リプレイ安全上限（`replay` は `{ ids, capped }` を返す）、オプトインのエンドポイント回路遮断（`createRelay({ circuitBreaker: { failureThreshold } })`）、組込みの保持/削除（`relay.prune({ olderThan })`）。
 
 ## セキュリティ
 
