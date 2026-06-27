@@ -32,7 +32,11 @@ describe.skipIf(!dockerAvailable())("concurrent migrate (integration)", () => {
       const probe = pools[0]!;
       // The schema exists exactly once and the tracking row is recorded exactly once.
       const migs = await probe.query("SELECT name FROM commitcourier_migrations");
-      expect(migs.rows.map((r: { name: string }) => r.name)).toEqual(["001_init"]);
+      // Recorded once each, in any order (the SELECT is unordered); sort for a stable comparison.
+      expect(migs.rows.map((r: { name: string }) => r.name).sort()).toEqual([
+        "001_init",
+        "002_sink_targetless",
+      ]);
       const diag = await postgresStore({ pool: probe }).diagnose();
       expect(diag.ok).toBe(true);
       expect(diag.missingTables).toEqual([]);
@@ -40,7 +44,7 @@ describe.skipIf(!dockerAvailable())("concurrent migrate (integration)", () => {
       // A second concurrent wave (now an all-applied no-op) must also be clean.
       await Promise.all(pools.map((pool) => postgresStore({ pool }).migrate()));
       const after = await probe.query("SELECT count(*)::int AS n FROM commitcourier_migrations");
-      expect((after.rows[0] as { n: number }).n).toBe(1);
+      expect((after.rows[0] as { n: number }).n).toBe(2);
     } finally {
       await Promise.all(pools.map((pool) => pool.end()));
     }

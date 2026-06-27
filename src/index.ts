@@ -32,3 +32,6 @@ export type {
 } from "./delivery/deliver";
 export type { Dispatcher, DispatcherOptions, RunOnceOptions } from "./dispatcher/dispatcher";
 export type { Accelerator, WakeSignal } from "./accelerator/accelerator";
+// `sink` transport port abstraction (08-forward-sink); referenced by `RelayInit.sink`. The Svix sample
+// adapter ships under the `commitcourier/forward/svix` subpath so its optional peer never loads here.
+export type { Sink, SinkEvent, SinkResult } from "./forward/index";

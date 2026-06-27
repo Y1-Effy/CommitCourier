@@ -21,6 +21,9 @@ export default defineConfig([
       // Optional Postgres LISTEN/NOTIFY accelerator (07-accelerator). A future BullMQ accelerator would
       // add `src/accelerator/bullmq.ts` here under the same `Accelerator` seam.
       "src/accelerator/pg.ts",
+      // `sink` transport: the port abstraction and the optional Svix sample adapter (08-forward-sink).
+      "src/forward/index.ts",
+      "src/forward/svix.ts",
     ],
     format: ["esm", "cjs"],
     dts: true,

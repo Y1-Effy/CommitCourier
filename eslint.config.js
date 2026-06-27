@@ -97,6 +97,29 @@ export default tseslint.config(
     },
   },
 
+  // Store adapters and the top-level wiring functions are cohesive factories: each builds one object
+  // whose many methods share closure state (a pool/trx, the SQL builders). Splitting them into free
+  // helpers would thread that state through extra params and hurt readability more than the length does,
+  // so the size heuristics are relaxed here (correctness rules above still apply). The four adapters are
+  // deliberately parallel, and _shared.ts is the single SQL-builder module they all draw from.
+  {
+    files: ["src/store/**/*.ts", "src/relay.ts", "src/dispatcher/dispatcher.ts"],
+    rules: {
+      "max-lines-per-function": "off",
+      "max-lines": "off",
+    },
+  },
+
+  // deliver.ts orchestrates two delivery transports (http and sink, 08-forward-sink) over one shared
+  // ledger/transition/instrumentation pipeline. Its functions stay small (per-function limit kept on),
+  // but the file as a whole exceeds the length heuristic; relax only the file-length rule here.
+  {
+    files: ["src/delivery/deliver.ts"],
+    rules: {
+      "max-lines": "off",
+    },
+  },
+
   // Enforce "zero-import, cross-runtime" for core.
   // No third-party and no node: namespace imports (signing uses the WebCrypto global).
   // Node-specific globals (Buffer/process, etc.) are forbidden; only Web standard globals are allowed.

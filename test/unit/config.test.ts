@@ -22,6 +22,7 @@ describe("config.resolveConfig defaults", () => {
       jitter: 0.2,
     });
     expect(cfg.delivery).toEqual({
+      transport: "http",
       timeoutMs: 15_000,
       bodySnippetBytes: 4_096,
       keepAliveTimeoutMs: 10_000,
@@ -79,6 +80,7 @@ describe("config.resolveConfig validation (fail-fast)", () => {
     ["baseMs NaN", { retry: { baseMs: Number.NaN } }],
     ["capMs <= 0", { retry: { capMs: 0 } }],
     ["capMs below baseMs", { retry: { baseMs: 5_000, capMs: 1_000 } }],
+    ["unknown transport", { delivery: { transport: "grpc" } } as unknown as Record<string, never>],
     ["timeoutMs <= 0", { delivery: { timeoutMs: 0 } }],
     ["bodySnippetBytes <= 0", { delivery: { bodySnippetBytes: 0 } }],
     ["keepAliveTimeoutMs <= 0", { delivery: { keepAliveTimeoutMs: 0 } }],
@@ -127,6 +129,10 @@ describe("config.resolveConfig validation (fail-fast)", () => {
 
   it("leaves connections undefined by default (undici default)", () => {
     expect(resolveConfig({}).delivery.connections).toBeUndefined();
+  });
+
+  it('accepts delivery.transport "sink" (08-forward-sink)', () => {
+    expect(resolveConfig({ delivery: { transport: "sink" } }).delivery.transport).toBe("sink");
   });
 });
 

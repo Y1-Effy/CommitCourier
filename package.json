@@ -100,6 +100,26 @@
         "default": "./dist/otel/index.cjs"
       }
     },
+    "./forward": {
+      "import": {
+        "types": "./dist/forward/index.d.ts",
+        "default": "./dist/forward/index.js"
+      },
+      "require": {
+        "types": "./dist/forward/index.d.cts",
+        "default": "./dist/forward/index.cjs"
+      }
+    },
+    "./forward/svix": {
+      "import": {
+        "types": "./dist/forward/svix.d.ts",
+        "default": "./dist/forward/svix.js"
+      },
+      "require": {
+        "types": "./dist/forward/svix.d.cts",
+        "default": "./dist/forward/svix.cjs"
+      }
+    },
     "./accelerator/pg": {
       "import": {
         "types": "./dist/accelerator/pg.d.ts",
@@ -142,7 +162,8 @@
     "@prisma/client": ">=5",
     "drizzle-orm": ">=0.30",
     "knex": ">=3",
-    "pg": ">=8"
+    "pg": ">=8",
+    "svix": ">=1"
   },
   "peerDependenciesMeta": {
     "@opentelemetry/api": {
@@ -158,6 +179,9 @@
       "optional": true
     },
     "pg": {
+      "optional": true
+    },
+    "svix": {
       "optional": true
     }
   },
@@ -184,6 +208,7 @@
     "prettier": "^3.4.2",
     "prisma": "^7.8.0",
     "publint": "^0.3.0",
+    "svix": "^1.96.1",
     "testcontainers": "^12.0.3",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2",

@@ -155,6 +155,14 @@ function readinessChecklist(loaded: Record<string, unknown>, effective: RelayCon
         ? "set — low-latency LISTEN/NOTIFY wake"
         : "unset — delivery latency is bounded by pollIntervalMs (polling only)",
     },
+    {
+      key: "delivery.transport",
+      status: effective.delivery.transport === "sink" ? "ok" : "default",
+      detail:
+        effective.delivery.transport === "sink"
+          ? 'sink — events are handed to a Sink; signing/SSRF/circuit breaker are DELEGATED to the sink/SaaS (a "sink" config also requires `sink`)'
+          : "http — direct delivery (CommitCourier signs and applies SSRF protection)",
+    },
   ];
 }
 

@@ -8,6 +8,7 @@
  * only the driver- and dialect-agnostic plumbing.
  */
 import initSql from "./sql/001_init.sql";
+import sinkTargetlessSql from "./sql/002_sink_targetless.sql";
 import type { OutboxRow, DeliveryAttempt, EndpointRow, Transition, Status } from "../core/index";
 import type {
   NewOutboxRow,
@@ -85,7 +86,11 @@ export interface Migration {
 const MIGRATION_NAME_RE = /^[0-9a-z_]+$/;
 
 /** The ordered migration list. Append `00N_*` entries here for future schema changes. */
-export const MIGRATIONS: readonly Migration[] = [{ name: "001_init", sql: initSql }];
+export const MIGRATIONS: readonly Migration[] = [
+  { name: "001_init", sql: initSql },
+  // 002: drop the target CHECK so the `sink` transport can enqueue target-less rows (08-forward-sink).
+  { name: "002_sink_targetless", sql: sinkTargetlessSql },
+];
 
 /**
  * The tracking-table create as a single multi-statement script that first takes the advisory lock,

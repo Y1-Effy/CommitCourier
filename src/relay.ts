@@ -44,6 +44,7 @@ import { createCriticalLogger } from "./delivery/critical";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
 import type { Dispatcher, DispatcherOptions, RunOnceOptions } from "./dispatcher/dispatcher";
 import type { Accelerator } from "./accelerator/accelerator";
+import type { Sink } from "./forward/index";
 import {
   attempts as adminAttempts,
   replay as adminReplay,
@@ -148,6 +149,14 @@ export interface RelayInit<TTx> {
    * delays delivery. Wire it with `createPgAccelerator` from `commitcourier/accelerator/pg`.
    */
   accelerator?: Accelerator<TTx>;
+  /**
+   * Delivery sink for `sink` transport (08-forward-sink). Required when
+   * `delivery.transport === "sink"` — each event is handed to it instead of being delivered over HTTP,
+   * and CommitCourier's signing/SSRF/circuit breaker are delegated. Ignored for the default `http`
+   * transport. Each handoff is bounded by `delivery.timeoutMs`, but the sink is also responsible for
+   * its own latency/timeout. Wire it with `svixSink` from `commitcourier/forward/svix` or your own `Sink`.
+   */
+  sink?: Sink;
 }
 
 /** The public surface returned by {@link createRelay}. */
@@ -261,6 +270,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     cipher,
     endpointCacheTtlMs,
     unsafeAllowPlaintextSecrets,
+    sink,
     ...rest
   } = config;
   // Delivery is fail-open, so without a logger routine failures/retries are swallowed silently. The
@@ -279,13 +289,32 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   const resolved = resolveConfig(rest);
   // Signing secrets are written in plaintext without a cipher. This is a security footgun, so warn at
   // startup unless the caller acknowledges that at-rest encryption is handled elsewhere — symmetric to
-  // the no-logger warning above. Non-fatal: never breaks an existing deployment.
-  if (cipher === undefined && unsafeAllowPlaintextSecrets !== true) {
+  // the no-logger warning above. Non-fatal: never breaks an existing deployment. Skipped in `sink`
+  // transport, where signing is delegated and no signing secret is used (the warning would be noise).
+  if (
+    cipher === undefined &&
+    unsafeAllowPlaintextSecrets !== true &&
+    resolved.delivery.transport !== "sink"
+  ) {
     const msg =
       "no cipher configured: signing secrets (secret_snapshot, endpoint secret) are stored in PLAINTEXT " +
       "in your database. At-rest encryption is then a precondition you must meet elsewhere (DB disk " +
       "encryption, column encryption, or pass `cipher` e.g. createAesGcmCipher). Set " +
       "`unsafeAllowPlaintextSecrets: true` to acknowledge and silence this.";
+    if (loggerConfigured) resolved.logger.warn(msg);
+    else console.warn(`[commitcourier] ${msg}`);
+  }
+  // In `sink` transport the destination is delegated to the sink/SaaS: `sink` is required, and CC-side
+  // signing/SSRF/circuit-breaker settings do not apply. Fail fast on a missing sink; warn once that the
+  // delegated settings are ignored (non-fatal — they are naturally left over during a staged migration).
+  if (resolved.delivery.transport === "sink") {
+    if (sink === undefined) {
+      throw new RelayError("CONFIG_INVALID", 'delivery.transport "sink" requires a sink');
+    }
+    const msg =
+      'delivery.transport is "sink": CommitCourier delegates signing, SSRF protection and the circuit ' +
+      "breaker to the sink/SaaS, so any signing/ssrf/circuitBreaker settings are ignored. The sink is " +
+      "responsible for final delivery and customer-facing retries.";
     if (loggerConfigured) resolved.logger.warn(msg);
     else console.warn(`[commitcourier] ${msg}`);
   }
@@ -315,6 +344,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
       critical,
       hooks,
       instrument,
+      sink,
     });
 
   /** Build the outbox row from enqueue input, snapshotting the inline secret at enqueue time. */
@@ -322,7 +352,9 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     const init = initialState(resolved.mode, resolved.clock());
     const inline = asInline(input.endpoint);
     const registered = inline ? null : asRegistered(input.endpoint);
-    if (!inline && !registered) {
+    // `sink` transport delivers to the configured sink/SaaS, not a per-event URL, so a target is not
+    // required (the row is target-less). `http` still requires one.
+    if (!inline && !registered && resolved.delivery.transport !== "sink") {
       throw new RelayError(
         "ENQUEUE_NO_TARGET",
         "enqueue requires endpoint { url, secret } or { endpointId }",

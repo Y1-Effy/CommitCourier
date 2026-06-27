@@ -75,6 +75,7 @@ export interface DeliveryConfig {
     keepAliveTimeoutMs: number;
     // (undocumented)
     timeoutMs: number;
+    transport: "http" | "sink";
 }
 
 // @public
@@ -214,8 +215,7 @@ export interface EndpointSummary {
 
 // @public
 export interface EnqueueInput {
-    // (undocumented)
-    endpoint: {
+    endpoint?: {
         url: string;
         secret: string;
     } | {
@@ -526,6 +526,7 @@ export interface RelayInit<TTx> {
     retry?: Partial<RetryConfig>;
     // (undocumented)
     signing?: Partial<SigningConfig>;
+    sink?: Sink;
     // (undocumented)
     ssrf?: Partial<SsrfConfig>;
     // (undocumented)
@@ -594,6 +595,32 @@ export interface SignatureHeaders {
 export interface SigningConfig {
     // (undocumented)
     scheme: "standard-webhooks";
+}
+
+// @public
+export interface Sink {
+    // (undocumented)
+    deliver(event: SinkEvent): Promise<SinkResult>;
+}
+
+// @public
+export interface SinkEvent {
+    // (undocumented)
+    endpointId?: string | null;
+    // (undocumented)
+    eventType: string;
+    id: string;
+    idempotencyKey?: string;
+    // (undocumented)
+    payload: unknown;
+}
+
+// @public
+export interface SinkResult {
+    error?: string;
+    providerMessageId?: string;
+    retryable?: boolean;
+    status?: number | null;
 }
 
 // @public

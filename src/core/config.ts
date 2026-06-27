@@ -32,7 +32,12 @@ const DEFAULTS = {
   mode: "active",
   signing: { scheme: "standard-webhooks" },
   retry: { maxAttempts: 12, backoff: "exponential", baseMs: 1_000, capMs: 3_600_000, jitter: 0.2 },
-  delivery: { timeoutMs: 15_000, bodySnippetBytes: 4_096, keepAliveTimeoutMs: 10_000 },
+  delivery: {
+    transport: "http",
+    timeoutMs: 15_000,
+    bodySnippetBytes: 4_096,
+    keepAliveTimeoutMs: 10_000,
+  },
   ssrf: {
     blockPrivateRanges: true,
     allowlist: [] as readonly string[],
@@ -70,6 +75,43 @@ function validateRetry(retry: RelayConfig["retry"]): void {
   }
 }
 
+/** Validate the delivery policy; values are typed but may be untyped at runtime. */
+function validateDelivery(delivery: RelayConfig["delivery"]): void {
+  // transport is typed to a literal but can be anything from untyped runtime input.
+  if ((delivery.transport as string) !== "http" && (delivery.transport as string) !== "sink") {
+    fail(`delivery.transport must be "http" or "sink", got ${delivery.transport}`);
+  }
+  if (!(delivery.timeoutMs > 0)) {
+    fail(`delivery.timeoutMs must be > 0, got ${String(delivery.timeoutMs)}`);
+  }
+  if (!(delivery.bodySnippetBytes > 0)) {
+    fail(`delivery.bodySnippetBytes must be > 0, got ${String(delivery.bodySnippetBytes)}`);
+  }
+  if (!(delivery.keepAliveTimeoutMs > 0)) {
+    fail(`delivery.keepAliveTimeoutMs must be > 0, got ${String(delivery.keepAliveTimeoutMs)}`);
+  }
+  if (
+    delivery.connections !== undefined &&
+    !(Number.isInteger(delivery.connections) && delivery.connections >= 1)
+  ) {
+    fail(`delivery.connections must be an integer >= 1, got ${String(delivery.connections)}`);
+  }
+}
+
+/** Validate the circuit-breaker policy; values are typed but may be untyped at runtime. */
+function validateCircuitBreaker(cb: RelayConfig["circuitBreaker"]): void {
+  if (!(Number.isInteger(cb.failureThreshold) && cb.failureThreshold >= 0)) {
+    fail(
+      `circuitBreaker.failureThreshold must be an integer >= 0 (0 disables), got ${String(cb.failureThreshold)}`,
+    );
+  }
+  if (!(Number.isInteger(cb.cooldownMs) && cb.cooldownMs >= 0)) {
+    fail(
+      `circuitBreaker.cooldownMs must be an integer >= 0 (0 disables auto-recovery), got ${String(cb.cooldownMs)}`,
+    );
+  }
+}
+
 /** Validate hard constraints; throws `RelayError("CONFIG_INVALID")` on violation. */
 function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
   // mode/scheme are typed to literals but can be anything from untyped runtime input.
@@ -80,36 +122,8 @@ function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
     fail(`Unsupported signing scheme: ${cfg.signing.scheme}`);
   }
   validateRetry(cfg.retry);
-  if (!(cfg.delivery.timeoutMs > 0)) {
-    fail(`delivery.timeoutMs must be > 0, got ${String(cfg.delivery.timeoutMs)}`);
-  }
-  if (!(cfg.delivery.bodySnippetBytes > 0)) {
-    fail(`delivery.bodySnippetBytes must be > 0, got ${String(cfg.delivery.bodySnippetBytes)}`);
-  }
-  if (!(cfg.delivery.keepAliveTimeoutMs > 0)) {
-    fail(`delivery.keepAliveTimeoutMs must be > 0, got ${String(cfg.delivery.keepAliveTimeoutMs)}`);
-  }
-  if (
-    cfg.delivery.connections !== undefined &&
-    !(Number.isInteger(cfg.delivery.connections) && cfg.delivery.connections >= 1)
-  ) {
-    fail(`delivery.connections must be an integer >= 1, got ${String(cfg.delivery.connections)}`);
-  }
-  if (
-    !(
-      Number.isInteger(cfg.circuitBreaker.failureThreshold) &&
-      cfg.circuitBreaker.failureThreshold >= 0
-    )
-  ) {
-    fail(
-      `circuitBreaker.failureThreshold must be an integer >= 0 (0 disables), got ${String(cfg.circuitBreaker.failureThreshold)}`,
-    );
-  }
-  if (!(Number.isInteger(cfg.circuitBreaker.cooldownMs) && cfg.circuitBreaker.cooldownMs >= 0)) {
-    fail(
-      `circuitBreaker.cooldownMs must be an integer >= 0 (0 disables auto-recovery), got ${String(cfg.circuitBreaker.cooldownMs)}`,
-    );
-  }
+  validateDelivery(cfg.delivery);
+  validateCircuitBreaker(cfg.circuitBreaker);
 }
 
 /** Emit non-fatal warnings for dangerous-but-valid settings. */

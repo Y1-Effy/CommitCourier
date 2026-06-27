@@ -33,11 +33,17 @@ export interface OutboxRow {
   dispatchedAt: Date | null;
 }
 
-/** enqueue input (basic design section 9). Either `url` or `endpointId` is required. */
+/** enqueue input (basic design section 9). */
 export interface EnqueueInput {
   eventType: string;
   payload: unknown;
-  endpoint: { url: string; secret: string } | { endpointId: string };
+  /**
+   * Per-event destination. Required for the `http` transport (inline `{ url, secret }` or a registered
+   * `{ endpointId }`). Omit for the `sink` transport (08-forward-sink): the destination is the
+   * configured sink/SaaS, so the row carries no per-event target. In `sink` mode any `endpoint` passed
+   * here is ignored (and a stray `secret` would be stored unused), so omit it.
+   */
+  endpoint?: { url: string; secret: string } | { endpointId: string };
   idempotencyKey?: string;
 }
 
@@ -91,6 +97,13 @@ export interface RetryConfig {
 
 /** HTTP delivery policy (basic design section 9). */
 export interface DeliveryConfig {
+  /**
+   * Delivery transport (08-forward-sink section 5). `"http"` (default) delivers directly: CommitCourier
+   * signs, applies SSRF protection and the circuit breaker. `"sink"` hands each event off to a `Sink`
+   * (e.g. a webhook-delivery SaaS) instead — signing/SSRF/circuit breaker are then delegated and not
+   * applied by CommitCourier. Relay-wide: a single relay cannot mix `http` and `sink`.
+   */
+  transport: "http" | "sink";
   timeoutMs: number;
   bodySnippetBytes: number;
   /**

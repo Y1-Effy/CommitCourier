@@ -17,6 +17,7 @@ import {
 import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/index";
 import type { Store, NewDeliveryAttempt } from "../store/store";
 import type { createHttpClient } from "./http";
+import type { Sink, SinkResult } from "../forward/index";
 import { secretFreeSummary } from "./_error";
 import { createCriticalLogger } from "./critical";
 import type { CriticalLogger } from "./critical";
@@ -90,6 +91,12 @@ export interface DeliverDeps {
   hooks?: DeliveryHooks;
   /** Optional tracing/metrics seam; see {@link DeliveryInstrument}. */
   instrument?: DeliveryInstrument;
+  /**
+   * Delivery sink for `sink` transport (08-forward-sink). Required when
+   * `config.delivery.transport === "sink"`; `createRelay` fails fast if it is missing. Unused for the
+   * default `http` transport. Each handoff is bounded by `config.delivery.timeoutMs`.
+   */
+  sink?: Sink;
 }
 
 interface Ctx {
@@ -144,6 +151,53 @@ function isPermanentFailure(status: number | null): boolean {
  */
 function isPermanentResolveError(error: string): boolean {
   return error === "MISSING_SECRET" || error === "ENQUEUE_NO_TARGET";
+}
+
+/**
+ * Map a {@link SinkResult} onto success (08-forward-sink section 4). A present `error` is always a
+ * failure; otherwise a present `status` defers to the HTTP 2xx rule, and a bare result (no error, no
+ * status) is a success.
+ */
+function isSinkSuccess(r: SinkResult): boolean {
+  if (r.error != null) return false;
+  return r.status != null ? isSuccess(r.status) : true;
+}
+
+/**
+ * Map a failed {@link SinkResult} onto a permanent failure (08-forward-sink section 4). A present
+ * `status` defers to the HTTP permanent rule (410); otherwise an explicit `retryable === false` sends
+ * the row straight to the DLQ. Everything else stays retryable.
+ */
+function isSinkPermanent(r: SinkResult): boolean {
+  return r.status != null ? isPermanentFailure(r.status) : r.retryable === false;
+}
+
+/**
+ * Coerce a sink's resolved value to a {@link SinkResult}. A contract-violating adapter that resolves to
+ * a non-object (undefined/null/string/number) is mapped to a retryable failure, so a stray value is
+ * never silently read as success (data loss) and `.status`/`.error` are never read off a non-object.
+ */
+function normalizeSinkResult(raw: unknown): SinkResult {
+  return raw != null && typeof raw === "object"
+    ? raw
+    : { error: "SINK_BAD_RESULT", retryable: true };
+}
+
+/**
+ * Race a promise against a timeout (used to bound a sink handoff). On timeout the returned promise
+ * rejects with a `SINK_TIMEOUT` error; the underlying promise is left to settle in the background, but
+ * `Promise.race` keeps a reaction attached to it so a late rejection is never unhandled.
+ */
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout>;
+  const timeout = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      reject(new Error("SINK_TIMEOUT"));
+    }, ms);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    clearTimeout(timer);
+  });
 }
 
 /**
@@ -461,6 +515,78 @@ async function deliverHttp(
 }
 
 /**
+ * `sink` transport (08-forward-sink section 6): hand the row to the configured sink, then write the
+ * ledger and apply the transition atomically. No signing, SSRF or circuit breaker — those are delegated
+ * to the sink/SaaS. A throwing adapter is normalised to a retryable failure (fail-open). Signing/SSRF
+ * are skipped entirely so a sink delivery never resolves a target URL or secret. The handoff is bounded
+ * by `delivery.timeoutMs` so a hung adapter cannot pin a dispatcher slot, but the adapter is still
+ * responsible for its own latency/timeout.
+ */
+async function deliverSink(ctx: Ctx, sink: Sink | undefined): Promise<void> {
+  const { row } = ctx;
+  if (sink == null) {
+    // createRelay fails fast on a missing sink, so this is unreachable in practice. Stay never-throw:
+    // record a deterministic permanent failure rather than retrying a config error to exhaustion.
+    const attempt = noHttpAttempt(row, "SINK_NOT_CONFIGURED");
+    const event = eventFor(ctx, null, "SINK_NOT_CONFIGURED", 0);
+    await applyPermanentFailure(ctx, attempt, "SINK_NOT_CONFIGURED", event, {
+      disableEndpoint: false,
+    });
+    return;
+  }
+  const started = ctx.now.getTime();
+  let result: SinkResult;
+  try {
+    // Bound the handoff by delivery.timeoutMs so a hung adapter cannot pin a dispatcher slot; on
+    // timeout this rejects with SINK_TIMEOUT and is normalised to a retryable failure. The adapter is
+    // still responsible for its own latency/timeout (the SaaS call may keep running). A non-SinkResult
+    // return is coerced to a retryable failure (never silently read as success).
+    result = normalizeSinkResult(
+      await withTimeout(
+        sink.deliver({
+          id: row.id,
+          eventType: row.eventType,
+          payload: row.payload,
+          idempotencyKey: row.idempotencyKey ?? undefined,
+          endpointId: row.endpointId,
+        }),
+        ctx.deps.config.delivery.timeoutMs,
+      ),
+    );
+  } catch (err) {
+    // A throwing/timed-out adapter is normalised to a retryable failure (fail-open, never crash the loop).
+    result = { error: secretFreeSummary(err), retryable: true };
+  }
+  const durationMs = ctx.deps.clock().getTime() - started;
+  const status = result.status ?? null;
+  const success = isSinkSuccess(result);
+  const attempt: NewDeliveryAttempt = {
+    outboxId: row.id,
+    attemptNo: row.attempts + 1,
+    // No request headers / destination URL in sink mode; record the provider id for correlation only.
+    requestHeaders:
+      result.providerMessageId != null ? { "provider-message-id": result.providerMessageId } : {},
+    responseStatus: status,
+    responseBodySnippet: null,
+    durationMs,
+    error: success ? null : (result.error ?? "SINK_FAILED"),
+  };
+  if (success) {
+    await applySuccess(ctx, attempt, eventFor(ctx, status, null, durationMs));
+    return;
+  }
+  const summary = result.error ?? "SINK_FAILED";
+  const event = eventFor(ctx, status, summary, durationMs);
+  // No circuit breaker / endpoint health in sink mode: the destination is a single SaaS, not a
+  // per-endpoint URL, so disableEndpoint is always false.
+  if (isSinkPermanent(result)) {
+    await applyPermanentFailure(ctx, attempt, summary, event, { disableEndpoint: false });
+    return;
+  }
+  await applyFailure(ctx, attempt, summary, event);
+}
+
+/**
  * Deliver one claimed row, writing the ledger and applying the transition. Never throws: a
  * delivery-side failure is logged and persisted as a retryable failure (fail-open, section 4).
  *
@@ -500,6 +626,11 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
     settled: { done: false },
   };
   try {
+    // `sink` transport bypasses target/secret resolution, signing and SSRF entirely (08-forward-sink).
+    if (deps.config.delivery.transport === "sink") {
+      await deliverSink(ctx, deps.sink);
+      return;
+    }
     const resolved = await resolveTarget(row, deps.store, {
       cooldownMs: deps.config.circuitBreaker.cooldownMs,
       now: ctx.now,
