@@ -14,6 +14,26 @@ CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeSc
 
 ---
 
+## Table of contents
+
+- [Why](#why)
+- [Quick start](#quick-start)
+- [Use cases](#use-cases)
+- [Comparison](#comparison)
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Configuration](#configuration)
+- [Operations](#operations)
+- [CLI: `commitcourier doctor`](#cli-commitcourier-doctor)
+- [Error handling](#error-handling)
+- [Verifying signatures (receiver side)](#verifying-signatures-receiver-side)
+- [Guarantees & non-goals](#guarantees--non-goals)
+- [Removing CommitCourier](#removing-commitcourier)
+- [API surface](#api-surface)
+- [Status & roadmap](#status--roadmap)
+- [Security](#security)
+- [License](#license)
+
 ## Why
 
 Updating business state and sending a webhook are two separate actions. If a crash or rollback lands between them, you get a **dual-write** bug:
@@ -25,24 +45,9 @@ Existing tools can't fix this structurally: SaaS senders (Svix, Outpost) and Red
 
 CommitCourier is the one embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible _by construction_.
 
-## Features
+## Quick start
 
-- **Transactional `enqueue`** — rides your DB transaction; the webhook is atomic with your business write (fail-closed).
-- **Postgres-only** — no Redis, no separate broker, no extra server.
-- **Standard Webhooks signing** — receivers verify with any off-the-shelf Standard Webhooks library, or with the bundled dependency-free `verifySignature` helper from `commitcourier/core`.
-- **Retries with exponential backoff + jitter, and a DLQ** for exhausted rows.
-- **Delivery ledger** — every attempt's request headers, response status, body snippet, and duration are recorded for support and audit.
-- **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time), with a built-in safety cap so a broad replay never fans out into an unbounded mass re-send.
-- **Cancel** — stop a not-yet-sent row before it leaves (`relay.cancel(id)`); already-sent / in-flight rows are untouched.
-- **Serverless / cron friendly** — `relay.dispatchOnce()` drains the queue once and returns, so you can deliver from a Lambda or cron tick without a long-lived process.
-- **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops filling the DLQ.
-- **Built-in retention** — `relay.prune({ olderThan })` deletes old terminal rows in bounded batches (active rows are never touched), so tables don't grow forever.
-- **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
-- **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
-- **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
-- **Built-in at-rest encryption** for signing secrets — plug in `cipher` (a built-in WebCrypto AES-256-GCM helper, or your own KMS/Vault adapter) to keep `secret_snapshot` / endpoint secrets as ciphertext in the DB. At-rest encryption is a precondition (this, DB disk encryption, or column encryption); skipping it triggers a startup warning.
-
-## Install
+Install the package plus the driver you use:
 
 ```bash
 npm install commitcourier
@@ -51,8 +56,6 @@ npm install pg      # or: npm install knex
 ```
 
 **Requirements:** Node.js **22.19.0+**, **PostgreSQL 12+** (anything with `FOR UPDATE SKIP LOCKED`, i.e. ≥ 9.5, works). Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
-
-## Quick start
 
 ### 1. Create the tables
 
@@ -156,6 +159,43 @@ await knex.transaction(async (trx) => {
 ```
 
 > Prefer a runnable file? See [`examples/basic-pg`](./examples/basic-pg) for the full migrate → enqueue → dispatch flow against a throwaway Postgres.
+
+## Use cases
+
+- **Customer-facing webhooks (e-commerce / SaaS).** Emit `order.created`, `payment.succeeded`, or `subscription.updated` to your customers' endpoints atomically with the DB write that produced them — no phantom or lost notifications.
+- **Internal service-to-service events.** Fan domain events out between your own services on the Postgres you already run, without standing up Kafka, Redis, or a message broker.
+- **Replacing a hand-rolled "send after commit".** Migrate off ad-hoc `fetch(...)`-after-commit code that silently drops events on a crash, or re-sends them after a rollback.
+- **Serverless / cron delivery.** Drain the queue from an AWS Lambda or a scheduled task with `relay.dispatchOnce()` instead of running a long-lived worker.
+
+## Comparison
+
+How CommitCourier differs from the usual ways to send outbound webhooks:
+
+|                         | Rides your DB transaction |  HTTP webhook delivery   |       Signing        | Extra infrastructure          |
+| ----------------------- | :-----------------------: | :----------------------: | :------------------: | ----------------------------- |
+| **CommitCourier**       |            ✅             |            ✅            | ✅ Standard Webhooks | None (your existing Postgres) |
+| Svix / Outpost (SaaS)   |            ❌             |            ✅            |          ✅          | Hosted SaaS / server          |
+| BullMQ & similar queues |            ❌             | Do-it-yourself (handler) |    Do-it-yourself    | Redis                         |
+| Broker-outbox libraries |            ✅             |   ❌ (message broker)    |          ❌          | A message broker              |
+
+Only CommitCourier combines both halves: the outbox row is written **inside your transaction** (so dual-write inconsistency is impossible) _and_ carried all the way to **webhook-grade HTTP delivery** (signing, retries, DLQ, ledger, SSRF). SaaS and Redis-backed senders can't join your local transaction; broker-outbox libraries ride it but stop at a message broker.
+
+## Features
+
+- **Transactional `enqueue`** — rides your DB transaction; the webhook is atomic with your business write (fail-closed).
+- **Postgres-only** — no Redis, no separate broker, no extra server.
+- **Standard Webhooks signing** — receivers verify with any off-the-shelf Standard Webhooks library, or with the bundled dependency-free `verifySignature` helper from `commitcourier/core`.
+- **Retries with exponential backoff + jitter, and a DLQ** for exhausted rows.
+- **Delivery ledger** — every attempt's request headers, response status, body snippet, and duration are recorded for support and audit.
+- **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time), with a built-in safety cap so a broad replay never fans out into an unbounded mass re-send.
+- **Cancel** — stop a not-yet-sent row before it leaves (`relay.cancel(id)`); already-sent / in-flight rows are untouched.
+- **Serverless / cron friendly** — `relay.dispatchOnce()` drains the queue once and returns, so you can deliver from a Lambda or cron tick without a long-lived process.
+- **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops filling the DLQ.
+- **Built-in retention** — `relay.prune({ olderThan })` deletes old terminal rows in bounded batches (active rows are never touched), so tables don't grow forever.
+- **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
+- **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
+- **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
+- **Built-in at-rest encryption** for signing secrets — plug in `cipher` (a built-in WebCrypto AES-256-GCM helper, or your own KMS/Vault adapter) to keep `secret_snapshot` / endpoint secrets as ciphertext in the DB. At-rest encryption is a precondition (this, DB disk encryption, or column encryption); skipping it triggers a startup warning.
 
 ## How it works
 
@@ -274,7 +314,9 @@ const { cancelled } = await relay.cancel(outboxId);
 // Replay: re-enqueue as fresh pending copies. By id…
 const { ids } = await relay.replay({ outboxId });
 // …or by filter (e.g. everything dead since a timestamp). The selection is capped for safety:
-const res = await relay.replay({ filter: { status: "dead", since: new Date(Date.now() - 86_400_000) } });
+const res = await relay.replay({
+  filter: { status: "dead", since: new Date(Date.now() - 86_400_000) },
+});
 // `res.capped === true` means the cap truncated the match set, so not everything was re-sent. To
 // replay more, NARROW the filter (e.g. by `endpointId` or a tighter `since`) or raise `filter.limit` —
 // do NOT loop on the same filter: replay leaves the source rows untouched (the dead rows stay dead),
@@ -546,16 +588,16 @@ CommitCourier is non-invasive and reversible. Everything lives in three dedicate
 
 ## API surface
 
-| Import                         | Exports                                                                                                                                                                                       |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `commitcourier`                | `createRelay`, `createConsoleLogger`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                   |
+| Import                         | Exports                                                                                                                                                                                                                                 |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commitcourier`                | `createRelay`, `createConsoleLogger`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                                            |
 | `commitcourier/core`           | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
-| `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                              |
-| `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                            |
-| `commitcourier/store/drizzle`  | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                       |
-| `commitcourier/store/prisma`   | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                               |
-| `commitcourier/otel`           | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                      |
-| `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                     |
+| `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                                                                        |
+| `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                                                                      |
+| `commitcourier/store/drizzle`  | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                                                                 |
+| `commitcourier/store/prisma`   | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                                                                         |
+| `commitcourier/otel`           | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                                                                |
+| `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                                                               |
 
 Key signatures:
 
@@ -567,9 +609,14 @@ interface Relay<TTx> {
   enqueueMany(trx: TTx, inputs: EnqueueInput[]): Promise<{ ids: string[] }>;
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   createDispatcher(options?: DispatcherOptions): Dispatcher;
-  dispatchOnce(options?: DispatcherOptions, runOptions?: RunOnceOptions): Promise<{ processed: number }>;
+  dispatchOnce(
+    options?: DispatcherOptions,
+    runOptions?: RunOnceOptions,
+  ): Promise<{ processed: number }>;
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
-  replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[]; capped: boolean }>;
+  replay(
+    opts: { outboxId: string } | { filter: ReplayFilter },
+  ): Promise<{ ids: string[]; capped: boolean }>;
   cancel(outboxId: string): Promise<{ cancelled: boolean }>;
   get(outboxId: string): Promise<OutboxListItem | null>;
   list(filter?: OutboxListFilter): Promise<Page<OutboxListItem>>;
