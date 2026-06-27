@@ -32,6 +32,4 @@ export interface SqlDialect {
   readonly claimSqlPerEndpoint: { readonly numbered: string; readonly qmark: string };
   /** Object-existence probe whose result row is consumed by the shared diagnose helpers. */
   readonly diagnoseSql: string;
-  /** The idempotent DDL script applied by `migrate()`. */
-  ddl(): string;
 }

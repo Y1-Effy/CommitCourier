@@ -26,7 +26,7 @@ describe("createDispatcher reclaimAfterMs vs delivery.timeoutMs", () => {
     const { config, warn } = configWithWarn();
     createDispatcher({ store: stubStore, deliver, config, options: { reclaimAfterMs: 2_000 } });
     expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining("reclaimAfterMs is not safely above delivery.timeoutMs"),
+      expect.stringContaining("reclaimAfterMs is not safely above"),
       expect.objectContaining({ reclaimAfterMs: 2_000, timeoutMs: 15_000 }),
     );
   });
@@ -41,5 +41,27 @@ describe("createDispatcher reclaimAfterMs vs delivery.timeoutMs", () => {
     const { config, reclaimWarnings } = configWithWarn();
     createDispatcher({ store: stubStore, deliver, config });
     expect(reclaimWarnings()).toHaveLength(0);
+  });
+
+  it("scales the safe floor by the claim buffer (batchSize/concurrency)", () => {
+    // concurrency 8, batchSize 8 -> 1 wave -> floor = 15000 * 1.5 * 1 = 22_500. 30s is safe.
+    const a = configWithWarn();
+    createDispatcher({
+      store: stubStore,
+      deliver,
+      config: a.config,
+      options: { concurrency: 8, batchSize: 8, reclaimAfterMs: 30_000 },
+    });
+    expect(a.reclaimWarnings()).toHaveLength(0);
+
+    // Same 30s reclaim, but a deep buffer (batchSize 64 -> 8 waves -> floor 180_000) is now too tight.
+    const b = configWithWarn();
+    createDispatcher({
+      store: stubStore,
+      deliver,
+      config: b.config,
+      options: { concurrency: 8, batchSize: 64, reclaimAfterMs: 30_000 },
+    });
+    expect(b.reclaimWarnings()).toHaveLength(1);
   });
 });

@@ -245,7 +245,7 @@ Throughput is mostly about giving the dispatcher room to work:
 
 - **Concurrency vs. pool size.** Raising `concurrency` only helps if the `pg.Pool` has connections to spare: the dispatch path uses one connection per in-flight `claimDue` / `completeAttempt`. Size `Pool({ max })` to at least `concurrency` plus headroom, or deliveries stall waiting on the pool.
 - **Batch and connections.** `batchSize` (default `concurrency * 2`) caps the in-flight buffer; `delivery.connections` caps sockets per destination. Tune both to the workload, and lengthen `delivery.keepAliveTimeoutMs` when you deliver many events to the same hosts.
-- **Registered-endpoint cache.** With the registered-endpoint workflow every delivery looks the endpoint up in the DB. Set `endpointCacheTtlMs` (e.g. `1000`–`5000`) to cache lookups in-process; `update`/`disable` evict immediately within the process, and the TTL bounds how long another process's change can be stale. It has no effect on the inline `{ url, secret }` workflow.
+- **Registered-endpoint cache.** With the registered-endpoint workflow every delivery looks the endpoint up in the DB. Set `endpointCacheTtlMs` (e.g. `1000`–`5000`) to cache lookups in-process; `update`/`disable` evict immediately within the process, and the TTL bounds how long another process's change can be stale. It has no effect on the inline `{ url, secret }` workflow. **With multiple dispatcher processes**, `endpointCacheTtlMs` is also the upper bound on how long another process keeps delivering with a stale endpoint after a `disable` or a key rotation — so keep it short, and when rotating a secret, leave `finalizeRotation` until at least `ttlMs` after the last delivery (until then a peer may still sign with only the previous key).
 - **Indexes are built in.** The claim and reclaim queries use partial indexes over only the `pending` / `in_flight` rows, so they stay fast as delivered/dead rows accumulate — no tuning needed.
 
 **Phased rollout:** start in `mode: "observe"` to record the volume and destinations of what _would_ be sent, diff it against expectations, then switch to `"active"`.
@@ -310,6 +310,38 @@ Each delivery attempt emits one CLIENT span with secret-free attributes (`webhoo
 
 The counter and histogram are recorded **per delivery attempt** (each retry counts again, plus the rare re-delivery after a worker crash) — they are attempt counts, not unique-row counts.
 
+### Low-latency delivery (accelerator)
+
+By default the dispatcher polls, so a row enqueued onto a quiet queue waits up to `pollIntervalMs` before delivery starts. The optional **accelerator (v2)** cuts that wait: each enqueue wakes a listening dispatcher so delivery begins near-immediately. The outbox row stays the single source of truth — a missed wake only delays delivery (the poller still reclaims the row), so the accelerator never affects correctness or availability.
+
+The first implementation, `commitcourier/accelerator/pg`, uses Postgres LISTEN/NOTIFY (no extra infrastructure). The `NOTIFY` rides the enqueue transaction, so a listener never wakes before the row is visible; the LISTEN runs on its own self-healing connection.
+
+```ts
+import { Pool, Client } from "pg";
+import { createRelay } from "commitcourier";
+import { postgresStore } from "commitcourier/store/pg";
+import { createPgAccelerator } from "commitcourier/accelerator/pg";
+
+const pool = new Pool(/* … */);
+const accelerator = createPgAccelerator({
+  pool,
+  // A dedicated connection for LISTEN (must NOT come from the delivery pool):
+  listen: async () => {
+    const c = new Client(/* … */);
+    await c.connect();
+    return c;
+  },
+});
+
+const relay = await createRelay({ store: postgresStore({ pool }), accelerator });
+// Every dispatcher this relay creates now wakes on enqueue:
+relay.createDispatcher({ pollIntervalMs: 10_000 }).start();
+```
+
+`pg` is the only peer needed (already required by the `pg` store). A BullMQ accelerator is a planned future adapter on the same `Accelerator` seam.
+
+Two operational notes: (1) the transactional wake rides your enqueue transaction, so in the rare case the `NOTIFY` itself fails, `enqueue` / `enqueueMany` roll back with your business write (fail-closed) — `enqueueUnsafe` swallows it. (2) If the LISTEN connection degrades without surfacing an error, wakes are simply missed and delivery falls back to polling (bounded by `pollIntervalMs`); correctness is unaffected because the poller remains the source of truth.
+
 ### Data retention
 
 CommitCourier never deletes rows on its own. `webhook_outbox` (including `delivered`/`dead` rows) and `webhook_delivery_attempts` grow over time, so schedule your own pruning — for example, delete `delivered` outbox rows older than your retention window. Deleting an outbox row cascades to its ledger attempts (`ON DELETE CASCADE`).
@@ -329,6 +361,8 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 ```
 
 `list` accepts `{ status, since, endpointId, limit, cursor }` and never returns the signing-key snapshot. (You can still query `webhook_outbox` directly if you prefer raw SQL.)
+
+> **Scope your replays.** `replay({ filter })` selects every matching row and inserts the copies in a single transaction. On a very large DLQ that means a big in-memory result and one long-running transaction, so narrow the filter (e.g. by `since` or `endpointId`) and replay in chunks rather than re-enqueuing hundreds of thousands of rows at once.
 
 ## Error handling
 
@@ -361,6 +395,8 @@ Each delivery POSTs JSON with these headers:
 
 Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) convention, your receiver can verify it with any compatible verification library — CommitCourier does not invent its own scheme.
 
+> **Body normalization.** The `payload` is stored as Postgres `jsonb`, so the delivered body is the JSON round-trip of what you enqueued (object key order is not preserved, duplicate keys collapse, insignificant whitespace is dropped). The signature is always computed over the exact bytes sent, so verification never fails because of this — but the delivered bytes are not guaranteed identical to your input. If you need byte-exact delivery, enqueue the payload as a pre-serialized string.
+
 ## Guarantees & non-goals
 
 **Guarantees**
@@ -385,12 +421,13 @@ CommitCourier is non-invasive and reversible. Everything lives in three dedicate
 
 ## API surface
 
-| Import                     | Exports                                                                                                                                                                                       |
-| -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `commitcourier`            | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                         |
-| `commitcourier/core`       | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
-| `commitcourier/store/pg`   | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                              |
-| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                            |
+| Import                         | Exports                                                                                                                                                                                       |
+| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commitcourier`                | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                         |
+| `commitcourier/core`           | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
+| `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                              |
+| `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                            |
+| `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                     |
 
 Key signatures:
 
@@ -414,7 +451,7 @@ interface Relay<TTx> {
 - **v1 (current):** Postgres store, `pg` + Knex adapters, transactional enqueue, poller-based dispatcher (no external queue), Standard Webhooks signing (single key), retry / backoff / jitter / DLQ, delivery ledger, replay by id, SSRF protection, observe mode, a registered-endpoint admin API (`register` / `update` / `enable` / `disable` / `get`), optional at-rest secret encryption (`cipher`), and throughput tuning (partial claim/reclaim indexes, undici keep-alive, an optional registered-endpoint cache, adaptive idle polling).
 - **v1.1:** key rotation / dual signing (`endpoints.rotateSecret` / `finalizeRotation`), `Retry-After` support, immediate `410 Gone` endpoint invalidation, opt-in per-endpoint FIFO (`createDispatcher({ ordering: "per-endpoint" })`), and Drizzle (`commitcourier/store/drizzle`) + Prisma (`commitcourier/store/prisma`) adapters.
 - **v1.2:** read-only DLQ/outbox list API (`relay.list({ status: "dead", … })`, secret-free, seq-keyset paging), endpoint listing (`endpoints.list({ status, … })`), and the OpenTelemetry adapter (`commitcourier/otel` — span per delivery + outcome counter/duration histogram, via the fail-open `instrument` / `hooks` seam).
-- **v2:** Optional BullMQ accelerator adapter (the outbox row stays the source of truth), further endpoint-management API surface.
+- **v2:** Low-latency delivery accelerator (generic `Accelerator` seam + Postgres LISTEN/NOTIFY adapter `commitcourier/accelerator/pg`; the outbox row stays the source of truth), schema migration version table (`commitcourier_migrations` + incremental `migrate()`). A BullMQ accelerator and further endpoint-management API remain planned on the same seams.
 
 ## Security
 

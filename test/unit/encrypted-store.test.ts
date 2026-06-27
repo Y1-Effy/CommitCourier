@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAesGcmCipher, generateSecretKey } from "../../src/core/cipher";
 import { createEncryptedStore } from "../../src/store/encrypted-store";
-import type { OutboxRow, EndpointRow } from "../../src/core/index";
+import type { OutboxRow, EndpointRow, Transition } from "../../src/core/index";
 import type { NewOutboxRow, NewEndpointRow, EndpointPatch, Store } from "../../src/store/store";
 
 const PLAINTEXT = "whsec_topsecret";
@@ -153,5 +153,62 @@ describe("createEncryptedStore", () => {
     const stored = rec.written.outbox[0]!.secretSnapshot!;
     expect(stored.startsWith("ccsec.v1.")).toBe(true);
     expect(await cipher.decrypt(stored)).toBe(PLAINTEXT);
+  });
+});
+
+describe("createEncryptedStore decryption isolation", () => {
+  // A second cipher with a different key: rows encrypted with it are valid `ccsec.v1.` envelopes that
+  // fail to decrypt under `cipher` (an AES-GCM auth failure) — the realistic key-mismatch scenario.
+  const otherCipher = createAesGcmCipher(generateSecretKey());
+
+  function multiStore(rows: OutboxRow[]): {
+    store: Store;
+    transitions: { id: string; t: Transition }[];
+  } {
+    const transitions: { id: string; t: Transition }[] = [];
+    const store: Store = {
+      ...recorder().store,
+      claimDue: () => Promise.resolve(rows),
+      selectForReplay: () => Promise.resolve(rows),
+      applyTransition: (id, t) => {
+        transitions.push({ id, t });
+        return Promise.resolve();
+      },
+    };
+    return { store, transitions };
+  }
+
+  const withId = (row: OutboxRow, id: string): OutboxRow => ({ ...row, id });
+
+  it("quarantines an undecryptable claimed row to dead and still returns the good rows", async () => {
+    const good1 = withId(outboxRow(await cipher.encrypt("whsec_a")), "good-1");
+    const bad = { ...withId(outboxRow(await otherCipher.encrypt("whsec_x")), "bad"), attempts: 3 };
+    const good2 = withId(outboxRow(await cipher.encrypt("whsec_b")), "good-2");
+    const { store, transitions } = multiStore([bad, good1, good2]);
+    const enc = createEncryptedStore(store, cipher);
+
+    const out = await enc.claimDue({ limit: 10, lockedBy: "w", now: new Date() });
+
+    // The good rows are delivered (decrypted); the bad one is dropped from the batch — no throw.
+    expect(out.map((r) => r.id)).toEqual(["good-1", "good-2"]);
+    expect(out.map((r) => r.secretSnapshot)).toEqual(["whsec_a", "whsec_b"]);
+    // The bad row is quarantined straight to the DLQ so it can never wedge the queue.
+    expect(transitions).toHaveLength(1);
+    expect(transitions[0]).toMatchObject({
+      id: "bad",
+      t: { status: "dead", attempts: 4, lockedAt: null, lockedBy: null },
+    });
+  });
+
+  it("skips an undecryptable row during selectForReplay without quarantining it", async () => {
+    const good = withId(outboxRow(await cipher.encrypt("whsec_a")), "good");
+    const bad = withId(outboxRow(await otherCipher.encrypt("whsec_x")), "bad");
+    const { store, transitions } = multiStore([bad, good]);
+    const enc = createEncryptedStore(store, cipher);
+
+    const out = await enc.selectForReplay({});
+
+    expect(out.map((r) => r.id)).toEqual(["good"]);
+    expect(transitions).toHaveLength(0);
   });
 });

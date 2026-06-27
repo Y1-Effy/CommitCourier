@@ -11,6 +11,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Low-latency delivery accelerator (v2):** an optional, fail-open wake seam. `createRelay({ accelerator })`
+  signals the accelerator after each enqueue and subscribes every dispatcher it creates, so a freshly
+  enqueued row is delivered near-immediately instead of after the poll interval. The first
+  implementation, `createPgAccelerator` from `commitcourier/accelerator/pg`, uses Postgres
+  LISTEN/NOTIFY: the `NOTIFY` rides the enqueue transaction (delivered on COMMIT, never before the row
+  is visible) and a dedicated, self-healing LISTEN connection cuts the dispatcher's idle backoff short.
+  The outbox row stays the single source of truth — a missed wake only delays delivery, never loses it
+  (the poller reclaims it). The generic `Accelerator` seam is dependency-free; a BullMQ accelerator is a
+  planned future adapter on the same seam.
+- **Schema migration version table (v2):** `migrate()` now records applied migrations in a
+  `commitcourier_migrations` table and applies only the not-yet-applied ones in order (still idempotent,
+  and safe on deployments that pre-date the table). This replaces the single-file apply across all four
+  adapters and prepares the ground for incremental `00N_*` schema changes.
 - **Read-only DLQ / outbox list API (v1.2):** `relay.list({ status, since, endpointId, limit, cursor })`
   pages outbox rows newest-first by a monotonic `seq`, for DLQ inspection and monitoring. Rows are
   secret-free (the signing-key snapshot is never selected) and paging is seq-keyset (`nextCursor`).

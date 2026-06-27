@@ -2,11 +2,10 @@
  * Postgres SQL dialect (per the store-generalization design).
  *
  * Holds the Postgres-specific SQL that was previously inlined in `../_shared`: the claim CTE
- * (`FOR UPDATE SKIP LOCKED` + `RETURNING`), the `to_regclass` existence probe, and the DDL.
- * The shared row/column plumbing and the DDL file loader stay in `../_shared`; `ddl()` delegates
- * to {@link loadInitSql} so the `import.meta.url`-relative DDL path is unaffected.
+ * (`FOR UPDATE SKIP LOCKED` + `RETURNING`) and the `to_regclass` existence probe. The DDL is applied
+ * by the migration runner in `../_shared` (it owns the embedded schema), not through this dialect.
  */
-import { OUTBOX_TABLE, ATTEMPTS_TABLE, ENDPOINTS_TABLE, loadInitSql } from "../_shared";
+import { OUTBOX_TABLE, ATTEMPTS_TABLE, ENDPOINTS_TABLE } from "../_shared";
 import type { SqlDialect } from "./dialect";
 
 interface ClaimPlaceholders {
@@ -121,5 +120,4 @@ export const postgres: SqlDialect = {
     }),
   },
   diagnoseSql: DIAGNOSE_SQL,
-  ddl: loadInitSql,
 };

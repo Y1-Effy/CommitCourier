@@ -5,7 +5,6 @@
  */
 import { describe, expect, it } from "vitest";
 import { loadInitSql } from "../../src/store/_shared";
-import { postgres } from "../../src/store/sql/postgres";
 
 describe("embedded DDL", () => {
   it("loadInitSql returns the schema as a non-empty string", () => {
@@ -13,9 +12,5 @@ describe("embedded DDL", () => {
     expect(typeof sql).toBe("string");
     expect(sql).toContain("CREATE TABLE IF NOT EXISTS webhook_outbox");
     expect(sql).toContain("CREATE TABLE IF NOT EXISTS webhook_delivery_attempts");
-  });
-
-  it("the Postgres dialect ddl() exposes the same schema", () => {
-    expect(postgres.ddl()).toBe(loadInitSql());
   });
 });

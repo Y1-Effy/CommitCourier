@@ -52,6 +52,12 @@ import {
   mapEndpointRow,
   diagnoseResult,
   existingFromRow,
+  applyMigrations,
+  migrationScript,
+  splitStatements,
+  ADVISORY_LOCK_SQL,
+  MIGRATIONS_TABLE_DDL,
+  SELECT_APPLIED_MIGRATIONS_SQL,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
@@ -78,25 +84,6 @@ export type PrismaTx = PrismaRaw;
 const INSERT_OUTBOX_SQL = insertClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload");
 const INSERT_ATTEMPT_SQL = insertClause(ATTEMPTS_TABLE, ATTEMPT_COLUMNS, "request_headers");
 const INSERT_ENDPOINT_SQL = insertClause(ENDPOINTS_TABLE, ENDPOINT_COLUMNS, ENDPOINT_JSON_COLUMN);
-
-/**
- * Split the idempotent DDL into individual statements for `migrate()`: Prisma's raw exec runs one
- * statement per call. Line comments (`-- …`) are stripped first so a comment preceding a statement
- * is not mistaken for the statement itself (the DDL has no `--`/`;` inside string literals).
- */
-function splitStatements(ddl: string): string[] {
-  const noComments = ddl
-    .split("\n")
-    .map((line) => {
-      const i = line.indexOf("--");
-      return i >= 0 ? line.slice(0, i) : line;
-    })
-    .join("\n");
-  return noComments
-    .split(";")
-    .map((s) => s.trim())
-    .filter((s) => s.length > 0);
-}
 
 /** Registered-endpoint admin + stats methods, factored out to keep the store factory small. */
 function endpointAndStatsMethods(
@@ -260,12 +247,29 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
     },
 
     async migrate() {
-      // The DDL is multiple statements; Prisma runs one per raw call, so apply them in order inside a
-      // single interactive transaction.
-      await prisma.$transaction(async (tx) => {
-        for (const statement of splitStatements(postgres.ddl())) {
-          await tx.$executeRawUnsafe(statement);
-        }
+      await applyMigrations({
+        // Prisma cannot run a multi-statement string, so take the advisory lock and create the table
+        // as two statements inside one interactive transaction (lock held through the CREATE), which
+        // serialises concurrent migrators.
+        ensureTable: () =>
+          prisma.$transaction(async (tx) => {
+            await tx.$executeRawUnsafe(ADVISORY_LOCK_SQL);
+            await tx.$executeRawUnsafe(MIGRATIONS_TABLE_DDL);
+          }),
+        appliedNames: async () => {
+          const rows = await prisma.$queryRawUnsafe<{ name: string }>(
+            SELECT_APPLIED_MIGRATIONS_SQL,
+          );
+          return new Set(rows.map((r) => r.name));
+        },
+        // Prisma runs one statement per raw call, so split the script (advisory lock + DDL + record
+        // INSERT) and apply it in order inside one interactive transaction (the lock lands first).
+        apply: (m) =>
+          prisma.$transaction(async (tx) => {
+            for (const statement of splitStatements(migrationScript(m))) {
+              await tx.$executeRawUnsafe(statement);
+            }
+          }),
       });
     },
   };

@@ -11,6 +11,16 @@
 
 ### Added（追加）
 
+- **低遅延 配信アクセラレータ（v2）**：optional・fail-open な wake シーム。`createRelay({ accelerator })`
+  が enqueue ごとにアクセラレータへ signal し、生成する各 Dispatcher を購読させるため、enqueue 直後の行が
+  ポーリング間隔を待たず near-immediate に配信されます。第一実装の `commitcourier/accelerator/pg` の
+  `createPgAccelerator` は Postgres LISTEN/NOTIFY を使用：`NOTIFY` は enqueue トランザクションに相乗りし
+  （COMMIT 時に配送＝行可視化より前に届かない）、専用かつ自己修復する LISTEN 接続が Dispatcher のアイドル
+  バックオフを短絡します。Outbox 行は引き続き唯一の真実の源泉で、通知喪失時も配信は遅れるだけで失われません
+  （ポーラーが回収）。汎用 `Accelerator` シームは依存ゼロで、BullMQ アクセラレータは同シーム上の将来アダプタ。
+- **スキーマバージョン管理テーブル（v2）**：`migrate()` が適用済みマイグレーションを `commitcourier_migrations`
+  テーブルに記録し、未適用分のみを順に適用します（従来どおり冪等で、テーブル導入前のデプロイにも安全）。
+  4 アダプタ共通で単一ファイル適用を置き換え、増分的な `00N_*` スキーマ変更の土台を整えます。
 - **読み取り専用 DLQ／outbox 一覧 API（v1.2）**：`relay.list({ status, since, endpointId, limit, cursor })`
   が outbox 行を単調増加 `seq` の新しい順でページングします（DLQ 調査・監視向け）。行は secret 非露出
   （署名鍵スナップショットは選択しない）、ページングは seq キーセット（`nextCursor`）。

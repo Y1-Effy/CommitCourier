@@ -9,16 +9,36 @@
  *
  * Only the secret-bearing methods carry logic; everything else passes straight through.
  *
- * Decryption happens at the store boundary (`claimDue` / `selectForReplay` / `findEndpoint`), so a
- * bad key or corrupted ciphertext surfaces as a thrown error there. On the dispatch path that stays
- * fail-open: the dispatcher wraps `claimDue` in try/catch and keeps looping. Note this is a
- * batch-level failure — a single undecryptable row rejects the whole claim batch (those rows remain
- * `in_flight` until the visibility-timeout reclaim, then retry), which only arises under genuine
- * key misconfiguration or data corruption, never in normal operation.
+ * Decryption happens at the store boundary (`claimDue` / `selectForReplay` / `findEndpoint`). A bad
+ * key or corrupted ciphertext is isolated per row, never batch-wide: on the dispatch path
+ * (`claimDue`) an undecryptable row is quarantined straight to `dead` (the DLQ) and dropped from the
+ * batch, so one bad row can never wedge the queue — the remaining rows deliver normally and the bad
+ * one is visible in the DLQ (replayable once the key is fixed). `selectForReplay` skips undecryptable
+ * rows (logging each) so an admin replay is not aborted by a single bad row. `findEndpoint` still
+ * throws on decryption failure, which the delivery path catches and routes to a failure for that one
+ * row. This only arises under genuine key misconfiguration or data corruption, never in normal use.
  */
-import type { SecretCipher } from "../core/index";
+import type { SecretCipher, Logger, Transition } from "../core/index";
 import type { OutboxRow, EndpointRow } from "../core/index";
 import type { NewOutboxRow, NewEndpointRow, EndpointPatch, Store } from "./store";
+
+const NO_OP_LOGGER: Logger = {
+  debug() {},
+  info() {},
+  warn() {},
+  error() {},
+};
+
+/** Transition that quarantines an undecryptable row to the DLQ (matches `core/state.onPermanentFailure`). */
+function quarantineTransition(row: OutboxRow): Transition {
+  return {
+    status: "dead",
+    attempts: row.attempts + 1,
+    lastError: "secret decryption failed",
+    lockedAt: null,
+    lockedBy: null,
+  };
+}
 
 /** Encrypt the `secretSnapshot` of a new outbox row (null is left as-is). */
 async function encryptOutbox(row: NewOutboxRow, cipher: SecretCipher): Promise<NewOutboxRow> {
@@ -36,7 +56,11 @@ async function decryptOutbox(row: OutboxRow, cipher: SecretCipher): Promise<Outb
  * Wrap a store so signing secrets are encrypted at rest with `cipher`. The returned store is a
  * drop-in `Store<TTx>`; secrets are plaintext at this boundary and ciphertext in the backend.
  */
-export function createEncryptedStore<TTx>(inner: Store<TTx>, cipher: SecretCipher): Store<TTx> {
+export function createEncryptedStore<TTx>(
+  inner: Store<TTx>,
+  cipher: SecretCipher,
+  logger: Logger = NO_OP_LOGGER,
+): Store<TTx> {
   return {
     // --- writes: encrypt secrets before they reach the backend ---
     async insertOutbox(trx, row) {
@@ -69,14 +93,48 @@ export function createEncryptedStore<TTx>(inner: Store<TTx>, cipher: SecretCiphe
       await inner.updateEndpoint(id, enc);
     },
 
-    // --- reads: decrypt secrets coming back from the backend ---
+    // --- reads: decrypt secrets coming back from the backend (per-row isolation) ---
     async claimDue(opts) {
       const rows = await inner.claimDue(opts);
-      return Promise.all(rows.map((r) => decryptOutbox(r, cipher)));
+      const out: OutboxRow[] = [];
+      for (const r of rows) {
+        try {
+          out.push(await decryptOutbox(r, cipher));
+        } catch (err) {
+          // Isolate the failure: quarantine just this row to the DLQ so one bad ciphertext can never
+          // poison the batch and wedge the (oldest-first) queue. The row is still `in_flight` here,
+          // so applyTransition's guard applies; it then leaves the claimable set for good.
+          logger.warn("encrypted-store: quarantining undecryptable outbox row to dead", {
+            id: r.id,
+            error: String(err),
+          });
+          try {
+            await inner.applyTransition(r.id, quarantineTransition(r));
+          } catch (qErr) {
+            logger.error("encrypted-store: failed to quarantine undecryptable row", {
+              id: r.id,
+              error: String(qErr),
+            });
+          }
+        }
+      }
+      return out;
     },
     async selectForReplay(filter) {
       const rows = await inner.selectForReplay(filter);
-      return Promise.all(rows.map((r) => decryptOutbox(r, cipher)));
+      const out: OutboxRow[] = [];
+      for (const r of rows) {
+        try {
+          out.push(await decryptOutbox(r, cipher));
+        } catch (err) {
+          // Skip undecryptable rows so a single bad row does not abort the whole admin replay.
+          logger.warn("encrypted-store: skipping undecryptable row during replay", {
+            id: r.id,
+            error: String(err),
+          });
+        }
+      }
+      return out;
     },
     async findEndpoint(id) {
       const ep = await inner.findEndpoint(id);

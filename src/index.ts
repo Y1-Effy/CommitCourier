@@ -30,3 +30,4 @@ export type {
   DeliveryInstrument,
 } from "./delivery/deliver";
 export type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
+export type { Accelerator, WakeSignal } from "./accelerator/accelerator";

@@ -46,6 +46,10 @@ import {
   mapEndpointRow,
   diagnoseResult,
   existingFromRow,
+  applyMigrations,
+  migrationScript,
+  migrationsTableScript,
+  SELECT_APPLIED_MIGRATIONS_SQL,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
@@ -244,9 +248,19 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
     },
 
     async migrate() {
-      const sql = postgres.ddl();
-      await withTx(pool, async (client) => {
-        await client.query(sql);
+      await applyMigrations({
+        // One multi-statement simple query (advisory lock + DDL) is a single implicit transaction.
+        ensureTable: async () => {
+          await pool.query(migrationsTableScript());
+        },
+        appliedNames: async () => {
+          const res = await pool.query(SELECT_APPLIED_MIGRATIONS_SQL);
+          return new Set((res.rows as { name: string }[]).map((r) => r.name));
+        },
+        // One multi-statement simple query (advisory lock + DDL + record INSERT) is one implicit transaction.
+        apply: async (m) => {
+          await pool.query(migrationScript(m));
+        },
       });
     },
   };

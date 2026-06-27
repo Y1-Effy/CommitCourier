@@ -5,6 +5,13 @@
 ```ts
 
 // @public
+export interface Accelerator<TTx = unknown> {
+    signal(trx: TTx): Promise<void> | void;
+    signalAutonomous(): Promise<void> | void;
+    subscribe(onWake: () => void): Promise<() => void>;
+}
+
+// @public
 export function backoffMs(attempts: number, cfg: RetryConfig, rnd?: () => number): number;
 
 // @public
@@ -467,6 +474,7 @@ export type RelayErrorCode = "CONFIG_INVALID" | "MISSING_TABLES" | "SSRF_BLOCKED
 
 // @public
 export interface RelayInit<TTx> {
+    accelerator?: Accelerator<TTx>;
     cipher?: SecretCipher;
     // (undocumented)
     clock?: Clock;
@@ -623,6 +631,9 @@ export interface Transition {
 
 // @public
 export function utf8ToBytes(s: string): Uint8Array;
+
+// @public
+export type WakeSignal = (onWake: () => void) => Promise<() => void>;
 
 // (No @packageDocumentation comment for this package)
 

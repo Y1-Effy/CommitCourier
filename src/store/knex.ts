@@ -39,6 +39,10 @@ import {
   mapEndpointRow,
   diagnoseResult,
   existingFromRow,
+  applyMigrations,
+  migrationScript,
+  migrationsTableScript,
+  SELECT_APPLIED_MIGRATIONS_SQL,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
@@ -228,9 +232,21 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
     },
 
     async migrate() {
-      const sql = postgres.ddl();
-      await knex.transaction(async (trx) => {
-        await trx.raw(sql);
+      await applyMigrations({
+        // One multi-statement raw query (advisory lock + DDL) is a single implicit transaction.
+        ensureTable: async () => {
+          await knex.raw(migrationsTableScript());
+        },
+        appliedNames: async () => {
+          const res = (await knex.raw(SELECT_APPLIED_MIGRATIONS_SQL)) as unknown as {
+            rows: { name: string }[];
+          };
+          return new Set(res.rows.map((r) => r.name));
+        },
+        // One multi-statement raw query (advisory lock + DDL + record INSERT) is one implicit transaction.
+        apply: async (m) => {
+          await knex.raw(migrationScript(m));
+        },
       });
     },
   };

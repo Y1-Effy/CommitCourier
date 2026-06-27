@@ -54,6 +54,10 @@ import {
   mapEndpointRow,
   diagnoseResult,
   existingFromRow,
+  applyMigrations,
+  migrationScript,
+  migrationsTableScript,
+  SELECT_APPLIED_MIGRATIONS_SQL,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
@@ -271,9 +275,23 @@ export function drizzleStore(opts: { db: DrizzleDb }): Store<DrizzleTx> {
     },
 
     async migrate() {
-      // The DDL is multiple statements; the simple query protocol ($client.query with no params)
-      // runs them in one call (drizzle's execute uses the extended protocol, which rejects that).
-      await client.query(postgres.ddl());
+      await applyMigrations({
+        // The simple query protocol ($client.query with no params) runs a multi-statement script as
+        // one implicit transaction (advisory lock + DDL), so concurrent ensureTable calls serialise.
+        ensureTable: async () => {
+          await client.query(migrationsTableScript());
+        },
+        appliedNames: async () => {
+          const res = await client.query(SELECT_APPLIED_MIGRATIONS_SQL);
+          return new Set(((res.rows ?? []) as { name: string }[]).map((r) => r.name));
+        },
+        // The script is multiple statements; the simple query protocol runs them as one implicit
+        // transaction (drizzle's execute uses the extended protocol, which rejects multi-statement).
+        // Advisory lock + DDL + record INSERT therefore commit atomically and serialise.
+        apply: async (m) => {
+          await client.query(migrationScript(m));
+        },
+      });
     },
   };
 }

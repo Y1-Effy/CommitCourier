@@ -41,6 +41,7 @@ import { deliverOne } from "./delivery/deliver";
 import type { DeliveryHooks, DeliveryInstrument } from "./delivery/deliver";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
 import type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
+import type { Accelerator } from "./accelerator/accelerator";
 import {
   attempts as adminAttempts,
   replay as adminReplay,
@@ -121,6 +122,13 @@ export interface RelayInit<TTx> {
    * from `commitcourier/otel`.
    */
   instrument?: DeliveryInstrument;
+  /**
+   * Optional low-latency wake accelerator (fail-open). When provided, each enqueue signals it (so a
+   * listening dispatcher wakes at once instead of after the poll interval) and every dispatcher this
+   * relay creates subscribes to it. The outbox row stays the source of truth, so a missed wake only
+   * delays delivery. Wire it with `createPgAccelerator` from `commitcourier/accelerator/pg`.
+   */
+  accelerator?: Accelerator<TTx>;
 }
 
 /** The public surface returned by {@link createRelay}. */
@@ -181,6 +189,7 @@ function wrapStore<TTx>(
   rawStore: Store<TTx>,
   cipher: SecretCipher | undefined,
   endpointCacheTtlMs: number | undefined,
+  logger: Logger,
 ): Store<TTx> {
   if (
     endpointCacheTtlMs !== undefined &&
@@ -191,7 +200,8 @@ function wrapStore<TTx>(
       `endpointCacheTtlMs must be a number >= 0, got ${String(endpointCacheTtlMs)}`,
     );
   }
-  let store = cipher ? createEncryptedStore(rawStore, cipher) : rawStore;
+  // The encrypted store logs (and quarantines) undecryptable rows, so it needs the relay's logger.
+  let store = cipher ? createEncryptedStore(rawStore, cipher, logger) : rawStore;
   if (endpointCacheTtlMs && endpointCacheTtlMs > 0) {
     store = createEndpointCache(store, { ttlMs: endpointCacheTtlMs });
   }
@@ -200,8 +210,9 @@ function wrapStore<TTx>(
 
 export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>> {
   const { store: rawStore, cipher, endpointCacheTtlMs, ...rest } = config;
-  const store = wrapStore(rawStore, cipher, endpointCacheTtlMs);
+  // Resolve config first so the store decorators (encrypted store) can use the resolved logger.
   const resolved = resolveConfig(rest);
+  const store = wrapStore(rawStore, cipher, endpointCacheTtlMs, resolved.logger);
 
   const diag = await store.diagnose();
   if (!diag.ok) {
@@ -214,6 +225,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   const http = createHttpClient({ ssrf: resolved.ssrf, delivery: resolved.delivery });
   const hooks = config.hooks;
   const instrument = config.instrument;
+  const accelerator = config.accelerator;
   const deliver = (row: OutboxRow): Promise<void> =>
     deliverOne(row, { store, http, config: resolved, clock: resolved.clock, hooks, instrument });
 
@@ -244,30 +256,61 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
 
   return {
     async enqueue(trx, input) {
-      // Errors propagate so the user's TX rolls back with the business write (fail-closed).
+      // Errors propagate so the user's TX rolls back with the business write (fail-closed). The
+      // accelerator wake rides the same TX (NOTIFY on COMMIT), so a freshly enqueued row wakes a
+      // listening dispatcher at once; its failure consistently rolls back with the enqueue.
       const row = buildRow(input);
       await store.insertOutbox(trx, row);
+      if (accelerator) await accelerator.signal(trx);
       return { id: row.id };
     },
     async enqueueMany(trx, inputs) {
-      // One multi-row INSERT on the caller's TX; errors propagate (fail-closed).
+      // One multi-row INSERT on the caller's TX; errors propagate (fail-closed). A single wake
+      // suffices for the whole batch.
       const rows = inputs.map(buildRow);
       await store.insertOutboxMany(trx, rows);
+      if (rows.length > 0 && accelerator) await accelerator.signal(trx);
       return { ids: rows.map((r) => r.id) };
     },
     async enqueueUnsafe(input) {
       const row = buildRow(input);
       await store.insertOutboxAutonomous(row);
+      // Best-effort wake outside any TX; never let a signal failure break the (already non-atomic)
+      // enqueueUnsafe — the poller is the safety net.
+      if (accelerator) {
+        try {
+          await accelerator.signalAutonomous();
+        } catch (err) {
+          resolved.logger.warn("accelerator signalAutonomous failed", { error: String(err) });
+        }
+      }
       return { id: row.id };
     },
     createDispatcher(options) {
-      return makeDispatcher({ store, deliver, config: resolved, options });
+      return makeDispatcher({
+        store,
+        deliver,
+        config: resolved,
+        options,
+        wakeSignal: accelerator ? (onWake) => accelerator.subscribe(onWake) : undefined,
+      });
     },
     attempts(opts) {
       return adminAttempts(store, opts.outboxId);
     },
-    replay(opts) {
-      return adminReplay(store, resolved.clock(), opts);
+    async replay(opts) {
+      const result = await adminReplay(store, resolved.clock(), opts);
+      // Replayed rows are fresh `pending` copies; wake a listening dispatcher just like enqueue so
+      // they are delivered without waiting for the next idle poll. Best-effort (the poller is the
+      // net), so a signal failure never fails the replay.
+      if (result.ids.length > 0 && accelerator) {
+        try {
+          await accelerator.signalAutonomous();
+        } catch (err) {
+          resolved.logger.warn("accelerator signal after replay failed", { error: String(err) });
+        }
+      }
+      return result;
     },
     list(filter) {
       return adminListOutbox(store, filter);

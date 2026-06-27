@@ -11,6 +11,9 @@ export default defineConfig({
     "src/store/drizzle.ts",
     "src/store/prisma.ts",
     "src/otel/index.ts",
+    // Optional Postgres LISTEN/NOTIFY accelerator (07-accelerator). A future BullMQ accelerator would
+    // add `src/accelerator/bullmq.ts` here under the same `Accelerator` seam.
+    "src/accelerator/pg.ts",
   ],
   format: ["esm", "cjs"],
   dts: true,

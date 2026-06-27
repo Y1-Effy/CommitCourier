@@ -11,7 +11,8 @@ export type Clock = () => Date;
 /**
  * Injectable logger. Defaults to a no-op.
  *
- * OpenTelemetry integration is deferred to v2.
+ * Independent of the delivery instrumentation seam: tracing/metrics go through `RelayInit.instrument`
+ * / `hooks` and the optional `commitcourier/otel` adapter, not this logger.
  */
 export interface Logger {
   debug(msg: string, meta?: Record<string, unknown>): void;

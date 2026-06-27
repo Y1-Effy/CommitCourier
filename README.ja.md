@@ -245,7 +245,7 @@ dispatcher のオプション（`relay.createDispatcher({ … })`）：
 
 - **並行度とプールサイズ。** `concurrency` を上げる効果は `pg.Pool` に空き接続がある場合のみ。dispatch 経路は in-flight な `claimDue` / `completeAttempt` ごとに 1 接続を使います。`Pool({ max })` は `concurrency` ＋ 余裕以上にしないと、配信がプール待ちで止まります。
 - **バッチと接続。** `batchSize`（既定 `concurrency * 2`）は in-flight バッファ上限、`delivery.connections` は宛先あたりの接続上限。負荷に合わせて調整し、同一ホストへ多数配信するなら `delivery.keepAliveTimeoutMs` を延ばします。
-- **登録エンドポイントのキャッシュ。** 登録エンドポイント運用では配信ごとに DB を引きます。`endpointCacheTtlMs`（例 `1000`〜`5000`）で in-process キャッシュ。`update`/`disable` は同一プロセス内で即時無効化し、TTL が他プロセスの変更の鮮度遅延の上限になります。inline `{ url, secret }` 運用には影響しません。
+- **登録エンドポイントのキャッシュ。** 登録エンドポイント運用では配信ごとに DB を引きます。`endpointCacheTtlMs`（例 `1000`〜`5000`）で in-process キャッシュ。`update`/`disable` は同一プロセス内で即時無効化し、TTL が他プロセスの変更の鮮度遅延の上限になります。inline `{ url, secret }` 運用には影響しません。**複数の dispatcher プロセス**では、`endpointCacheTtlMs` は `disable` や鍵ローテーション後に他プロセスが古いエンドポイントで配信し続ける時間の上限にもなります。短めに設定し、secret をローテーションする際は最後の配信から `ttlMs` 以上空けてから `finalizeRotation` を呼んでください（それまでは他プロセスが旧鍵のみで署名し続ける可能性があります）。
 - **インデックスは組込み。** claim/reclaim クエリは `pending` / `in_flight` 行のみの部分インデックスを使うため、delivered/dead 行が増えても高速なまま（調整不要）。
 
 **段階導入**：まず `mode: "observe"` で「送るはず」の量と宛先を記録し、想定と差分確認してから `"active"` に切り替えます。
@@ -310,6 +310,38 @@ const relay = await createRelay({ store, instrument, hooks });
 
 カウンターとヒストグラムは**配信試行ごと**に記録されます（リトライは都度カウント、ワーカークラッシュ後の希少な再配信も含む）。ユニーク行数ではなく試行回数です。
 
+### 低遅延配信（アクセラレータ）
+
+既定の Dispatcher はポーリングするため、静かなキューに enqueue された行は配信開始まで最大 `pollIntervalMs` 待ちます。任意の**アクセラレータ（v2）**はこの待機を短絡し、enqueue ごとに購読中の Dispatcher を起こして near-immediate に配信を始めます。Outbox 行は引き続き唯一の真実の源泉で、通知喪失時も配信が遅れるだけ（ポーラーが回収）なので、正当性・可用性には一切影響しません。
+
+第一実装の `commitcourier/accelerator/pg` は Postgres LISTEN/NOTIFY を使い、追加インフラ不要です。`NOTIFY` は enqueue トランザクションに相乗りするため、行が可視になる前に listener が起きることはありません。LISTEN は自己修復する専用接続で実行されます。
+
+```ts
+import { Pool, Client } from "pg";
+import { createRelay } from "commitcourier";
+import { postgresStore } from "commitcourier/store/pg";
+import { createPgAccelerator } from "commitcourier/accelerator/pg";
+
+const pool = new Pool(/* … */);
+const accelerator = createPgAccelerator({
+  pool,
+  // LISTEN 専用接続（delivery プールから取ってはいけない）:
+  listen: async () => {
+    const c = new Client(/* … */);
+    await c.connect();
+    return c;
+  },
+});
+
+const relay = await createRelay({ store: postgresStore({ pool }), accelerator });
+// この relay が生成する各 Dispatcher は enqueue で起床します:
+relay.createDispatcher({ pollIntervalMs: 10_000 }).start();
+```
+
+必要な peer は `pg` のみ（`pg` ストアで既に必須）。BullMQ アクセラレータは同じ `Accelerator` シーム上の将来アダプタです。
+
+運用上の注意 2 点：(1) トランザクショナル wake は enqueue トランザクションに相乗りするため、稀に `NOTIFY` 自体が失敗すると `enqueue`／`enqueueMany` は業務書き込みごと rollback します（fail-closed）。`enqueueUnsafe` は握ります。(2) LISTEN 接続がエラーを表に出さず劣化した場合、wake は取りこぼされ配信はポーリング（`pollIntervalMs` 上限）にフォールバックします。poller が真実の源泉なので正当性には影響しません。
+
 ### データ保持
 
 CommitCourier は行を自動削除しません。`webhook_outbox`（`delivered`/`dead` 行を含む）と `webhook_delivery_attempts` は時間とともに増えるため、定期的なプルーニングは利用者側で行ってください（例：保持期間を超えた `delivered` の outbox 行を削除）。outbox 行を削除すると、その配信台帳も連動して削除されます（`ON DELETE CASCADE`）。
@@ -329,6 +361,8 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 ```
 
 `list` は `{ status, since, endpointId, limit, cursor }` を受け取り、署名鍵スナップショットは決して返しません。（生 SQL で `webhook_outbox` を直接参照しても構いません。）
+
+> **replay は対象を絞る。** `replay({ filter })` は一致した全行を選択し、コピーを単一トランザクションで INSERT します。巨大な DLQ ではメモリ上の結果が大きくなり長時間トランザクションになるため、`since` や `endpointId` でフィルタを絞り、数十万行を一度に再 enqueue せず分割して replay してください。
 
 ## エラーハンドリング
 
@@ -361,6 +395,8 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 
 これは [Standard Webhooks](https://www.standardwebhooks.com/) の慣例なので、受信側は互換の検証ライブラリでそのまま検証できます。CommitCourier は独自署名方式を作りません。
 
+> **body の正規化。** `payload` は Postgres `jsonb` で保存されるため、配信 body は enqueue した値の JSON ラウンドトリップになります（オブジェクトのキー順は非保持、重複キーは畳み込み、意味のない空白は除去）。署名は常に「実際に送るバイト列」に対して計算されるので、これが原因で検証が失敗することはありません。ただし配信バイト列が入力と完全一致する保証はありません。バイト厳密が必要なら payload を事前シリアライズ済みの文字列として enqueue してください。
+
 ## 保証と非目標
 
 **保証すること**
@@ -385,12 +421,13 @@ CommitCourier は非侵襲かつ可逆です。すべては 3 つの専用テー
 
 ## 公開 API
 
-| import                     | エクスポート                                                                                                                                                             |
-| -------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `commitcourier`            | `createRelay`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                                                    |
-| `commitcourier/core`       | 純粋・依存ゼロのドメイン層（`sign`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
-| `commitcourier/store/pg`   | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                        |
-| `commitcourier/store/knex` | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                      |
+| import                         | エクスポート                                                                                                                                                             |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `commitcourier`                | `createRelay`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                                                    |
+| `commitcourier/core`           | 純粋・依存ゼロのドメイン層（`sign`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
+| `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                        |
+| `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                      |
+| `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — Postgres LISTEN/NOTIFY による任意の低遅延 wake。`createRelay({ accelerator })` に渡す。                                        |
 
 主要シグネチャ：
 
@@ -414,7 +451,7 @@ interface Relay<TTx> {
 - **v1（現行）**：Postgres ストア、`pg` ＋ Knex アダプタ、トランザクショナル enqueue、ポーラー型 dispatcher（外部キュー不要）、Standard Webhooks 署名（単一鍵）、リトライ／バックオフ／ジッター／DLQ、配信台帳、ID 指定リプレイ、SSRF 防御、観測モード、登録エンドポイント管理 API（`register` / `update` / `enable` / `disable` / `get`）、任意の保管時 secret 暗号化（`cipher`）、スループット調整（claim/reclaim の部分インデックス、undici keep-alive、任意の登録エンドポイントキャッシュ、適応ポーリング）。
 - **v1.1**：鍵ローテーション／二重署名（`endpoints.rotateSecret` / `finalizeRotation`）、`Retry-After` 尊重、`410 Gone` での即時エンドポイント無効化、オプトインのエンドポイント単位 FIFO（`createDispatcher({ ordering: "per-endpoint" })`）、Drizzle（`commitcourier/store/drizzle`）＋ Prisma（`commitcourier/store/prisma`）アダプタ。
 - **v1.2**：読み取り専用の DLQ／outbox 一覧 API（`relay.list({ status: "dead", … })`、secret 非露出・seq キーセットページング）、エンドポイント一覧（`endpoints.list({ status, … })`）、OpenTelemetry アダプタ（`commitcourier/otel` — 配信ごとの span ＋ outcome カウンター／duration ヒストグラム。fail-open な `instrument` / `hooks` シーム経由）。
-- **v2**：任意の BullMQ アクセラレータ・アダプタ（Outbox 行は引き続き真実の源泉）、さらなるエンドポイント管理 API。
+- **v2**：低遅延配信アクセラレータ（汎用 `Accelerator` シーム＋ Postgres LISTEN/NOTIFY 実装 `commitcourier/accelerator/pg`。Outbox 行は引き続き真実の源泉）、スキーマバージョン管理テーブル（`commitcourier_migrations` ＋ 増分 `migrate()`）。BullMQ アクセラレータとさらなるエンドポイント管理 API は同じシーム上の将来課題。
 
 ## セキュリティ
 

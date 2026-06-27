@@ -96,6 +96,16 @@
         "types": "./dist/otel/index.d.cts",
         "default": "./dist/otel/index.cjs"
       }
+    },
+    "./accelerator/pg": {
+      "import": {
+        "types": "./dist/accelerator/pg.d.ts",
+        "default": "./dist/accelerator/pg.js"
+      },
+      "require": {
+        "types": "./dist/accelerator/pg.d.cts",
+        "default": "./dist/accelerator/pg.cjs"
+      }
     }
   },
   "scripts": {

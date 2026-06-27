@@ -12,6 +12,7 @@ import {
   onSuccess,
   onFailure,
   onPermanentFailure,
+  RelayError,
 } from "../core/index";
 import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/index";
 import type { Store, NewDeliveryAttempt } from "../store/store";
@@ -119,6 +120,15 @@ function isSuccess(status: number | null): boolean {
  */
 function isPermanentFailure(status: number | null): boolean {
   return status === 410;
+}
+
+/**
+ * Pre-HTTP resolve errors that retrying can never fix, so the row goes straight to the DLQ instead of
+ * burning the whole retry budget. `ENDPOINT_NOT_FOUND` / `ENDPOINT_DISABLED` are deliberately NOT here:
+ * an admin can create or re-enable the endpoint, so those stay retryable.
+ */
+function isPermanentResolveError(error: string): boolean {
+  return error === "MISSING_SECRET" || error === "ENQUEUE_NO_TARGET";
 }
 
 /** Resolve the destination URL and signing secret for a row (registered endpoint or inline). */
@@ -258,23 +268,26 @@ async function applyFailure(
 }
 
 /**
- * Permanent failure (HTTP 410 Gone): write the ledger row and move straight to `dead` without
- * consuming the retry budget, disable the registered endpoint (fail-open — a disable error is logged,
- * never propagated), then notify onDead.
+ * Permanent failure: write the ledger row and move straight to `dead` without consuming the retry
+ * budget, then notify onDead. `opts.disableEndpoint` (default true, the HTTP 410 Gone path) also
+ * disables the registered endpoint (fail-open — a disable error is logged, never propagated). It is
+ * passed `false` for a deterministic pre-HTTP failure (missing/invalid signing secret), where the
+ * endpoint itself is not the problem and should stay enabled.
  */
 async function applyPermanentFailure(
   ctx: Ctx,
   attempt: NewDeliveryAttempt,
   summary: string,
   event: DeliveryEvent,
+  opts: { disableEndpoint?: boolean } = {},
 ): Promise<void> {
   const { row, deps, now } = ctx;
   await deps.store.completeAttempt(attempt, onPermanentFailure(row, summary), row.lockedBy);
-  if (row.endpointId != null) {
+  if ((opts.disableEndpoint ?? true) && row.endpointId != null) {
     try {
       await deps.store.disableEndpoint(row.endpointId, now);
     } catch (err) {
-      deps.config.logger.error("disableEndpoint on 410 failed", {
+      deps.config.logger.error("disableEndpoint on permanent failure failed", {
         id: row.id,
         endpointId: row.endpointId,
         error: secretFreeSummary(err),
@@ -354,25 +367,35 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
   try {
     const resolved = await resolveTarget(row, deps.store);
     if (!resolved.ok) {
-      await applyFailure(
-        ctx,
-        noHttpAttempt(row, resolved.error),
-        resolved.error,
-        eventFor(ctx, null, resolved.error, 0),
-      );
+      const attempt = noHttpAttempt(row, resolved.error);
+      const event = eventFor(ctx, null, resolved.error, 0);
+      // A row that can never resolve a target/secret will never succeed: send it straight to the DLQ
+      // instead of retrying maxAttempts times. The endpoint is not at fault, so do not disable it.
+      if (isPermanentResolveError(resolved.error)) {
+        await applyPermanentFailure(ctx, attempt, resolved.error, event, {
+          disableEndpoint: false,
+        });
+      } else {
+        await applyFailure(ctx, attempt, resolved.error, event);
+      }
       return;
     }
     await deliverHttp(ctx, resolved.url, resolved.secrets);
   } catch (err) {
     const summary = secretFreeSummary(err);
     deps.config.logger.error("deliverOne failed", { id: row.id, error: summary });
+    // A CONFIG_INVALID here is a deterministic signing/secret problem (empty or malformed secret, an
+    // undecryptable registered-endpoint secret): retrying cannot fix it, so go straight to dead. Any
+    // other error (a transient DB failure, etc.) stays retryable.
+    const permanent = err instanceof RelayError && err.code === "CONFIG_INVALID";
     try {
-      await applyFailure(
-        ctx,
-        noHttpAttempt(row, summary),
-        summary,
-        eventFor(ctx, null, summary, 0),
-      );
+      const attempt = noHttpAttempt(row, summary);
+      const event = eventFor(ctx, null, summary, 0);
+      if (permanent) {
+        await applyPermanentFailure(ctx, attempt, summary, event, { disableEndpoint: false });
+      } else {
+        await applyFailure(ctx, attempt, summary, event);
+      }
     } catch (inner) {
       // Even the failover write failed; swallow so the dispatcher loop keeps running.
       deps.config.logger.error("deliverOne failover record failed", {

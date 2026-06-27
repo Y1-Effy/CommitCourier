@@ -14,6 +14,7 @@ import pLimit, { type LimitFunction } from "p-limit";
 import { RelayError } from "../core/index";
 import type { OutboxRow, RelayConfig } from "../core/index";
 import type { Store } from "../store/store";
+import type { WakeSignal } from "../accelerator/accelerator";
 
 export interface DispatcherOptions {
   /** Max concurrent deliveries. Default 8. */
@@ -95,17 +96,27 @@ function fail(message: string): never {
 
 /**
  * At-least-once correctness rests on an unenforced invariant: the visibility timeout
- * (`reclaimAfterMs`) must comfortably exceed the worst-case delivery time (`delivery.timeoutMs`). If
- * it does not, an in-flight delivery can be reclaimed and re-delivered by another worker while the
- * first is still running. This is dangerous-but-valid config (like the SSRF warnings in core), so
- * warn rather than fail — a margin of 1.5x flags the obviously-too-tight settings.
+ * (`reclaimAfterMs`) must comfortably exceed the worst-case time a claimed row stays `in_flight`. A
+ * row is claimed (and its `locked_at` stamped) up front, but with a claim buffer (`batchSize` above
+ * `concurrency`) it can wait in the p-limit queue for up to `ceil(batchSize/concurrency)` delivery
+ * waves before its HTTP even starts — so the worst case is `timeoutMs * ceil(batchSize/concurrency)`,
+ * not `timeoutMs`. If `reclaimAfterMs` does not exceed that (×1.5 margin), a still-queued row can be
+ * reclaimed and double-delivered. Dangerous-but-valid config (like the SSRF warnings in core), so
+ * warn rather than fail.
  */
 function warnIfReclaimTooTight(opts: ResolvedOptions, config: RelayConfig): void {
   const { timeoutMs } = config.delivery;
-  if (opts.reclaimAfterMs <= timeoutMs * 1.5) {
+  const bufferWaves = Math.ceil(opts.batchSize / opts.concurrency);
+  const safeFloor = timeoutMs * 1.5 * bufferWaves;
+  if (opts.reclaimAfterMs <= safeFloor) {
     config.logger.warn(
-      "dispatcher reclaimAfterMs is not safely above delivery.timeoutMs; an in-flight delivery may be reclaimed and double-delivered",
-      { reclaimAfterMs: opts.reclaimAfterMs, timeoutMs },
+      "dispatcher reclaimAfterMs is not safely above the worst-case in-flight time (delivery.timeoutMs scaled by the claim buffer batchSize/concurrency); an in-flight delivery may be reclaimed and double-delivered",
+      {
+        reclaimAfterMs: opts.reclaimAfterMs,
+        timeoutMs,
+        batchSize: opts.batchSize,
+        concurrency: opts.concurrency,
+      },
     );
   }
 }
@@ -126,6 +137,8 @@ interface LoopCtx {
   active: () => boolean;
   inFlight: Set<Promise<void>>;
   sleep: (ms: number) => Promise<void>;
+  /** Wake-aware idle sleep: returns early when an accelerator wake arrives (see createDispatcher). */
+  idleSleep: (ms: number) => Promise<void>;
 }
 
 /**
@@ -134,7 +147,7 @@ interface LoopCtx {
  * in-flight deliveries before returning so stop() is graceful. Fail-open throughout.
  */
 async function runLoop(ctx: LoopCtx): Promise<void> {
-  const { store, deliver, config, opts, limit, lockedBy, active, inFlight, sleep } = ctx;
+  const { store, deliver, config, opts, limit, lockedBy, active, inFlight, sleep, idleSleep } = ctx;
   const { logger, clock } = config;
   let lastReclaimAt = 0;
   // Adaptive idle backoff: when the queue is empty, start near-immediate and double up to
@@ -190,8 +203,10 @@ async function runLoop(ctx: LoopCtx): Promise<void> {
       continue;
     }
     if (rows.length === 0) {
-      // Nothing due: wait the current backoff, then lengthen it up to the poll-interval cap.
-      await sleep(idleMs);
+      // Nothing due: wait the current backoff, then lengthen it up to the poll-interval cap. The
+      // wait is wake-aware — an accelerator NOTIFY cuts it short so a freshly enqueued row is picked
+      // up at once instead of after the backoff.
+      await idleSleep(idleMs);
       idleMs = Math.min(idleMs * 2, opts.pollIntervalMs);
       continue;
     }
@@ -207,8 +222,14 @@ export function createDispatcher(deps: {
   deliver: (row: OutboxRow) => Promise<void>;
   config: RelayConfig;
   options?: DispatcherOptions;
+  /**
+   * Optional accelerator subscription (07-accelerator). When present, the dispatcher subscribes on
+   * `start()` and unsubscribes on `stop()`; an incoming wake cuts the idle backoff short so a
+   * freshly enqueued row is dispatched with low latency. Omitted keeps pure adaptive polling.
+   */
+  wakeSignal?: WakeSignal;
 }): Dispatcher {
-  const { store, deliver, config } = deps;
+  const { store, deliver, config, wakeSignal } = deps;
   const opts = resolveOptions(deps.options);
   warnIfReclaimTooTight(opts, config);
   const limit = pLimit(opts.concurrency);
@@ -242,6 +263,43 @@ export function createDispatcher(deps: {
       );
     });
 
+  // --- Accelerator wake. `wake()` latches and aborts the active idle sleep so the next iteration
+  // claims at once. The latch closes the race where a wake arrives between an empty claim and the
+  // start of the next idle sleep: idleSleep consumes the latch synchronously before it waits. stop()
+  // also aborts the idle sleep so a graceful stop is not delayed by the backoff.
+  let wakePending = false;
+  let idleAbort: AbortController | null = null;
+  const wake = (): void => {
+    wakePending = true;
+    idleAbort?.abort();
+  };
+  const idleSleep = (ms: number): Promise<void> =>
+    new Promise((resolve) => {
+      if (wakePending) {
+        wakePending = false;
+        resolve();
+        return;
+      }
+      const ac = new AbortController();
+      idleAbort = ac;
+      const finish = (): void => {
+        if (idleAbort === ac) idleAbort = null;
+        clearTimeout(timer);
+        resolve();
+      };
+      const timer = setTimeout(finish, ms);
+      ac.signal.addEventListener(
+        "abort",
+        () => {
+          wakePending = false;
+          finish();
+        },
+        { once: true },
+      );
+    });
+
+  let unsubscribe: Promise<() => void> | null = null;
+
   return {
     start() {
       if (!state.running) {
@@ -256,7 +314,15 @@ export function createDispatcher(deps: {
           active,
           inFlight,
           sleep,
+          idleSleep,
         });
+        if (wakeSignal) {
+          // Subscribe in the background; a failed subscription is fail-open (polling still runs).
+          unsubscribe = wakeSignal(wake).catch((err: unknown) => {
+            config.logger.error("dispatcher wake subscribe failed", { error: String(err) });
+            return () => {};
+          });
+        }
       }
       return Promise.resolve();
     },
@@ -264,8 +330,18 @@ export function createDispatcher(deps: {
     async stop() {
       state.running = false;
       sleepAbort?.abort();
+      idleAbort?.abort();
       await loopPromise;
       loopPromise = null;
+      if (unsubscribe) {
+        const off = await unsubscribe;
+        unsubscribe = null;
+        try {
+          off();
+        } catch (err) {
+          config.logger.error("dispatcher wake unsubscribe failed", { error: String(err) });
+        }
+      }
     },
 
     isRunning() {
