@@ -75,7 +75,9 @@ function claimArgs(
 
 /** Apply a {@link ReplayFilter}'s conditions to a knex query builder. */
 function applyReplayFilter(q: Knex.QueryBuilder, filter: ReplayFilter): Knex.QueryBuilder {
-  let out = q;
+  // Replay only ever targets non-active rows (mirrors replayWhere): never copy a live row the
+  // dispatcher will deliver on its own into a duplicate.
+  let out = q.whereNotIn("status", ["pending", "in_flight"]);
   if (filter.outboxId !== undefined) out = out.where("id", filter.outboxId);
   if (filter.status !== undefined) out = out.where("status", filter.status);
   if (filter.since !== undefined) out = out.where("created_at", ">=", filter.since);

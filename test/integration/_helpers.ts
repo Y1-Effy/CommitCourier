@@ -13,6 +13,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { postgresStore } from "../../src/store/pg";
 import { knexStore } from "../../src/store/knex";
 import { drizzleStore } from "../../src/store/drizzle";
+import { mapOutboxRow, type RawOutboxRow } from "../../src/store/_shared";
 import type { Store, NewOutboxRow } from "../../src/store/store";
 import type { OutboxRow } from "../../src/core/index";
 
@@ -81,10 +82,14 @@ export interface Harness {
   teardown(): Promise<void>;
 }
 
-/** Adapter-neutral single-row read built on the store's own filtered select. */
-async function getOutboxVia(store: DispatchStore, id: string): Promise<OutboxRow | undefined> {
-  const rows = await store.selectForReplay({ outboxId: id });
-  return rows[0];
+/**
+ * Map the first raw row to the domain shape (or undefined). Harnesses read a single row by raw
+ * SELECT rather than via `selectForReplay`, which is deliberately restricted to non-active rows and
+ * so cannot read a `pending`/`in_flight` row under test.
+ */
+function mapFirstOutbox(rows: unknown[]): OutboxRow | undefined {
+  const row = rows[0] as RawOutboxRow | undefined;
+  return row ? mapOutboxRow(row) : undefined;
 }
 
 /** Start a disposable Postgres container. */
@@ -140,7 +145,8 @@ export function pgHarness(conn: PgConn): Harness {
         client.release();
       }
     },
-    getOutbox: (id) => getOutboxVia(store, id),
+    getOutbox: async (id) =>
+      mapFirstOutbox((await pool.query("SELECT * FROM webhook_outbox WHERE id = $1", [id])).rows),
     async setInFlight(id, lockedAt) {
       await pool.query(
         "UPDATE webhook_outbox SET status='in_flight', locked_at=$2, locked_by='test' WHERE id=$1",
@@ -188,7 +194,7 @@ export function knexHarness(conn: PgConn): Harness {
         if (!(err instanceof RollbackSignal)) throw err;
       }
     },
-    getOutbox: (id) => getOutboxVia(store, id),
+    getOutbox: async (id) => mapFirstOutbox(await db("webhook_outbox").where({ id }).select("*")),
     async setInFlight(id, lockedAt) {
       await db("webhook_outbox")
         .where({ id })
@@ -229,7 +235,8 @@ export function drizzleHarness(conn: PgConn): Harness {
       rollbackIfRequested((tx) => store.insertOutbox(tx, row), opts?.rollback),
     enqueueMany: (rows, opts) =>
       rollbackIfRequested((tx) => store.insertOutboxMany(tx, rows), opts?.rollback),
-    getOutbox: (id) => getOutboxVia(store, id),
+    getOutbox: async (id) =>
+      mapFirstOutbox((await pool.query("SELECT * FROM webhook_outbox WHERE id = $1", [id])).rows),
     async setInFlight(id, lockedAt) {
       await pool.query(
         "UPDATE webhook_outbox SET status='in_flight', locked_at=$2, locked_by='test' WHERE id=$1",

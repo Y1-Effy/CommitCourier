@@ -4,7 +4,7 @@
  * Docker-free guard for the SQL the integration suite exercises against real Postgres.
  */
 import { describe, expect, it } from "vitest";
-import { completeAttemptSql } from "../../src/store/_shared";
+import { completeAttemptSql, replayWhere } from "../../src/store/_shared";
 import { postgres } from "../../src/store/sql/postgres";
 
 describe("completeAttemptSql", () => {
@@ -37,6 +37,24 @@ describe("completeAttemptSql", () => {
     expect(sql).toContain("AND status = 'in_flight' AND locked_by = ?");
     // 8 attempt + 1 SET + 1 id + 1 locked_by = 11 placeholders.
     expect((sql.match(/\?/g) ?? []).length).toBe(11);
+  });
+});
+
+describe("replayWhere", () => {
+  it("always excludes active rows so a live row is never copied into a duplicate", () => {
+    const { sql, params } = replayWhere({});
+    // The guard is present even with no filter, and is a literal (contributes no bind param).
+    expect(sql).toBe("WHERE status NOT IN ('pending', 'in_flight')");
+    expect(params).toEqual([]);
+  });
+
+  it("ANDs the active-row guard ahead of the optional filters (numbered binds)", () => {
+    const since = new Date("2026-06-27T00:00:00.000Z");
+    const { sql, params } = replayWhere({ outboxId: "id-1", status: "dead", since });
+    expect(sql).toBe(
+      "WHERE status NOT IN ('pending', 'in_flight') AND id = $1 AND status = $2 AND created_at >= $3",
+    );
+    expect(params).toEqual(["id-1", "dead", since]);
   });
 });
 

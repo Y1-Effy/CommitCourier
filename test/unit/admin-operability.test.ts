@@ -138,6 +138,19 @@ describe("admin.replay safety cap", () => {
     expect(res.capped).toBe(true);
   });
 
+  it.each(["pending", "in_flight"] as const)(
+    "rejects an explicit active status (%s) so a live row is never duplicated",
+    async (bad) => {
+      const store = {
+        selectForReplay: () => Promise.resolve([]),
+        insertReplayCopies: () => Promise.resolve([]),
+      } as unknown as Store;
+      await expect(replay(store, NOW, { filter: { status: bad } })).rejects.toMatchObject({
+        code: "INVALID_ARGUMENT",
+      });
+    },
+  );
+
   it("reports capped=false for a partial page and copies fresh pending rows", async () => {
     const store = {
       selectForReplay: () => Promise.resolve([row("a"), row("b")]),

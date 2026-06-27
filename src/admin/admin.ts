@@ -138,6 +138,15 @@ export async function replay(
   opts: { outboxId: string } | { filter: ReplayFilter },
 ): Promise<{ ids: string[]; capped: boolean }> {
   const base: ReplayFilter = "filter" in opts ? opts.filter : { outboxId: opts.outboxId };
+  // Replay re-activates rows as fresh pending copies, so a still-active row would be duplicated by
+  // the dispatcher's own delivery. Reject an explicit active-status filter up front (mirrors prune's
+  // refusal to touch live rows); the store also guards so a broad/no-status filter excludes them.
+  if (base.status === "pending" || base.status === "in_flight") {
+    throw new RelayError(
+      "INVALID_ARGUMENT",
+      `replay: status "${base.status}" is not replayable (only non-active rows can be replayed)`,
+    );
+  }
   const limit = clampReplayLimit(base.limit);
   const rows = await store.selectForReplay({ ...base, limit });
   const copies: NewOutboxRow[] = rows.map((src) => ({

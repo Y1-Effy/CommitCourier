@@ -516,9 +516,15 @@ export function insertManyClause(
   return `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${tuples.join(", ")}`;
 }
 
-/** Build the dynamic WHERE for a {@link ReplayFilter}: `{ sql, params }` (empty when no filter). */
+/**
+ * Build the dynamic WHERE for a {@link ReplayFilter}: `{ sql, params }`. Replay only ever targets
+ * non-active rows: an always-present `status NOT IN ('pending','in_flight')` guard keeps a live row
+ * (one the dispatcher will deliver on its own) from being copied into a duplicate, mirroring the way
+ * `prune` refuses to touch active rows. The guard is a literal (no bind), so the same SQL is valid
+ * for every placeholder style.
+ */
 export function replayWhere(filter: ReplayFilter): { sql: string; params: unknown[] } {
-  const conds: string[] = [];
+  const conds: string[] = ["status NOT IN ('pending', 'in_flight')"];
   const params: unknown[] = [];
   if (filter.outboxId !== undefined) {
     params.push(filter.outboxId);
@@ -532,7 +538,7 @@ export function replayWhere(filter: ReplayFilter): { sql: string; params: unknow
     params.push(filter.since);
     conds.push(`created_at >= $${String(params.length)}`);
   }
-  return { sql: conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "", params };
+  return { sql: `WHERE ${conds.join(" AND ")}`, params };
 }
 
 // --- v2.1 operability helpers (cancel, circuit breaker, single-row get, replay cap). ---

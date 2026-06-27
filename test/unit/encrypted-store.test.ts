@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { createAesGcmCipher, generateSecretKey } from "../../src/core/cipher";
 import { createEncryptedStore } from "../../src/store/encrypted-store";
-import type { OutboxRow, EndpointRow, Transition } from "../../src/core/index";
+import type { OutboxRow, EndpointRow, Transition, SecretCipher } from "../../src/core/index";
 import type { NewOutboxRow, NewEndpointRow, EndpointPatch, Store } from "../../src/store/store";
 
 const PLAINTEXT = "whsec_topsecret";
@@ -215,5 +215,19 @@ describe("createEncryptedStore decryption isolation", () => {
 
     expect(out.map((r) => r.id)).toEqual(["good"]);
     expect(transitions).toHaveLength(0);
+  });
+
+  it("normalises any findEndpoint decryption failure to CONFIG_INVALID (custom-cipher safe)", async () => {
+    // A custom SecretCipher that throws a plain Error (not a RelayError). The delivery path keys its
+    // permanent-vs-retryable decision on RelayError CONFIG_INVALID, so the decorator must normalise.
+    const throwingCipher: SecretCipher = {
+      encrypt: (s: string) => Promise.resolve(s),
+      decrypt: () => Promise.reject(new Error("kms unreachable")),
+    };
+    const rec = recorder();
+    rec.reads.endpoint = endpointRow("ciphertext");
+    const enc = createEncryptedStore(rec.store, throwingCipher);
+
+    await expect(enc.findEndpoint("ep-1")).rejects.toMatchObject({ code: "CONFIG_INVALID" });
   });
 });

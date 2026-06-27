@@ -233,6 +233,23 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(copy?.idempotencyKey).toBe("idem-1");
     });
 
+    it("selectForReplay never returns active (pending/in_flight) rows", async () => {
+      const pending = sampleRow(); // defaults to pending
+      const claimed = sampleRow();
+      const dead = sampleRow({ status: "dead" });
+      await h().enqueue(pending);
+      await h().enqueue(claimed);
+      await h().enqueue(dead);
+      await h().setInFlight(claimed.id, new Date());
+
+      // A no-filter replay selection must exclude live rows so they are not copied into duplicates.
+      const all = await h().store.selectForReplay({});
+      const ids = all.map((r) => r.id);
+      expect(ids).toContain(dead.id);
+      expect(ids).not.toContain(pending.id);
+      expect(ids).not.toContain(claimed.id);
+    });
+
     it("cancel moves only a pending row to cancelled (in_flight/terminal untouched)", async () => {
       const pending = sampleRow();
       await h().enqueue(pending);

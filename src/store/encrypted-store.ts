@@ -18,6 +18,7 @@
  * throws on decryption failure, which the delivery path catches and routes to a failure for that one
  * row. This only arises under genuine key misconfiguration or data corruption, never in normal use.
  */
+import { RelayError } from "../core/index";
 import type { SecretCipher, Logger, Transition } from "../core/index";
 import type { OutboxRow, EndpointRow } from "../core/index";
 import type { NewOutboxRow, NewEndpointRow, EndpointPatch, Store } from "./store";
@@ -139,13 +140,20 @@ export function createEncryptedStore<TTx>(
     async findEndpoint(id) {
       const ep = await inner.findEndpoint(id);
       if (!ep) return ep;
-      const decrypted: EndpointRow = {
-        ...ep,
-        secret: await cipher.decrypt(ep.secret),
-        secretSecondary:
-          ep.secretSecondary == null ? null : await cipher.decrypt(ep.secretSecondary),
-      };
-      return decrypted;
+      try {
+        const decrypted: EndpointRow = {
+          ...ep,
+          secret: await cipher.decrypt(ep.secret),
+          secretSecondary:
+            ep.secretSecondary == null ? null : await cipher.decrypt(ep.secretSecondary),
+        };
+        return decrypted;
+      } catch (cause) {
+        // Normalise to CONFIG_INVALID so the delivery path routes an undecryptable registered-endpoint
+        // secret straight to `dead` (matching the inline `claimDue` quarantine), regardless of what a
+        // custom SecretCipher throws — the built-in cipher already throws CONFIG_INVALID.
+        throw new RelayError("CONFIG_INVALID", "endpoint secret decryption failed", cause);
+      }
     },
 
     // --- pass-through: no secret columns involved ---
