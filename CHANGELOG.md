@@ -7,10 +7,17 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.2.0] - 2026-06-28
+
+First public release to npm. (Supersedes the unpublished 0.1.0 development baseline below.)
 
 ### Added
 
+- **SaaS handoff via the `sink` transport (experimental):** `createRelay({ delivery: { transport: "sink" }, sink })`
+  hands each event to a `Sink` (e.g. a webhook-delivery SaaS such as Svix) at least once instead of delivering over
+  HTTP directly, so the at-least-once handoff still rides your transaction while final delivery/signing is delegated.
+  The `Sink` port and types ship from `commitcourier/forward`, with an official Svix sample adapter at
+  `commitcourier/forward/svix` (`svix` is an optional peer). **Experimental: this API may change in a minor release.**
 - **Receiver-side `verifySignature` (DX):** a pure, dependency-free helper in `commitcourier/core` that verifies
   an inbound Standard Webhooks request — the counterpart of `sign`. It recomputes the `v1,<base64>` HMAC over
   `{id}.{timestamp}.{payload}` and constant-time compares it against every token in `webhook-signature`, accepts
@@ -123,7 +130,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.0] - 2026-06-25
 
-Initial public release.
+Initial development baseline (never published to npm).
 
 ### Added
 
@@ -144,5 +151,5 @@ Initial public release.
 
 > ⚠️ Pre-`1.0.0`: the API and package name may still change.
 
-[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.2.0

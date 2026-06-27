@@ -7,9 +7,16 @@
  * layer) so `core` stays import-zero; it carries no signing/SSRF surface — those are delegated to the
  * SaaS in `sink` mode. Wire an implementation into `createRelay` via `RelayInit.sink` with the delivery
  * transport set to `sink`. The official Svix sample adapter is `commitcourier/forward/svix`.
+ *
+ * Experimental — this API is exported but not yet covered by the stability guarantee and may change
+ * in a minor release.
  */
 
-/** Generic delivery sink: hands one event to an external destination exactly once per attempt. */
+/**
+ * Generic delivery sink: hands one event to an external destination exactly once per attempt.
+ *
+ * Experimental — this API may change in a minor release.
+ */
 export interface Sink {
   deliver(event: SinkEvent): Promise<SinkResult>;
 }

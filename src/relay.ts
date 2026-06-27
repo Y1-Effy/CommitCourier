@@ -155,6 +155,8 @@ export interface RelayInit<TTx> {
    * and CommitCourier's signing/SSRF/circuit breaker are delegated. Ignored for the default `http`
    * transport. Each handoff is bounded by `delivery.timeoutMs`, but the sink is also responsible for
    * its own latency/timeout. Wire it with `svixSink` from `commitcourier/forward/svix` or your own `Sink`.
+   *
+   * Experimental — this API may change in a minor release.
    */
   sink?: Sink;
 }

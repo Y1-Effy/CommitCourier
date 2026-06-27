@@ -10,7 +10,7 @@
 
 CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeScript app — framework-agnostic, with **no extra infrastructure** (just the Postgres you already run). You `enqueue` a webhook **inside your own business transaction**, so it commits or rolls back atomically with your business write. The background dispatcher then delivers it with Standard Webhooks signing, retries, a DLQ, a full delivery ledger, SSRF protection, and single-delivery across instances.
 
-> ⚠️ **Pre-release** (`v0.1.0`). The API and the package name may still change before `1.0.0`.
+> ⚠️ **Pre-release** (`v0.2.0`). The API and the package name may still change before `1.0.0`.
 
 ---
 
@@ -588,16 +588,18 @@ CommitCourier is non-invasive and reversible. Everything lives in three dedicate
 
 ## API surface
 
-| Import                         | Exports                                                                                                                                                                                                                                 |
-| ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `commitcourier`                | `createRelay`, `createConsoleLogger`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                                            |
-| `commitcourier/core`           | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
-| `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                                                                        |
-| `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                                                                      |
-| `commitcourier/store/drizzle`  | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                                                                 |
-| `commitcourier/store/prisma`   | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                                                                         |
-| `commitcourier/otel`           | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                                                                |
-| `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                                                               |
+| Import                                        | Exports                                                                                                                                                                                                                                 |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commitcourier`                               | `createRelay`, `createConsoleLogger`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                                            |
+| `commitcourier/core`                          | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
+| `commitcourier/store/pg`                      | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                                                                        |
+| `commitcourier/store/knex`                    | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                                                                      |
+| `commitcourier/store/drizzle`                 | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                                                                 |
+| `commitcourier/store/prisma`                  | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                                                                         |
+| `commitcourier/otel`                          | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                                                                |
+| `commitcourier/accelerator/pg`                | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                                                               |
+| `commitcourier/forward` _(experimental)_      | The `Sink` port and `SinkEvent` / `SinkResult` types for the `sink` transport — see [Experimental: webhook-SaaS handoff](#experimental-webhook-saas-handoff-sink-transport). **API may change in a minor release.**                     |
+| `commitcourier/forward/svix` _(experimental)_ | `svixSink(...)` — official sample `Sink` adapter for Svix (`svix` optional peer). **API may change in a minor release.**                                                                                                                |
 
 Key signatures:
 
@@ -625,6 +627,26 @@ interface Relay<TTx> {
   endpoints: EndpointAdmin; // register / update / enable / disable / get / list
 }
 ```
+
+### Experimental: webhook-SaaS handoff (`sink` transport)
+
+> ⚠️ **Experimental.** This surface is exported but not yet covered by the stability guarantee — it may change in a minor release.
+
+Instead of delivering over HTTP itself, CommitCourier can hand each event to an external webhook-delivery SaaS (Svix, Outpost, Hookdeck, …) while the **atomic, at-least-once enqueue still rides your transaction**. Set the delivery transport to `sink` and pass a `Sink`:
+
+```ts
+import { Svix } from "svix";
+import { createRelay } from "commitcourier";
+import { svixSink } from "commitcourier/forward/svix"; // or your own Sink
+
+const relay = await createRelay({
+  store,
+  delivery: { transport: "sink" },
+  sink: svixSink({ svix: new Svix(process.env.SVIX_TOKEN!), appId: "app_..." }),
+});
+```
+
+In `sink` mode, signing / SSRF / circuit breaker are delegated to the SaaS. Implement the `Sink` port (`commitcourier/forward`) yourself to target any other provider.
 
 ## Status & roadmap
 

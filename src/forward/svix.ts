@@ -19,7 +19,11 @@ export interface SvixSinkOptions {
   appId: string;
 }
 
-/** Build a {@link Sink} that hands events to Svix, returning the Svix message id for ledger correlation. */
+/**
+ * Build a {@link Sink} that hands events to Svix, returning the Svix message id for ledger correlation.
+ *
+ * Experimental — this API may change in a minor release.
+ */
 export function svixSink(opts: SvixSinkOptions): Sink {
   return {
     async deliver(event) {

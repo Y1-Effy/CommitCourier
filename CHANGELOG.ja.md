@@ -7,10 +7,17 @@
 形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に基づき、本プロジェクトは
 [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
-## [Unreleased]
+## [0.2.0] - 2026-06-28
+
+npm への初の公開リリース。（下記の未公開 0.1.0 開発ベースラインを置き換えます。）
 
 ### Added（追加）
 
+- **`sink` トランスポートによる SaaS ハンドオフ（experimental）**：`createRelay({ delivery: { transport: "sink" }, sink })`
+  は、HTTP で直接配信する代わりに各イベントを `Sink`（Svix などの webhook 配信 SaaS）へ at-least-once で引き渡します。
+  at-least-once の引き渡し自体はあなたのトランザクションに相乗りしつつ、最終配信・署名は SaaS に委譲します。`Sink`
+  ポートと型は `commitcourier/forward` から、公式の Svix サンプルアダプタは `commitcourier/forward/svix` から提供
+  （`svix` は optional peer）。**experimental：この API はマイナーリリースで変更される可能性があります。**
 - **受信側 `verifySignature`（DX）**：インバウンドの Standard Webhooks リクエストを検証する、純粋・依存ゼロの
   ヘルパを `commitcourier/core` に追加（`sign` の対）。`{id}.{timestamp}.{payload}` に対する `v1,<base64>` HMAC を
   再計算し、`webhook-signature` の各トークンと定数時間比較します。`secrets` を複数受け付け（ローテーションをまたいで
@@ -118,7 +125,7 @@
 
 ## [0.1.0] - 2026-06-25
 
-最初の公開リリース。
+初期の開発ベースライン（npm には未公開）。
 
 ### Added（追加）
 
@@ -136,5 +143,5 @@
 
 > ⚠️ `1.0.0` 以前: API およびパッケージ名は今後変更される可能性があります。
 
-[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.1.0
+[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.2.0

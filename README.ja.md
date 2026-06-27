@@ -10,7 +10,7 @@
 
 CommitCourier は、既存の Node.js / TypeScript アプリに信頼性のある Outbound Webhook を**後付け**するライブラリです。フレームワーク非依存で、**追加インフラは不要**（すでに動かしている Postgres だけ）。webhook の `enqueue` を**あなた自身の業務トランザクションの中**で行うため、業務の書き込みと原子的に commit / rollback されます。バックグラウンドの dispatcher が、その後を Standard Webhooks 署名・リトライ・DLQ・配信台帳・SSRF 防御・複数インスタンスでの単一配信まで一貫して担います。
 
-> ⚠️ **プレリリース**（`v0.1.0`）です。API およびパッケージ名は `1.0.0` までに変更される可能性があります。
+> ⚠️ **プレリリース**（`v0.2.0`）です。API およびパッケージ名は `1.0.0` までに変更される可能性があります。
 
 ---
 
@@ -587,16 +587,18 @@ CommitCourier は非侵襲かつ可逆です。すべては 3 つの専用テー
 
 ## 公開 API
 
-| import                         | エクスポート                                                                                                                                                                                                       |
-| ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `commitcourier`                | `createRelay`、`createConsoleLogger`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                                                                       |
-| `commitcourier/core`           | 純粋・依存ゼロのドメイン層（`sign`、`verifySignature`、`createConsoleLogger`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
-| `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                                                                  |
-| `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                                                                |
-| `commitcourier/store/drizzle`  | `drizzleStore({ db })` — `Store<DrizzleTx>`（node-postgres 上の Drizzle）。                                                                                                                                        |
-| `commitcourier/store/prisma`   | `prismaStore({ prisma })` — `Store<PrismaTx>`（Prisma の interactive transaction）。                                                                                                                               |
-| `commitcourier/otel`           | `createOtelInstrumentation({ tracer, meter })` — 任意の OpenTelemetry 計装。`createRelay({ instrument, hooks })` に渡す。                                                                                          |
-| `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — Postgres LISTEN/NOTIFY による任意の低遅延 wake。`createRelay({ accelerator })` に渡す。                                                                                  |
+| import                                        | エクスポート                                                                                                                                                                                                                       |
+| --------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `commitcourier`                               | `createRelay`、`createConsoleLogger`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                                                                                       |
+| `commitcourier/core`                          | 純粋・依存ゼロのドメイン層（`sign`、`verifySignature`、`createConsoleLogger`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。                 |
+| `commitcourier/store/pg`                      | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                                                                                  |
+| `commitcourier/store/knex`                    | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                                                                                |
+| `commitcourier/store/drizzle`                 | `drizzleStore({ db })` — `Store<DrizzleTx>`（node-postgres 上の Drizzle）。                                                                                                                                                        |
+| `commitcourier/store/prisma`                  | `prismaStore({ prisma })` — `Store<PrismaTx>`（Prisma の interactive transaction）。                                                                                                                                               |
+| `commitcourier/otel`                          | `createOtelInstrumentation({ tracer, meter })` — 任意の OpenTelemetry 計装。`createRelay({ instrument, hooks })` に渡す。                                                                                                          |
+| `commitcourier/accelerator/pg`                | `createPgAccelerator({ pool, listen })` — Postgres LISTEN/NOTIFY による任意の低遅延 wake。`createRelay({ accelerator })` に渡す。                                                                                                  |
+| `commitcourier/forward` _(experimental)_      | `sink` トランスポート用の `Sink` ポートと `SinkEvent` / `SinkResult` 型 — [実験的：webhook 配信 SaaS へのハンドオフ](#実験的webhook-配信-saas-へのハンドオフsink-トランスポート) を参照。**マイナーリリースで API 変更の可能性。** |
+| `commitcourier/forward/svix` _(experimental)_ | `svixSink(...)` — Svix 用の公式サンプル `Sink` アダプタ（`svix` は optional peer）。**マイナーリリースで API 変更の可能性。**                                                                                                      |
 
 主要シグネチャ：
 
@@ -624,6 +626,26 @@ interface Relay<TTx> {
   endpoints: EndpointAdmin; // register / update / enable / disable / get / list
 }
 ```
+
+### 実験的：webhook 配信 SaaS へのハンドオフ（`sink` トランスポート）
+
+> ⚠️ **実験的（experimental）。** この面は export されていますが、まだ安定性保証の対象外で、マイナーリリースで変更される可能性があります。
+
+CommitCourier 自身が HTTP 配信する代わりに、各イベントを外部の webhook 配信 SaaS（Svix・Outpost・Hookdeck など）へ引き渡せます。このとき **原子的・at-least-once な enqueue は引き続きあなたのトランザクションに相乗り** します。配信トランスポートを `sink` にして `Sink` を渡します：
+
+```ts
+import { Svix } from "svix";
+import { createRelay } from "commitcourier";
+import { svixSink } from "commitcourier/forward/svix"; // または独自の Sink
+
+const relay = await createRelay({
+  store,
+  delivery: { transport: "sink" },
+  sink: svixSink({ svix: new Svix(process.env.SVIX_TOKEN!), appId: "app_..." }),
+});
+```
+
+`sink` モードでは署名 / SSRF / 回路遮断は SaaS 側に委譲されます。`Sink` ポート（`commitcourier/forward`）を自分で実装すれば任意のプロバイダに対応できます。
 
 ## ステータスとロードマップ
 

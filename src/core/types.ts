@@ -102,6 +102,8 @@ export interface DeliveryConfig {
    * signs, applies SSRF protection and the circuit breaker. `"sink"` hands each event off to a `Sink`
    * (e.g. a webhook-delivery SaaS) instead — signing/SSRF/circuit breaker are then delegated and not
    * applied by CommitCourier. Relay-wide: a single relay cannot mix `http` and `sink`.
+   *
+   * The `"sink"` transport is experimental and may change in a minor release.
    */
   transport: "http" | "sink";
   timeoutMs: number;
