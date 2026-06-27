@@ -155,4 +155,84 @@ describe("createEndpointCache", () => {
     );
     await expect(cached.diagnose()).resolves.toEqual({ ok: true, missingTables: [] });
   });
+
+  it("delegates every non-cached Store method straight through to the inner store", async () => {
+    const make = (ret: unknown): Mock => vi.fn(() => Promise.resolve(ret));
+    const inner = {
+      findEndpoint: make(null),
+      updateEndpoint: make(undefined),
+      disableEndpoint: make(undefined),
+      noteEndpointSuccess: make(undefined),
+      noteEndpointFailure: make(undefined),
+      reactivateEndpoint: make(undefined),
+      insertOutbox: make(undefined),
+      insertOutboxMany: make(undefined),
+      insertOutboxAutonomous: make(undefined),
+      insertReplayCopies: make(["id1"]),
+      insertEndpoint: make(undefined),
+      claimDue: make([]),
+      selectForReplay: make([]),
+      listOutbox: make({ items: [], nextCursor: null }),
+      listEndpoints: make({ items: [], nextCursor: null }),
+      getOutbox: make(null),
+      applyTransition: make(undefined),
+      cancel: make(false),
+      reclaimStuck: make(0),
+      recordAttempt: make(undefined),
+      completeAttempt: make(undefined),
+      queryAttempts: make([]),
+      prune: make({ deleted: 0 }),
+      stats: make({ counts: {}, oldestPendingAt: null }),
+      diagnose: make({ ok: true, missingTables: [] }),
+      migrate: make(undefined),
+    };
+    const cached = createEndpointCache(inner as unknown as Store, { ttlMs: 1_000 });
+
+    await cached.insertOutbox("trx", { id: "o1" } as never);
+    await cached.insertOutboxMany("trx", [] as never);
+    await cached.insertOutboxAutonomous({ id: "o2" } as never);
+    await cached.insertReplayCopies([] as never);
+    await cached.insertEndpoint({ id: "e1" } as never);
+    await cached.selectForReplay({});
+    await cached.listOutbox({});
+    await cached.listEndpoints({});
+    await cached.getOutbox("o1");
+    await cached.applyTransition("o1", {} as never);
+    await cached.cancel("o1");
+    await cached.reclaimStuck({} as never);
+    await cached.recordAttempt({} as never);
+    await cached.completeAttempt({} as never, {} as never, "w");
+    await cached.queryAttempts({ outboxId: "o1" });
+    await cached.prune({} as never);
+    await cached.stats();
+    await cached.migrate();
+    await cached.reactivateEndpoint("e1");
+    await cached.noteEndpointSuccess("e1");
+
+    const delegated = [
+      "insertOutbox",
+      "insertOutboxMany",
+      "insertOutboxAutonomous",
+      "insertReplayCopies",
+      "insertEndpoint",
+      "selectForReplay",
+      "listOutbox",
+      "listEndpoints",
+      "getOutbox",
+      "applyTransition",
+      "cancel",
+      "reclaimStuck",
+      "recordAttempt",
+      "completeAttempt",
+      "queryAttempts",
+      "prune",
+      "stats",
+      "migrate",
+      "reactivateEndpoint",
+      "noteEndpointSuccess",
+    ] as const;
+    for (const name of delegated) {
+      expect(inner[name]).toHaveBeenCalledTimes(1);
+    }
+  });
 });

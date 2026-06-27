@@ -39,6 +39,11 @@ jobs:
       - name: Build
         run: npm run build
 
+      # Generate the Prisma client so the Prisma adapter e2e suite runs (it self-skips otherwise),
+      # which is required for prisma.ts to meet the coverage threshold.
+      - name: Generate Prisma client
+        run: npm run test:prisma:gen
+
       # The ubuntu runner ships with Docker, so testcontainers integration tests can run too.
       - name: Test (with coverage)
         run: npm run test:coverage
