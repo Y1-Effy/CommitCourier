@@ -94,3 +94,12 @@ export function onPermanentFailure(
 export function onReclaim(): Transition {
   return { status: "pending", lockedAt: null, lockedBy: null };
 }
+
+/**
+ * Cancel a not-yet-sent row: `pending` -&gt; `cancelled` (terminal). The store applies this with a
+ * conditional UPDATE guarded on `status = 'pending'`, so an already-claimed (`in_flight`) or
+ * terminal row is never cancelled out from under a delivery. `attempts` is left unchanged.
+ */
+export function onCancel(): Transition {
+  return { status: "cancelled", lockedAt: null, lockedBy: null };
+}

@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { initialState, onClaim, onFailure, onReclaim, onSuccess } from "../../src/core/state";
+import {
+  initialState,
+  onCancel,
+  onClaim,
+  onFailure,
+  onReclaim,
+  onSuccess,
+} from "../../src/core/state";
 import type { RetryConfig } from "../../src/core/types";
 
 const NOW = new Date("2026-06-24T00:00:00.000Z");
@@ -69,5 +76,11 @@ describe("state transitions", () => {
 
   it("onReclaim returns a stuck row to pending and clears the lock", () => {
     expect(onReclaim()).toEqual({ status: "pending", lockedAt: null, lockedBy: null });
+  });
+
+  it("onCancel moves to cancelled and clears the lock without touching attempts", () => {
+    const t = onCancel();
+    expect(t).toEqual({ status: "cancelled", lockedAt: null, lockedBy: null });
+    expect(t.attempts).toBeUndefined();
   });
 });

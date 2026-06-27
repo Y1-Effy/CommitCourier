@@ -23,11 +23,12 @@ export type {
 
 export { createRelay } from "./relay";
 export type { Relay, RelayInit, EndpointAdmin, RegisterEndpointInput } from "./relay";
+export type { PruneOptions } from "./admin/admin";
 export type {
   DeliveryHooks,
   DeliveryEvent,
   DeliveryStart,
   DeliveryInstrument,
 } from "./delivery/deliver";
-export type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
+export type { Dispatcher, DispatcherOptions, RunOnceOptions } from "./dispatcher/dispatcher";
 export type { Accelerator, WakeSignal } from "./accelerator/accelerator";

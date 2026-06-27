@@ -27,6 +27,13 @@ describe("config.resolveConfig defaults", () => {
       keepAliveTimeoutMs: 10_000,
     });
     expect(cfg.ssrf).toEqual({ blockPrivateRanges: true, allowlist: [], blocklist: [] });
+    expect(cfg.circuitBreaker).toEqual({ failureThreshold: 0 });
+  });
+
+  it("accepts a positive circuitBreaker.failureThreshold and freezes it", () => {
+    const cfg = resolveConfig({ circuitBreaker: { failureThreshold: 5 } });
+    expect(cfg.circuitBreaker.failureThreshold).toBe(5);
+    expect(Object.isFrozen(cfg.circuitBreaker)).toBe(true);
   });
 
   it("provides a default clock and no-op logger", () => {
@@ -72,6 +79,8 @@ describe("config.resolveConfig validation (fail-fast)", () => {
     ["keepAliveTimeoutMs <= 0", { delivery: { keepAliveTimeoutMs: 0 } }],
     ["connections < 1", { delivery: { connections: 0 } }],
     ["non-integer connections", { delivery: { connections: 2.5 } }],
+    ["negative failureThreshold", { circuitBreaker: { failureThreshold: -1 } }],
+    ["non-integer failureThreshold", { circuitBreaker: { failureThreshold: 2.5 } }],
   ])("throws CONFIG_INVALID for %s", (_label, input) => {
     try {
       resolveConfig(input);

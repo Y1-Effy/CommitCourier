@@ -117,6 +117,17 @@ export interface SigningConfig {
   scheme: "standard-webhooks";
 }
 
+/** Registered-endpoint circuit breaker (auto-disable on repeated delivery failure). */
+export interface CircuitBreakerConfig {
+  /**
+   * Consecutive failed deliveries to a registered endpoint before it is auto-disabled. A successful
+   * delivery resets the counter. `0` (the default) disables the feature entirely, so a permanently
+   * down endpoint never auto-disables. Only the registered-endpoint workflow is affected; inline
+   * `{ url, secret }` deliveries have no endpoint to disable.
+   */
+  failureThreshold: number;
+}
+
 /** Fully-resolved relay configuration (output of {@link resolveConfig}). */
 export interface RelayConfig {
   mode: Mode;
@@ -124,6 +135,8 @@ export interface RelayConfig {
   retry: RetryConfig;
   delivery: DeliveryConfig;
   ssrf: SsrfConfig;
+  /** Registered-endpoint auto-disable policy. `failureThreshold: 0` (default) disables it. */
+  circuitBreaker: CircuitBreakerConfig;
   /** Defaults to `() => new Date()`. */
   clock: Clock;
   /** Defaults to a no-op logger. */

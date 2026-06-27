@@ -114,6 +114,8 @@ export interface ReplayFilter {
   outboxId?: string;
   status?: Status; // e.g. "dead"
   since?: Date;
+  /** Max rows to replay in one call; the admin layer clamps to a safe ceiling. */
+  limit?: number;
 }
 
 /** Row to INSERT into the registered-endpoint table. `status` defaults to `active` in the store. */
@@ -196,6 +198,14 @@ export interface Store<TTx = unknown> {
   applyTransition(id: string, t: Transition): Promise<void>;
 
   /**
+   * Admin: cancel a not-yet-sent row. Atomically moves it `pending` -&gt; `cancelled` (terminal) only
+   * when it is still `pending`; an already-claimed (`in_flight`) or terminal row is left untouched.
+   * Returns true when a row was cancelled, false when there was nothing to cancel (so a caller can
+   * distinguish "stopped in time" from "already sent / unknown id").
+   */
+  cancel(id: string): Promise<boolean>;
+
+  /**
    * Reclaim stuck locks for at-least-once delivery: every `in_flight` row whose `lockedAt` is
    * older than `now - reclaimAfterMs` returns to `pending` (clearing the lock). Returns the count.
    */
@@ -242,6 +252,27 @@ export interface Store<TTx = unknown> {
   findEndpoint(id: string): Promise<EndpointRow | null>;
 
   /**
+   * Admin (read-only): fetch one outbox row by id, secret-free (the signing snapshot is never
+   * selected, so the encrypted-store decorator passes it through without decryption). Returns null
+   * when the id is unknown.
+   */
+  getOutbox(id: string): Promise<OutboxListItem | null>;
+
+  /**
+   * Circuit breaker: record a successful delivery to a registered endpoint by resetting its
+   * `consecutive_failures` to 0. A no-op when the counter is already 0. Called on the delivery hot
+   * path, so it must stay cheap and avoid needless writes.
+   */
+  noteEndpointSuccess(id: string): Promise<void>;
+
+  /**
+   * Circuit breaker: record a failed delivery to a registered endpoint. Atomically increments
+   * `consecutive_failures` and, when the new count reaches `threshold` while the endpoint is still
+   * `active`, disables it (`status = 'disabled'`, `disabled_at = now`) in the same UPDATE.
+   */
+  noteEndpointFailure(id: string, now: Date, threshold: number): Promise<void>;
+
+  /**
    * Admin (read-only): page through outbox rows newest-first (by the monotonic `seq`), for DLQ
    * inspection and monitoring. Never returns the signing-key snapshot. Honours the optional
    * status/since/endpointId filters and seq-keyset paging in {@link OutboxListFilter}.
@@ -256,6 +287,15 @@ export interface Store<TTx = unknown> {
 
   /** Admin: disable a registered endpoint. */
   disableEndpoint(id: string, now: Date): Promise<void>;
+
+  /**
+   * Admin (retention): delete terminal rows older than `olderThan` (by `created_at`), oldest first,
+   * up to `limit` rows. Only the statuses in `statuses` are deleted, which the admin layer constrains
+   * to non-active states so a `pending`/`in_flight` row can never be removed out from under a
+   * delivery. Each deleted outbox row cascades to its ledger attempts (`ON DELETE CASCADE`). Returns
+   * the number of outbox rows deleted; `deleted === limit` means more may remain (call again to page).
+   */
+  prune(opts: { olderThan: Date; statuses: Status[]; limit: number }): Promise<{ deleted: number }>;
 
   /** Admin: aggregate queue statistics (status counts and oldest-pending age). */
   stats(): Promise<OutboxStats>;

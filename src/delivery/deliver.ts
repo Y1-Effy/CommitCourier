@@ -297,6 +297,29 @@ async function applyPermanentFailure(
   await fireHook(ctx, deps.hooks?.onDead, event);
 }
 
+/**
+ * Circuit breaker (fail-open): on a real HTTP outcome to a registered endpoint, reset or increment
+ * its consecutive-failure counter; the store auto-disables the endpoint when the count reaches the
+ * configured threshold. No-op for inline destinations, or when the feature is off
+ * (`failureThreshold === 0`). A counter-update error is logged and swallowed so it can never stall a
+ * delivery — the row's own transition has already been applied.
+ */
+async function noteEndpointHealth(ctx: Ctx, success: boolean): Promise<void> {
+  const { row, deps, now } = ctx;
+  const threshold = deps.config.circuitBreaker.failureThreshold;
+  if (row.endpointId == null || threshold <= 0) return;
+  try {
+    if (success) await deps.store.noteEndpointSuccess(row.endpointId);
+    else await deps.store.noteEndpointFailure(row.endpointId, now, threshold);
+  } catch (err) {
+    deps.config.logger.error("circuit-breaker endpoint health update failed", {
+      id: row.id,
+      endpointId: row.endpointId,
+      error: secretFreeSummary(err),
+    });
+  }
+}
+
 /** Run the POST, then write the ledger row and apply the success/failure transition in one round trip. */
 async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<void> {
   const { row, now } = ctx;
@@ -325,15 +348,18 @@ async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<vo
   };
   if (success) {
     await applySuccess(ctx, attempt, eventFor(ctx, res.status, null, res.durationMs));
+    await noteEndpointHealth(ctx, true);
     return;
   }
   const event = eventFor(ctx, res.status, failure, res.durationMs);
   if (isPermanentFailure(res.status)) {
+    // 410 Gone already disables the endpoint via applyPermanentFailure; the breaker would be redundant.
     await applyPermanentFailure(ctx, attempt, failure, event);
     return;
   }
   const retryAfterMs = parseRetryAfter(res.retryAfter, now.getTime());
   await applyFailure(ctx, attempt, failure, event, retryAfterMs);
+  await noteEndpointHealth(ctx, false);
 }
 
 /**

@@ -52,12 +52,20 @@ import {
   mapOutboxRow,
   mapAttemptRow,
   mapEndpointRow,
+  mapOutboxListItem,
   diagnoseResult,
   existingFromRow,
   applyMigrations,
   migrationScript,
   migrationsTableScript,
   SELECT_APPLIED_MIGRATIONS_SQL,
+  CANCEL_PENDING_SQL,
+  GET_OUTBOX_SQL,
+  NOTE_ENDPOINT_SUCCESS_SQL,
+  buildNoteEndpointFailureSql,
+  noteEndpointFailureParams,
+  buildPruneSql,
+  pruneParams,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
@@ -207,6 +215,23 @@ export function drizzleStore(opts: { db: DrizzleDb }): Store<DrizzleTx> {
       await client.query(sql, [id, ...values]);
     },
 
+    async cancel(id): Promise<boolean> {
+      // Guarded on pending so an in_flight/terminal row is never cancelled from under a delivery.
+      const res = await client.query(CANCEL_PENDING_SQL, [id]);
+      return (res.rowCount ?? 0) > 0;
+    },
+
+    async noteEndpointSuccess(id) {
+      await client.query(NOTE_ENDPOINT_SUCCESS_SQL, [id]);
+    },
+
+    async noteEndpointFailure(id, now, threshold) {
+      await client.query(
+        buildNoteEndpointFailureSql("numbered"),
+        noteEndpointFailureParams("numbered", id, now, threshold),
+      );
+    },
+
     async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {
       const cutoff = new Date(now.getTime() - reclaimAfterMs);
       const sql = `UPDATE ${OUTBOX_TABLE} SET status = 'pending', locked_at = NULL, locked_by = NULL WHERE status = 'in_flight' AND locked_at < $1`;
@@ -237,9 +262,28 @@ export function drizzleStore(opts: { db: DrizzleDb }): Store<DrizzleTx> {
 
     async selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]> {
       const where = replayWhere(filter);
-      const sql = `SELECT * FROM ${OUTBOX_TABLE} ${where.sql} ORDER BY created_at`;
-      const res = await client.query(sql, where.params);
+      const params = [...where.params];
+      let limit = "";
+      if (filter.limit !== undefined) {
+        params.push(filter.limit);
+        limit = ` LIMIT $${String(params.length)}`;
+      }
+      const sql = `SELECT * FROM ${OUTBOX_TABLE} ${where.sql} ORDER BY created_at${limit}`;
+      const res = await client.query(sql, params);
       return ((res.rows ?? []) as RawOutboxRow[]).map(mapOutboxRow);
+    },
+
+    async getOutbox(id) {
+      const res = await client.query(GET_OUTBOX_SQL, [id]);
+      const row = ((res.rows ?? []) as RawOutboxListRow[])[0];
+      return row ? mapOutboxListItem(row) : null;
+    },
+
+    async prune({ olderThan, statuses, limit }) {
+      if (statuses.length === 0) return { deleted: 0 };
+      const sql = buildPruneSql(statuses.length, "numbered");
+      const res = await client.query(sql, pruneParams(statuses, olderThan, limit));
+      return { deleted: res.rowCount ?? 0 };
     },
 
     async insertReplayCopies(rows): Promise<string[]> {

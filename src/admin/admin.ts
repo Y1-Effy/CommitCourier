@@ -5,8 +5,14 @@
  */
 import { newId } from "../id";
 import { RelayError } from "../core/index";
-import type { DeliveryAttempt, EndpointRow } from "../core/index";
-import { ALL_STATUSES } from "../store/_shared";
+import type { DeliveryAttempt, EndpointRow, Status } from "../core/index";
+import {
+  ALL_STATUSES,
+  clampReplayLimit,
+  clampPruneLimit,
+  PRUNABLE_STATUSES,
+  DEFAULT_PRUNE_STATUSES,
+} from "../store/_shared";
 import type {
   Store,
   ReplayFilter,
@@ -92,17 +98,48 @@ export async function listEndpoints(
 }
 
 /**
+ * Cancel a not-yet-sent outbox row (05 section 6): moves it `pending` -&gt; `cancelled` only while it is
+ * still pending. Returns `{ cancelled }` — false when the row was already claimed/sent or the id is
+ * unknown, so a caller can tell "stopped in time" from "too late". Validates the id up front so a
+ * malformed value fails as a clean `INVALID_ARGUMENT` rather than a raw uuid-cast error.
+ */
+export async function cancel(store: Store, outboxId: string): Promise<{ cancelled: boolean }> {
+  if (!UUID_RE.test(outboxId)) {
+    throw new RelayError("INVALID_ARGUMENT", `cancel: outboxId must be a uuid, got "${outboxId}"`);
+  }
+  return { cancelled: await store.cancel(outboxId) };
+}
+
+/**
+ * Fetch one outbox row by id (read-only, secret-free), or null when unknown. Validates the id so a
+ * malformed value fails as a clean `INVALID_ARGUMENT` rather than a raw uuid-cast error.
+ */
+export async function getOutbox(store: Store, outboxId: string): Promise<OutboxListItem | null> {
+  if (!UUID_RE.test(outboxId)) {
+    throw new RelayError("INVALID_ARGUMENT", `get: outboxId must be a uuid, got "${outboxId}"`);
+  }
+  return store.getOutbox(outboxId);
+}
+
+/**
  * Replay matching rows by inserting fresh `pending` copies (05 section 6). The original (e.g.
  * dead) rows are kept as history; each copy inherits the destination, payload, eventType and
- * `idempotencyKey` so the receiver can dedupe a re-send. Returns the new ids.
+ * `idempotencyKey` so the receiver can dedupe a re-send. The selection is always clamped to a safe
+ * ceiling so a broad filter can never fan out into an unbounded mass re-send.
+ *
+ * Returns the new ids plus `capped`: true when the selection hit the (clamped) limit, so not every
+ * matching row was replayed. To replay more, NARROW the filter (e.g. by `endpointId` / a tighter
+ * `since`) or raise `filter.limit` — do NOT re-call with the same filter: replay leaves the source
+ * rows untouched, so an identical call re-selects the same head rows and re-sends them (duplicates).
  */
 export async function replay(
   store: Store,
   now: Date,
   opts: { outboxId: string } | { filter: ReplayFilter },
-): Promise<{ ids: string[] }> {
-  const filter: ReplayFilter = "filter" in opts ? opts.filter : { outboxId: opts.outboxId };
-  const rows = await store.selectForReplay(filter);
+): Promise<{ ids: string[]; capped: boolean }> {
+  const base: ReplayFilter = "filter" in opts ? opts.filter : { outboxId: opts.outboxId };
+  const limit = clampReplayLimit(base.limit);
+  const rows = await store.selectForReplay({ ...base, limit });
   const copies: NewOutboxRow[] = rows.map((src) => ({
     id: newId(),
     eventType: src.eventType,
@@ -116,7 +153,45 @@ export async function replay(
     idempotencyKey: src.idempotencyKey,
   }));
   const ids = await store.insertReplayCopies(copies);
-  return { ids };
+  // A full page means the limit may have truncated the match set; signal the caller to page on.
+  return { ids, capped: rows.length >= limit };
+}
+
+/** Options for `relay.prune`. `olderThan` is required; `statuses`/`limit` default and are clamped. */
+export interface PruneOptions {
+  /** Delete only rows whose `created_at` is strictly before this. Required (no implicit "all time"). */
+  olderThan: Date;
+  /**
+   * Which statuses to delete. Defaults to `['delivered','dead','cancelled']`. Every value must be a
+   * non-active status (`delivered`/`dead`/`cancelled`/`observed`); passing `pending`/`in_flight`
+   * fails as `INVALID_ARGUMENT` so a live row can never be pruned out from under a delivery.
+   */
+  statuses?: Status[];
+  /** Max rows to delete in this call; clamped to a safe ceiling. Defaults to a batch size. */
+  limit?: number;
+}
+
+/**
+ * Retention: delete terminal rows older than `opts.olderThan`, oldest first, in a bounded batch
+ * (ledger attempts cascade). Returns `{ deleted }`; `deleted === limit` (the clamped limit) means more
+ * may remain, so call again to keep pruning. Validates that every requested status is prunable
+ * (non-active) up front, so a `pending`/`in_flight` row is never deleted.
+ */
+export async function prune(store: Store, opts: PruneOptions): Promise<{ deleted: number }> {
+  if (!(opts.olderThan instanceof Date) || Number.isNaN(opts.olderThan.getTime())) {
+    throw new RelayError("INVALID_ARGUMENT", "prune: olderThan must be a valid Date");
+  }
+  const statuses = opts.statuses ?? DEFAULT_PRUNE_STATUSES;
+  const allowed = PRUNABLE_STATUSES as readonly string[];
+  for (const s of statuses) {
+    if (!allowed.includes(s)) {
+      throw new RelayError(
+        "INVALID_ARGUMENT",
+        `prune: status "${s}" is not prunable (allowed: ${PRUNABLE_STATUSES.join(", ")})`,
+      );
+    }
+  }
+  return store.prune({ olderThan: opts.olderThan, statuses, limit: clampPruneLimit(opts.limit) });
 }
 
 /** Register a new endpoint (status defaults to `active`). Returns the generated id (05 section 7). */

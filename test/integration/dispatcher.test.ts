@@ -75,6 +75,11 @@ function queueStore(seed: OutboxRow[]): {
       return Promise.resolve(queue.splice(0, limit));
     },
     applyTransition: () => Promise.resolve(),
+    cancel: () => Promise.resolve(false),
+    getOutbox: () => Promise.resolve(null),
+    prune: () => Promise.resolve({ deleted: 0 }),
+    noteEndpointSuccess: () => Promise.resolve(),
+    noteEndpointFailure: () => Promise.resolve(),
     reclaimStuck: () => {
       reclaims++;
       return Promise.resolve(0);

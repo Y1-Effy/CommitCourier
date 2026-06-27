@@ -14,6 +14,7 @@ export type {
   DeliveryConfig,
   SsrfConfig,
   SigningConfig,
+  CircuitBreakerConfig,
   RelayConfig,
 } from "./types";
 
@@ -37,6 +38,7 @@ export {
   onFailure,
   onPermanentFailure,
   onReclaim,
+  onCancel,
 } from "./state";
 export type { Transition } from "./state";
 

@@ -535,6 +535,102 @@ export function replayWhere(filter: ReplayFilter): { sql: string; params: unknow
   return { sql: conds.length > 0 ? `WHERE ${conds.join(" AND ")}` : "", params };
 }
 
+// --- v2.1 operability helpers (cancel, circuit breaker, single-row get, replay cap). ---
+
+/**
+ * Cancel a not-yet-sent row: `pending` -&gt; `cancelled`, guarded so an already-claimed/terminal row is
+ * untouched (mirrors `core/state.onCancel`). One `$1` placeholder (the id); a no-op match means there
+ * was nothing to cancel. Shared by every `$n` adapter; knex builds the equivalent guarded UPDATE.
+ */
+export const CANCEL_PENDING_SQL = `UPDATE ${OUTBOX_TABLE} SET status = 'cancelled', locked_at = NULL, locked_by = NULL WHERE id = $1 AND status = 'pending'`;
+
+/**
+ * Reset a registered endpoint's consecutive-failure counter after a successful delivery. Guarded on
+ * `consecutive_failures <> 0` so a healthy endpoint (already 0) takes no write on the hot path.
+ */
+export const NOTE_ENDPOINT_SUCCESS_SQL = `UPDATE ${ENDPOINTS_TABLE} SET consecutive_failures = 0 WHERE id = $1 AND consecutive_failures <> 0`;
+
+/**
+ * Build the circuit-breaker failure UPDATE for either placeholder style: atomically increment
+ * `consecutive_failures` and, when the new count reaches the threshold while still `active`, disable
+ * the endpoint in the same statement (so the increment and the auto-disable can never diverge under
+ * concurrency). Bindings follow textual order so one order works for `$n` and positional `?`: for
+ * `numbered`, the threshold reuses `$2` and the order is `[id, threshold, now]`; for `qmark` the
+ * threshold value appears twice, so the order is `[threshold, threshold, now, id]`.
+ */
+export function buildNoteEndpointFailureSql(placeholder: "numbered" | "qmark"): string {
+  const id = placeholder === "numbered" ? "$1" : "?";
+  const thr = placeholder === "numbered" ? "$2" : "?";
+  const now = placeholder === "numbered" ? "$3" : "?";
+  // qmark cannot reuse a binding, so the threshold is referenced via two separate `?` placeholders.
+  const thr2 = placeholder === "numbered" ? "$2" : "?";
+  return `UPDATE ${ENDPOINTS_TABLE} SET consecutive_failures = consecutive_failures + 1, status = CASE WHEN consecutive_failures + 1 >= ${thr} AND status = 'active' THEN 'disabled' ELSE status END, disabled_at = CASE WHEN consecutive_failures + 1 >= ${thr2} AND status = 'active' THEN ${now} ELSE disabled_at END WHERE id = ${id}`;
+}
+
+/** Ordered bindings for {@link buildNoteEndpointFailureSql} in the given placeholder style. */
+export function noteEndpointFailureParams(
+  placeholder: "numbered" | "qmark",
+  id: string,
+  now: Date,
+  threshold: number,
+): unknown[] {
+  // numbered reuses $2, so it binds each distinct value once; qmark lists the threshold twice.
+  return placeholder === "numbered" ? [id, threshold, now] : [threshold, threshold, now, id];
+}
+
+/** Default cap on a single `replay` call; the admin layer applies it when no explicit limit is set. */
+export const REPLAY_DEFAULT_LIMIT = 1_000;
+/** Hard ceiling on one `replay` call so a filter can never fan out into an unbounded mass re-send. */
+export const REPLAY_MAX_LIMIT = 10_000;
+
+/** Clamp a requested replay limit into `(0, REPLAY_MAX_LIMIT]`, defaulting when absent/invalid. */
+export function clampReplayLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return REPLAY_DEFAULT_LIMIT;
+  return Math.min(Math.floor(limit), REPLAY_MAX_LIMIT);
+}
+
+// --- Retention / prune. Deletes terminal rows older than a cutoff in bounded batches; ledger
+// attempts cascade. The admin layer constrains the statuses to the non-active set below so a
+// `pending`/`in_flight` row can never be deleted out from under a delivery. ---
+
+/** Statuses a `prune` is allowed to delete (never `pending`/`in_flight`). */
+export const PRUNABLE_STATUSES = ["delivered", "dead", "cancelled", "observed"] as const;
+/** Default statuses pruned when the caller does not specify (keeps `observed` for audit). */
+export const DEFAULT_PRUNE_STATUSES: Status[] = ["delivered", "dead", "cancelled"];
+
+/** Default rows deleted per `prune` call when the caller omits `limit`. */
+export const PRUNE_DEFAULT_LIMIT = 10_000;
+/** Hard ceiling on one `prune` batch so a single call cannot delete (and lock) an unbounded set. */
+export const PRUNE_MAX_LIMIT = 100_000;
+
+/** Clamp a requested prune limit into `(0, PRUNE_MAX_LIMIT]`, defaulting when absent/invalid. */
+export function clampPruneLimit(limit: number | undefined): number {
+  if (limit === undefined || !Number.isFinite(limit) || limit <= 0) return PRUNE_DEFAULT_LIMIT;
+  return Math.min(Math.floor(limit), PRUNE_MAX_LIMIT);
+}
+
+/**
+ * Build the retention DELETE for either placeholder style. A bounded inner SELECT (oldest-first,
+ * `LIMIT`) picks the ids to delete so one call never deletes an unbounded set or holds a table-wide
+ * lock; the outer DELETE removes them (ledger attempts cascade). The `statusCount` statuses are
+ * expanded into individual `IN (...)` placeholders (rather than a bound array) so every driver —
+ * including Prisma and knex.raw — binds plain scalars uniformly. Bindings follow textual order so one
+ * order works for `$n` and positional `?`: the statuses, then `olderThan`, then `limit`.
+ */
+export function buildPruneSql(statusCount: number, placeholder: "numbered" | "qmark"): string {
+  let n = 0;
+  const ph = (): string => (placeholder === "numbered" ? `$${String(++n)}` : (n++, "?"));
+  const inList = Array.from({ length: statusCount }, () => ph()).join(", ");
+  const olderThan = ph();
+  const limit = ph();
+  return `DELETE FROM ${OUTBOX_TABLE} WHERE id IN (SELECT id FROM ${OUTBOX_TABLE} WHERE status IN (${inList}) AND created_at < ${olderThan} ORDER BY created_at LIMIT ${limit})`;
+}
+
+/** Ordered bindings for {@link buildPruneSql}: the statuses, then `olderThan`, then `limit`. */
+export function pruneParams(statuses: Status[], olderThan: Date, limit: number): unknown[] {
+  return [...statuses, olderThan, limit];
+}
+
 // --- Read-only list/DLQ queries (admin). Both list surfaces are secret-free: the SELECT column
 // lists below deliberately omit every secret column, so the encrypted-store decorator can pass the
 // rows through untouched (no decryption) and secrets never reach the list API. Keyset pagination
@@ -569,6 +665,13 @@ export const OUTBOX_LIST_COLUMNS = [
   "dispatched_at",
   "seq",
 ] as const;
+
+/**
+ * Single-row, secret-free outbox fetch by id (reuses the secret-free list columns, so the
+ * encrypted-store decorator passes it through without decryption). One `$1` placeholder; knex
+ * builds the equivalent `select(...).where('id', ...)`.
+ */
+export const GET_OUTBOX_SQL = `SELECT ${OUTBOX_LIST_COLUMNS.join(", ")} FROM ${OUTBOX_TABLE} WHERE id = $1`;
 
 /** Secret-free endpoint columns (omits `secret`/`secret_secondary`). */
 export const ENDPOINT_LIST_COLUMNS = [

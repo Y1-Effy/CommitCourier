@@ -36,12 +36,33 @@ export interface DispatcherOptions {
   ordering?: "none" | "per-endpoint";
 }
 
+/** Options for a single {@link Dispatcher.runOnce} drain. */
+export interface RunOnceOptions {
+  /**
+   * Sweep stale `in_flight` locks back to `pending` before draining (visibility-timeout reclaim), so
+   * rows orphaned by a previous crashed invocation are picked up. Default true.
+   */
+  reclaim?: boolean;
+  /** Upper bound on rows processed in this drain. Default unbounded (drain everything currently due). */
+  maxRows?: number;
+}
+
 export interface Dispatcher {
   /** Start the loop. Resolves immediately; iteration continues in the background. */
   start(): Promise<void>;
   /** Graceful stop: halt new claims and wait for in-flight deliveries to finish. */
   stop(): Promise<void>;
   isRunning(): boolean;
+  /**
+   * Drain the queue once and return, instead of running the continuous loop — for serverless/cron
+   * deployments that cannot host a long-lived process. Claims due rows in waves (up to `batchSize`,
+   * honouring the configured `ordering`), delivers them with the configured `concurrency`, and
+   * resolves once the queue is empty (or `maxRows` is reached) and every dispatched delivery has
+   * settled. Fail-open like the loop: a claim/delivery error is logged, never thrown. Rejects only if
+   * called while the continuous loop is running (use one or the other). Returns the number of rows
+   * dispatched this run (regardless of per-row outcome).
+   */
+  runOnce(options?: RunOnceOptions): Promise<{ processed: number }>;
 }
 
 interface ResolvedOptions {
@@ -139,6 +160,19 @@ interface LoopCtx {
   sleep: (ms: number) => Promise<void>;
   /** Wake-aware idle sleep: returns early when an accelerator wake arrives (see createDispatcher). */
   idleSleep: (ms: number) => Promise<void>;
+}
+
+/** One-shot visibility-timeout reclaim (fail-open): used by runOnce before draining. */
+async function reclaimQuietly(
+  store: Store,
+  opts: ResolvedOptions,
+  config: RelayConfig,
+): Promise<void> {
+  try {
+    await store.reclaimStuck({ reclaimAfterMs: opts.reclaimAfterMs, now: config.clock() });
+  } catch (err) {
+    config.logger.error("dispatcher reclaim failed", { error: String(err) });
+  }
 }
 
 /**
@@ -346,6 +380,54 @@ export function createDispatcher(deps: {
 
     isRunning() {
       return state.running;
+    },
+
+    async runOnce(runOptions) {
+      if (state.running) {
+        throw new RelayError(
+          "CONFIG_INVALID",
+          "dispatcher.runOnce cannot run while the continuous loop is active; use start()/stop() or runOnce(), not both",
+        );
+      }
+      const { logger, clock } = config;
+      const cap = runOptions?.maxRows ?? Infinity;
+      if (runOptions?.reclaim ?? true) await reclaimQuietly(store, opts, config);
+      const inFlightRun = new Set<Promise<void>>();
+      // deliver never throws; swallow any contract violation so one rejection cannot poison the
+      // Promise.race/allSettled below (fail-open, mirrors the continuous loop's schedule()).
+      const schedule = (row: OutboxRow): void => {
+        const p = limit(() => deliver(row))
+          .catch((err: unknown) => {
+            logger.error("dispatcher delivery threw", { id: row.id, error: String(err) });
+          })
+          .finally(() => inFlightRun.delete(p));
+        inFlightRun.add(p);
+      };
+      let processed = 0;
+      while (processed < cap) {
+        const want = Math.min(opts.batchSize, cap - processed);
+        let rows: OutboxRow[];
+        try {
+          rows = await store.claimDue({
+            limit: want,
+            lockedBy,
+            now: clock(),
+            ordering: opts.ordering,
+          });
+        } catch (err) {
+          logger.error("dispatcher claim failed", { error: String(err) });
+          break;
+        }
+        if (rows.length === 0) break; // queue drained
+        for (const row of rows) {
+          schedule(row);
+          processed++;
+        }
+        // Bound the claim buffer: wait for a slot before claiming the next wave.
+        while (inFlightRun.size >= opts.batchSize) await Promise.race([...inFlightRun]);
+      }
+      await Promise.allSettled([...inFlightRun]); // drain before returning
+      return { processed };
     },
   };
 }

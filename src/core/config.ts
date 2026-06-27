@@ -38,6 +38,7 @@ const DEFAULTS = {
     allowlist: [] as readonly string[],
     blocklist: [] as readonly string[],
   },
+  circuitBreaker: { failureThreshold: 0 },
 } as const satisfies Omit<RelayConfig, "clock" | "logger">;
 
 function fail(message: string): never {
@@ -94,6 +95,16 @@ function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
   ) {
     fail(`delivery.connections must be an integer >= 1, got ${String(cfg.delivery.connections)}`);
   }
+  if (
+    !(
+      Number.isInteger(cfg.circuitBreaker.failureThreshold) &&
+      cfg.circuitBreaker.failureThreshold >= 0
+    )
+  ) {
+    fail(
+      `circuitBreaker.failureThreshold must be an integer >= 0 (0 disables), got ${String(cfg.circuitBreaker.failureThreshold)}`,
+    );
+  }
 }
 
 /** Emit non-fatal warnings for dangerous-but-valid settings. */
@@ -112,6 +123,15 @@ function warnIfRisky(cfg: Omit<RelayConfig, "clock" | "logger">, logger: Logger)
   }
 }
 
+/** Merge the SSRF policy with its defaults (extracted to keep resolveConfig's complexity in budget). */
+function mergeSsrf(input: DeepPartial<RelayConfig>["ssrf"]): RelayConfig["ssrf"] {
+  return {
+    blockPrivateRanges: input?.blockPrivateRanges ?? DEFAULTS.ssrf.blockPrivateRanges,
+    allowlist: input?.allowlist ?? [],
+    blocklist: input?.blocklist ?? [],
+  };
+}
+
 /** Fill defaults into a partial config, validate, and return a deeply frozen config. */
 export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
   const merged: Omit<RelayConfig, "clock" | "logger"> = {
@@ -119,10 +139,10 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
     signing: { scheme: input.signing?.scheme ?? DEFAULTS.signing.scheme },
     retry: { ...DEFAULTS.retry, ...input.retry },
     delivery: { ...DEFAULTS.delivery, ...input.delivery },
-    ssrf: {
-      blockPrivateRanges: input.ssrf?.blockPrivateRanges ?? DEFAULTS.ssrf.blockPrivateRanges,
-      allowlist: input.ssrf?.allowlist ?? [],
-      blocklist: input.ssrf?.blocklist ?? [],
+    ssrf: mergeSsrf(input.ssrf),
+    circuitBreaker: {
+      failureThreshold:
+        input.circuitBreaker?.failureThreshold ?? DEFAULTS.circuitBreaker.failureThreshold,
     },
   };
   validate(merged);
@@ -141,6 +161,7 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
       allowlist: Object.freeze([...merged.ssrf.allowlist]),
       blocklist: Object.freeze([...merged.ssrf.blocklist]),
     }),
+    circuitBreaker: Object.freeze(merged.circuitBreaker),
     clock: input.clock ?? (() => new Date()),
     logger,
   });

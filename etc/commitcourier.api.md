@@ -15,13 +15,18 @@ export interface Accelerator<TTx = unknown> {
 export function backoffMs(attempts: number, cfg: RetryConfig, rnd?: () => number): number;
 
 // @public
-export function base64ToBytes(b64: string): Uint8Array;
+export function base64ToBytes(b64: string): Uint8Array<ArrayBuffer>;
 
 // @public
 export function bytesToBase64(bytes: Uint8Array): string;
 
 // @public
 export function bytesToUtf8(bytes: Uint8Array): string;
+
+// @public
+export interface CircuitBreakerConfig {
+    failureThreshold: number;
+}
 
 // @public
 export type Clock = () => Date;
@@ -106,6 +111,9 @@ export interface DeliveryStart {
 export interface Dispatcher {
     // (undocumented)
     isRunning(): boolean;
+    runOnce(options?: RunOnceOptions): Promise<{
+        processed: number;
+    }>;
     start(): Promise<void>;
     stop(): Promise<void>;
 }
@@ -300,6 +308,9 @@ export interface NewOutboxRow {
 }
 
 // @public
+export function onCancel(): Transition;
+
+// @public
 export function onClaim(now: Date, lockedBy: string): Transition;
 
 // @public
@@ -406,6 +417,13 @@ export interface Page<T> {
 export function parseRetryAfter(value: string | null | undefined, nowMs: number): number | null;
 
 // @public
+export interface PruneOptions {
+    limit?: number;
+    olderThan: Date;
+    statuses?: Status[];
+}
+
+// @public
 export interface RegisterEndpointInput {
     // (undocumented)
     description?: string | null;
@@ -422,7 +440,13 @@ export interface Relay<TTx> {
     attempts(opts: {
         outboxId: string;
     }): Promise<DeliveryAttempt[]>;
+    cancel(outboxId: string): Promise<{
+        cancelled: boolean;
+    }>;
     createDispatcher(options?: DispatcherOptions): Dispatcher;
+    dispatchOnce(options?: DispatcherOptions, runOptions?: RunOnceOptions): Promise<{
+        processed: number;
+    }>;
     endpoints: EndpointAdmin;
     enqueue(trx: TTx, input: EnqueueInput): Promise<{
         id: string;
@@ -433,19 +457,25 @@ export interface Relay<TTx> {
     enqueueUnsafe(input: EnqueueInput): Promise<{
         id: string;
     }>;
+    get(outboxId: string): Promise<OutboxListItem | null>;
     list(filter?: OutboxListFilter): Promise<Page<OutboxListItem>>;
+    prune(opts: PruneOptions): Promise<{
+        deleted: number;
+    }>;
     replay(opts: {
         outboxId: string;
     } | {
         filter: ReplayFilter;
     }): Promise<{
         ids: string[];
+        capped: boolean;
     }>;
     stats(): Promise<OutboxStats>;
 }
 
 // @public
 export interface RelayConfig {
+    circuitBreaker: CircuitBreakerConfig;
     clock: Clock;
     // (undocumented)
     delivery: DeliveryConfig;
@@ -476,6 +506,7 @@ export type RelayErrorCode = "CONFIG_INVALID" | "MISSING_TABLES" | "SSRF_BLOCKED
 export interface RelayInit<TTx> {
     accelerator?: Accelerator<TTx>;
     cipher?: SecretCipher;
+    circuitBreaker?: Partial<CircuitBreakerConfig>;
     // (undocumented)
     clock?: Clock;
     // (undocumented)
@@ -499,6 +530,7 @@ export interface RelayInit<TTx> {
 
 // @public
 export interface ReplayFilter {
+    limit?: number;
     // (undocumented)
     outboxId?: string;
     // (undocumented)
@@ -521,6 +553,12 @@ export interface RetryConfig {
     jitter: number;
     // (undocumented)
     maxAttempts: number;
+}
+
+// @public
+export interface RunOnceOptions {
+    maxRows?: number;
+    reclaim?: boolean;
 }
 
 // @public
@@ -577,6 +615,7 @@ export type Status = "pending" | "in_flight" | "delivered" | "dead" | "observed"
 // @public
 export interface Store<TTx = unknown> {
     applyTransition(id: string, t: Transition): Promise<void>;
+    cancel(id: string): Promise<boolean>;
     claimDue(opts: {
         limit: number;
         lockedBy: string;
@@ -590,6 +629,7 @@ export interface Store<TTx = unknown> {
     }>;
     disableEndpoint(id: string, now: Date): Promise<void>;
     findEndpoint(id: string): Promise<EndpointRow | null>;
+    getOutbox(id: string): Promise<OutboxListItem | null>;
     insertEndpoint(ep: NewEndpointRow): Promise<void>;
     insertOutbox(trx: TTx, row: NewOutboxRow): Promise<void>;
     insertOutboxAutonomous(row: NewOutboxRow): Promise<void>;
@@ -598,6 +638,15 @@ export interface Store<TTx = unknown> {
     listEndpoints(filter: EndpointListFilter): Promise<Page<EndpointSummary>>;
     listOutbox(filter: OutboxListFilter): Promise<Page<OutboxListItem>>;
     migrate(): Promise<void>;
+    noteEndpointFailure(id: string, now: Date, threshold: number): Promise<void>;
+    noteEndpointSuccess(id: string): Promise<void>;
+    prune(opts: {
+        olderThan: Date;
+        statuses: Status[];
+        limit: number;
+    }): Promise<{
+        deleted: number;
+    }>;
     queryAttempts(opts: {
         outboxId: string;
     }): Promise<DeliveryAttempt[]>;
@@ -630,7 +679,7 @@ export interface Transition {
 }
 
 // @public
-export function utf8ToBytes(s: string): Uint8Array;
+export function utf8ToBytes(s: string): Uint8Array<ArrayBuffer>;
 
 // @public
 export type WakeSignal = (onWake: () => void) => Promise<() => void>;

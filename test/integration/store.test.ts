@@ -233,6 +233,133 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(copy?.idempotencyKey).toBe("idem-1");
     });
 
+    it("cancel moves only a pending row to cancelled (in_flight/terminal untouched)", async () => {
+      const pending = sampleRow();
+      await h().enqueue(pending);
+      expect(await h().store.cancel(pending.id)).toBe(true);
+      expect((await h().getOutbox(pending.id))?.status).toBe("cancelled");
+      // A second cancel is a no-op (already terminal).
+      expect(await h().store.cancel(pending.id)).toBe(false);
+
+      // An in_flight row cannot be cancelled out from under a delivery.
+      const claimed = sampleRow();
+      await h().enqueue(claimed);
+      await h().setInFlight(claimed.id, new Date());
+      expect(await h().store.cancel(claimed.id)).toBe(false);
+      expect((await h().getOutbox(claimed.id))?.status).toBe("in_flight");
+
+      // Unknown id is a clean false.
+      expect(await h().store.cancel(randomUUID())).toBe(false);
+    });
+
+    it("getOutbox returns a secret-free row by id, or null when unknown", async () => {
+      const row = sampleRow({ idempotencyKey: "idem-9" });
+      await h().enqueue(row);
+      const item = await h().store.getOutbox(row.id);
+      expect(item?.id).toBe(row.id);
+      expect(item?.status).toBe("pending");
+      expect(item?.idempotencyKey).toBe("idem-9");
+      expect(typeof item?.seq).toBe("string");
+      // The list-item shape carries no signing snapshot.
+      expect(item).not.toHaveProperty("secretSnapshot");
+      expect(await h().store.getOutbox(randomUUID())).toBeNull();
+    });
+
+    it("circuit breaker: noteEndpointFailure increments then auto-disables; success resets", async () => {
+      const epId = randomUUID();
+      await h().insertEndpoint({ id: epId, url: "https://ep.test/hook", secret: "s" });
+      const now = new Date();
+
+      await h().store.noteEndpointFailure(epId, now, 3);
+      await h().store.noteEndpointFailure(epId, now, 3);
+      let ep = await h().store.findEndpoint(epId);
+      expect(ep?.consecutiveFailures).toBe(2);
+      expect(ep?.status).toBe("active"); // not yet at the threshold
+
+      // A success resets the counter without disabling.
+      await h().store.noteEndpointSuccess(epId);
+      ep = await h().store.findEndpoint(epId);
+      expect(ep?.consecutiveFailures).toBe(0);
+      expect(ep?.status).toBe("active");
+
+      // Three consecutive failures reach the threshold and auto-disable atomically.
+      await h().store.noteEndpointFailure(epId, now, 3);
+      await h().store.noteEndpointFailure(epId, now, 3);
+      await h().store.noteEndpointFailure(epId, now, 3);
+      ep = await h().store.findEndpoint(epId);
+      expect(ep?.consecutiveFailures).toBe(3);
+      expect(ep?.status).toBe("disabled");
+      expect(ep?.disabledAt).toBeInstanceOf(Date);
+    });
+
+    it("selectForReplay honours an explicit limit (replay safety cap)", async () => {
+      for (let i = 0; i < 5; i++) await h().enqueue(sampleRow({ status: "dead" }));
+      const capped = await h().store.selectForReplay({ status: "dead", limit: 2 });
+      expect(capped).toHaveLength(2);
+      const all = await h().store.selectForReplay({ status: "dead" });
+      expect(all).toHaveLength(5);
+    });
+
+    it("prune deletes only the requested terminal statuses and cascades ledger attempts", async () => {
+      // created_at defaults to now() at insert, so a future cutoff makes every row time-eligible;
+      // the status filter then decides what is actually deleted.
+      const delivered = sampleRow({ status: "delivered" });
+      const dead = sampleRow({ status: "dead" });
+      const cancelled = sampleRow({ status: "cancelled" });
+      const observed = sampleRow({ status: "observed" });
+      const pending = sampleRow({ status: "pending" });
+      for (const r of [delivered, dead, cancelled, observed, pending]) await h().enqueue(r);
+      // A ledger row on the dead outbox row proves ON DELETE CASCADE.
+      await h().store.recordAttempt({
+        outboxId: dead.id,
+        attemptNo: 1,
+        requestHeaders: {},
+        responseStatus: 500,
+        responseBodySnippet: null,
+        durationMs: 1,
+        error: "HTTP 500",
+      });
+
+      const future = new Date(Date.now() + 60_000);
+      const { deleted } = await h().store.prune({
+        olderThan: future,
+        statuses: ["delivered", "dead", "cancelled"],
+        limit: 1_000,
+      });
+      expect(deleted).toBe(3); // delivered/dead/cancelled only
+
+      expect(await h().getOutbox(delivered.id)).toBeUndefined();
+      expect(await h().getOutbox(dead.id)).toBeUndefined();
+      expect(await h().getOutbox(cancelled.id)).toBeUndefined();
+      // The dead row's ledger attempts cascaded away.
+      expect(await h().store.queryAttempts({ outboxId: dead.id })).toHaveLength(0);
+      // Out-of-scope status (observed) and active rows survive.
+      expect(await h().getOutbox(observed.id)).toBeDefined();
+      expect(await h().getOutbox(pending.id)).toBeDefined();
+    });
+
+    it("prune respects the olderThan cutoff (a past cutoff deletes nothing)", async () => {
+      const dead = sampleRow({ status: "dead" });
+      await h().enqueue(dead);
+      const past = new Date("2020-01-01T00:00:00.000Z");
+      const { deleted } = await h().store.prune({
+        olderThan: past,
+        statuses: ["dead"],
+        limit: 100,
+      });
+      expect(deleted).toBe(0);
+      expect(await h().getOutbox(dead.id)).toBeDefined();
+    });
+
+    it("prune bounds each call by limit (delete the rest on the next call)", async () => {
+      for (let i = 0; i < 5; i++) await h().enqueue(sampleRow({ status: "dead" }));
+      const future = new Date(Date.now() + 60_000);
+      const first = await h().store.prune({ olderThan: future, statuses: ["dead"], limit: 2 });
+      expect(first.deleted).toBe(2);
+      const second = await h().store.prune({ olderThan: future, statuses: ["dead"], limit: 100 });
+      expect(second.deleted).toBe(3);
+    });
+
     it("findEndpoint and disableEndpoint manage registered endpoints", async () => {
       const epId = sampleRow().id; // reuse a uuid generator
       await h().insertEndpoint({ id: epId, url: "https://example.test/hook", secret: "whsec_x" });

@@ -37,6 +37,12 @@ import {
   mapOutboxRow,
   mapAttemptRow,
   mapEndpointRow,
+  mapOutboxListItem,
+  OUTBOX_LIST_COLUMNS,
+  buildNoteEndpointFailureSql,
+  noteEndpointFailureParams,
+  buildPruneSql,
+  pruneParams,
   diagnoseResult,
   existingFromRow,
   applyMigrations,
@@ -158,6 +164,29 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       await knex(OUTBOX_TABLE).where({ id, status: "in_flight" }).update(patch);
     },
 
+    async cancel(id): Promise<boolean> {
+      // Guarded on pending so an in_flight/terminal row is never cancelled from under a delivery.
+      const affected = await knex(OUTBOX_TABLE)
+        .where({ id, status: "pending" })
+        .update({ status: "cancelled", locked_at: null, locked_by: null });
+      return affected > 0;
+    },
+
+    async noteEndpointSuccess(id) {
+      await knex(ENDPOINTS_TABLE)
+        .where("id", id)
+        .andWhere("consecutive_failures", "<>", 0)
+        .update({ consecutive_failures: 0 });
+    },
+
+    async noteEndpointFailure(id, now, threshold) {
+      // Atomic increment + threshold auto-disable via the shared CTE-free UPDATE (qmark bindings).
+      await knex.raw(
+        buildNoteEndpointFailureSql("qmark"),
+        noteEndpointFailureParams("qmark", id, now, threshold) as Knex.RawBinding[],
+      );
+    },
+
     async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {
       const cutoff = new Date(now.getTime() - reclaimAfterMs);
       const affected = await knex(OUTBOX_TABLE)
@@ -191,9 +220,29 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
     },
 
     async selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]> {
-      const q = applyReplayFilter(knex(OUTBOX_TABLE).select("*"), filter);
-      const rows = (await q.orderBy("created_at")) as RawOutboxRow[];
+      let q = applyReplayFilter(knex(OUTBOX_TABLE).select("*"), filter).orderBy("created_at");
+      if (filter.limit !== undefined) q = q.limit(filter.limit);
+      const rows = (await q) as RawOutboxRow[];
       return rows.map(mapOutboxRow);
+    },
+
+    async getOutbox(id) {
+      const row = (await knex(OUTBOX_TABLE)
+        .select(...OUTBOX_LIST_COLUMNS)
+        .where("id", id)
+        .first()) as RawOutboxListRow | undefined;
+      return row ? mapOutboxListItem(row) : null;
+    },
+
+    async prune({ olderThan, statuses, limit }) {
+      if (statuses.length === 0) return { deleted: 0 };
+      // Expanded `?` placeholders bind plain scalars (no array type), matching the shared builder.
+      const sql = buildPruneSql(statuses.length, "qmark");
+      const res = (await knex.raw(
+        sql,
+        pruneParams(statuses, olderThan, limit) as Knex.RawBinding[],
+      )) as unknown as { rowCount?: number | null };
+      return { deleted: res.rowCount ?? 0 };
     },
 
     async insertReplayCopies(rows): Promise<string[]> {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { RelayError } from "../../src/core/errors";
 import { sign } from "../../src/core/signing";
 import vectors from "../fixtures/standard-webhooks-vectors.json" with { type: "json" };
@@ -59,5 +59,45 @@ describe("signing.sign", () => {
     const promise = sign({ id: "msg_x", timestampSec: 1, body: "hello", secrets: [] });
     await expect(promise).rejects.toBeInstanceOf(RelayError);
     await expect(promise).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+});
+
+describe("signing key cache", () => {
+  let counter = 0;
+  // A fresh secret per use so the assertion never depends on what earlier tests cached.
+  const uniqueSecret = (): string => `cache-key-${String(Date.now())}-${String(counter++)}`;
+  const sig = (secret: string): Promise<string> =>
+    sign({ id: "m", timestampSec: 1, body: "hello", secrets: [secret] }).then(
+      (h) => h["webhook-signature"],
+    );
+
+  it("imports the HMAC key once per distinct secret and returns identical signatures", async () => {
+    const spy = vi.spyOn(crypto.subtle, "importKey");
+    try {
+      spy.mockClear();
+      const s = uniqueSecret();
+      const a = await sig(s);
+      const b = await sig(s);
+      expect(spy).toHaveBeenCalledTimes(1); // the repeat hit the cache, no second import
+      expect(a).toBe(b); // memoisation never changes the output
+      await sig(uniqueSecret());
+      expect(spy).toHaveBeenCalledTimes(2); // a new secret imports again
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it("never caches a malformed secret: a bad whsec_ key rejects every time", async () => {
+    const spy = vi.spyOn(crypto.subtle, "importKey");
+    try {
+      spy.mockClear();
+      const bad = "whsec_@@@";
+      await expect(sig(bad)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      await expect(sig(bad)).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+      // decodeSecret throws before importKey, so the bad key is never imported or cached.
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

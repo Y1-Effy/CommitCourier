@@ -32,6 +32,8 @@ function fakeStore(rows: Record<string, EndpointRow | null>): {
     findEndpoint,
     updateEndpoint,
     disableEndpoint,
+    noteEndpointSuccess: vi.fn(() => Promise.resolve()),
+    noteEndpointFailure: vi.fn(() => Promise.resolve()),
     insertEndpoint: vi.fn(() => Promise.resolve()),
     insertOutbox: () => Promise.resolve(),
     insertOutboxMany: () => Promise.resolve(),
@@ -77,6 +79,24 @@ describe("createEndpointCache", () => {
     await cached.disableEndpoint("a", new Date());
     await cached.findEndpoint("a");
     expect(findEndpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it("refetches after noteEndpointFailure evicts (it may trip the breaker to disabled)", async () => {
+    const { store, findEndpoint } = fakeStore({ a: endpointRow("a") });
+    const cached = createEndpointCache(store, { ttlMs: 10_000 });
+    await cached.findEndpoint("a");
+    await cached.noteEndpointFailure("a", new Date(), 3);
+    await cached.findEndpoint("a");
+    expect(findEndpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it("does NOT evict on noteEndpointSuccess (runs every delivery; status is unchanged)", async () => {
+    const { store, findEndpoint } = fakeStore({ a: endpointRow("a") });
+    const cached = createEndpointCache(store, { ttlMs: 10_000 });
+    await cached.findEndpoint("a");
+    await cached.noteEndpointSuccess("a");
+    await cached.findEndpoint("a"); // still served from cache — no second inner read
+    expect(findEndpoint).toHaveBeenCalledTimes(1);
   });
 
   it("refetches after the TTL expires", async () => {

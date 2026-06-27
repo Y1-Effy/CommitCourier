@@ -307,6 +307,92 @@ describe.skipIf(!dockerAvailable())("relay e2e (integration)", () => {
       expect(await endpointStatusOf(endpointId)).toBe("disabled");
     });
 
+    it("dispatchOnce drains the queue once (no loop) and reports the processed count", async () => {
+      const received: Received[] = [];
+      const srv = await startServer(received, servers);
+      const h = await harness({ ssrf: { allowlist: ["127.0.0.1"] } });
+
+      const { id } = await h.enqueueCommitted({
+        eventType: "order.created",
+        payload: { n: 7 },
+        endpoint: { url: srv.url(), secret: "whsec_test" },
+      });
+
+      // One-shot drain — no start()/stop(), suitable for serverless/cron.
+      const res = await h.api.dispatchOnce();
+      expect(res.processed).toBe(1);
+      expect(await statusOf(id)).toBe("delivered");
+      expect(received).toHaveLength(1);
+    });
+
+    it("cancel stops a pending row before it is sent; dispatchOnce then delivers nothing", async () => {
+      const received: Received[] = [];
+      const srv = await startServer(received, servers);
+      const h = await harness({ ssrf: { allowlist: ["127.0.0.1"] } });
+
+      const { id } = await h.enqueueCommitted({
+        eventType: "order.created",
+        payload: { n: 8 },
+        endpoint: { url: srv.url(), secret: "whsec_test" },
+      });
+
+      expect(await h.api.cancel(id)).toEqual({ cancelled: true });
+      expect(await statusOf(id)).toBe("cancelled");
+
+      const res = await h.api.dispatchOnce();
+      expect(res.processed).toBe(0);
+      expect(received).toHaveLength(0);
+
+      // A second cancel is a no-op (already terminal).
+      expect(await h.api.cancel(id)).toEqual({ cancelled: false });
+    });
+
+    it("get returns a secret-free snapshot of an outbox row by id", async () => {
+      const srv = await startServer([], servers);
+      const h = await harness({ ssrf: { allowlist: ["127.0.0.1"] } });
+      const { id } = await h.enqueueCommitted({
+        eventType: "order.created",
+        payload: { n: 9 },
+        endpoint: { url: srv.url(), secret: "whsec_secret" },
+        idempotencyKey: "k9",
+      });
+
+      const item = await h.api.get(id);
+      expect(item?.id).toBe(id);
+      expect(item?.status).toBe("pending");
+      expect(item?.idempotencyKey).toBe("k9");
+      expect(item).not.toHaveProperty("secretSnapshot");
+      expect(await h.api.get(randomUUID())).toBeNull();
+    });
+
+    it("circuit breaker auto-disables a registered endpoint after the failure threshold", async () => {
+      const received: Received[] = [];
+      const srv = await startResponder(received, servers);
+      srv.setResponse({ status: 500 }); // retryable failures, not 410
+      const h = await harness({
+        ssrf: { allowlist: ["127.0.0.1"] },
+        circuitBreaker: { failureThreshold: 2 },
+      });
+
+      const { id: endpointId } = await h.api.endpoints.register({
+        url: srv.url(),
+        secret: "whsec_test",
+      });
+      // Two rows to the same endpoint, both failing in one drain → two consecutive failures = threshold.
+      for (const n of [10, 11]) {
+        await h.enqueueCommitted({
+          eventType: "order.created",
+          payload: { n },
+          endpoint: { endpointId },
+        });
+      }
+
+      await h.api.dispatchOnce();
+
+      expect(received.length).toBeGreaterThanOrEqual(2);
+      expect(await endpointStatusOf(endpointId)).toBe("disabled");
+    });
+
     it("honours Retry-After: a 503 with Retry-After schedules the next attempt that far out", async () => {
       const received: Received[] = [];
       const srv = await startResponder(received, servers);

@@ -149,17 +149,23 @@ export function createEncryptedStore<TTx>(
     },
 
     // --- pass-through: no secret columns involved ---
-    // listOutbox/listEndpoints are secret-free by construction (the store never selects the secret
-    // columns), so they pass straight through with no decryption.
+    // listOutbox/listEndpoints/getOutbox are secret-free by construction (the store never selects the
+    // secret columns), so they pass straight through with no decryption. cancel and the circuit-breaker
+    // counters touch no secret column either.
     applyTransition: (id, t) => inner.applyTransition(id, t),
+    cancel: (id) => inner.cancel(id),
     reclaimStuck: (opts) => inner.reclaimStuck(opts),
     recordAttempt: (attempt) => inner.recordAttempt(attempt),
     completeAttempt: (attempt, transition, expectedLockedBy) =>
       inner.completeAttempt(attempt, transition, expectedLockedBy),
     queryAttempts: (opts) => inner.queryAttempts(opts),
+    getOutbox: (id) => inner.getOutbox(id),
     listOutbox: (filter) => inner.listOutbox(filter),
     listEndpoints: (filter) => inner.listEndpoints(filter),
     disableEndpoint: (id, now) => inner.disableEndpoint(id, now),
+    noteEndpointSuccess: (id) => inner.noteEndpointSuccess(id),
+    noteEndpointFailure: (id, now, threshold) => inner.noteEndpointFailure(id, now, threshold),
+    prune: (opts) => inner.prune(opts),
     stats: () => inner.stats(),
     diagnose: () => inner.diagnose(),
     migrate: () => inner.migrate(),

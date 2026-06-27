@@ -40,15 +40,47 @@ function decodeSecret(secret: string): Uint8Array<ArrayBuffer> {
   }
 }
 
+/**
+ * Process-wide, bounded LRU memo of `secret -> Promise<CryptoKey>`. Importing the HMAC key is the
+ * costly part of signing and is pure for a given secret, so caching it removes a `crypto.subtle.importKey`
+ * from every delivery (and from each key during a dual-signing rotation) — a CPU win at high throughput.
+ * This is a referentially-transparent memo, not behavioural state: the signature output is unchanged.
+ * Keys are non-extractable (`extractable: false`), so the cache never exposes key material beyond what is
+ * already in memory, and the size bound keeps it from growing without limit as endpoints/rotations churn.
+ */
+const KEY_CACHE_MAX = 1024;
+const keyCache = new Map<string, Promise<CryptoKey>>();
+
+/** Resolve the HMAC `CryptoKey` for a secret, importing once and memoising (LRU, rejection-safe). */
+function importHmacKey(secret: string): Promise<CryptoKey> {
+  const hit = keyCache.get(secret);
+  if (hit) {
+    // LRU touch: re-insert so this secret is the most-recently used (Map preserves insertion order).
+    keyCache.delete(secret);
+    keyCache.set(secret, hit);
+    return hit;
+  }
+  // decodeSecret is synchronous and may throw CONFIG_INVALID for a malformed whsec_ key; let that
+  // propagate before anything is cached (a bad secret is never memoised).
+  const keyBytes = decodeSecret(secret);
+  const promise = crypto.subtle
+    .importKey("raw", keyBytes, { name: "HMAC", hash: "SHA-256" }, false, ["sign"])
+    .catch((err: unknown) => {
+      // Never poison the cache with a rejected import; a later call retries from scratch.
+      keyCache.delete(secret);
+      throw err;
+    });
+  keyCache.set(secret, promise);
+  if (keyCache.size > KEY_CACHE_MAX) {
+    const oldest = keyCache.keys().next().value;
+    if (oldest !== undefined) keyCache.delete(oldest);
+  }
+  return promise;
+}
+
 /** Compute a single `v1,<base64>` HMAC-SHA256 signature over the signed content. */
 async function signOne(secret: string, signedContent: Uint8Array<ArrayBuffer>): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    decodeSecret(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
+  const key = await importHmacKey(secret);
   const mac = await crypto.subtle.sign("HMAC", key, signedContent);
   return `v1,${bytesToBase64(new Uint8Array(mac))}`;
 }

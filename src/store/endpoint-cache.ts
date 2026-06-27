@@ -53,6 +53,18 @@ export function createEndpointCache<TTx>(inner: Store<TTx>, opts: { ttlMs: numbe
       await inner.disableEndpoint(id, now);
     },
 
+    async noteEndpointFailure(id, now, threshold) {
+      // A failure may trip the circuit breaker and flip the endpoint to `disabled`, which the
+      // per-delivery resolveTarget reads — so evict so the next findEndpoint reflects it promptly.
+      generation++;
+      cache.delete(id);
+      await inner.noteEndpointFailure(id, now, threshold);
+    },
+    // noteEndpointSuccess runs on every successful delivery and only resets the failure counter
+    // (status unchanged); evicting here would defeat the cache, and the stale counter is never read
+    // on the hot path, so pass it straight through without invalidating.
+    noteEndpointSuccess: (id) => inner.noteEndpointSuccess(id),
+
     // --- pass-through ---
     insertOutbox: (trx, row) => inner.insertOutbox(trx, row),
     insertOutboxMany: (trx, rows) => inner.insertOutboxMany(trx, rows),
@@ -64,11 +76,14 @@ export function createEndpointCache<TTx>(inner: Store<TTx>, opts: { ttlMs: numbe
     // List surfaces are not cached (they are admin/monitoring reads, not the per-delivery hot path).
     listOutbox: (f) => inner.listOutbox(f),
     listEndpoints: (f) => inner.listEndpoints(f),
+    getOutbox: (id) => inner.getOutbox(id),
     applyTransition: (id, t) => inner.applyTransition(id, t),
+    cancel: (id) => inner.cancel(id),
     reclaimStuck: (o) => inner.reclaimStuck(o),
     recordAttempt: (a) => inner.recordAttempt(a),
     completeAttempt: (a, t, expectedLockedBy) => inner.completeAttempt(a, t, expectedLockedBy),
     queryAttempts: (o) => inner.queryAttempts(o),
+    prune: (o) => inner.prune(o),
     stats: () => inner.stats(),
     diagnose: () => inner.diagnose(),
     migrate: () => inner.migrate(),

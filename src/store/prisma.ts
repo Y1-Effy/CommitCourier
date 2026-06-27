@@ -50,6 +50,7 @@ import {
   mapOutboxRow,
   mapAttemptRow,
   mapEndpointRow,
+  mapOutboxListItem,
   diagnoseResult,
   existingFromRow,
   applyMigrations,
@@ -58,6 +59,13 @@ import {
   ADVISORY_LOCK_SQL,
   MIGRATIONS_TABLE_DDL,
   SELECT_APPLIED_MIGRATIONS_SQL,
+  CANCEL_PENDING_SQL,
+  GET_OUTBOX_SQL,
+  NOTE_ENDPOINT_SUCCESS_SQL,
+  buildNoteEndpointFailureSql,
+  noteEndpointFailureParams,
+  buildPruneSql,
+  pruneParams,
   newId,
   type RawOutboxRow,
   type RawAttemptRow,
@@ -184,6 +192,23 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
       await prisma.$executeRawUnsafe(sql, id, ...values);
     },
 
+    async cancel(id): Promise<boolean> {
+      // Guarded on pending so an in_flight/terminal row is never cancelled from under a delivery.
+      const affected = await prisma.$executeRawUnsafe(CANCEL_PENDING_SQL, id);
+      return affected > 0;
+    },
+
+    async noteEndpointSuccess(id) {
+      await prisma.$executeRawUnsafe(NOTE_ENDPOINT_SUCCESS_SQL, id);
+    },
+
+    async noteEndpointFailure(id, now, threshold) {
+      await prisma.$executeRawUnsafe(
+        buildNoteEndpointFailureSql("numbered"),
+        ...noteEndpointFailureParams("numbered", id, now, threshold),
+      );
+    },
+
     async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {
       const cutoff = new Date(now.getTime() - reclaimAfterMs);
       const sql = `UPDATE ${OUTBOX_TABLE} SET status = 'pending', locked_at = NULL, locked_by = NULL WHERE status = 'in_flight' AND locked_at < $1`;
@@ -213,9 +238,31 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
 
     async selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]> {
       const where = replayWhere(filter);
-      const sql = `SELECT * FROM ${OUTBOX_TABLE} ${where.sql} ORDER BY created_at`;
-      const rows = await prisma.$queryRawUnsafe<RawOutboxRow>(sql, ...where.params);
+      const params = [...where.params];
+      let limit = "";
+      if (filter.limit !== undefined) {
+        params.push(filter.limit);
+        limit = ` LIMIT $${String(params.length)}`;
+      }
+      const sql = `SELECT * FROM ${OUTBOX_TABLE} ${where.sql} ORDER BY created_at${limit}`;
+      const rows = await prisma.$queryRawUnsafe<RawOutboxRow>(sql, ...params);
       return rows.map(mapOutboxRow);
+    },
+
+    async getOutbox(id) {
+      const rows = await prisma.$queryRawUnsafe<RawOutboxListRow>(GET_OUTBOX_SQL, id);
+      const row = rows[0];
+      return row ? mapOutboxListItem(row) : null;
+    },
+
+    async prune({ olderThan, statuses, limit }) {
+      if (statuses.length === 0) return { deleted: 0 };
+      const sql = buildPruneSql(statuses.length, "numbered");
+      const deleted = await prisma.$executeRawUnsafe(
+        sql,
+        ...pruneParams(statuses, olderThan, limit),
+      );
+      return { deleted };
     },
 
     async insertReplayCopies(rows): Promise<string[]> {

@@ -18,6 +18,7 @@ import type {
   RetryConfig,
   DeliveryConfig,
   SsrfConfig,
+  CircuitBreakerConfig,
   SecretCipher,
   Clock,
   Logger,
@@ -40,11 +41,14 @@ import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
 import type { DeliveryHooks, DeliveryInstrument } from "./delivery/deliver";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
-import type { Dispatcher, DispatcherOptions } from "./dispatcher/dispatcher";
+import type { Dispatcher, DispatcherOptions, RunOnceOptions } from "./dispatcher/dispatcher";
 import type { Accelerator } from "./accelerator/accelerator";
 import {
   attempts as adminAttempts,
   replay as adminReplay,
+  prune as adminPrune,
+  cancel as adminCancel,
+  getOutbox as adminGetOutbox,
   listOutbox as adminListOutbox,
   listEndpoints as adminListEndpoints,
   registerEndpoint as adminRegister,
@@ -55,6 +59,7 @@ import {
   rotateEndpointSecret as adminRotate,
   finalizeRotation as adminFinalizeRotation,
 } from "./admin/admin";
+import type { PruneOptions } from "./admin/admin";
 
 /** Input to {@link EndpointAdmin.register}. */
 export interface RegisterEndpointInput {
@@ -112,6 +117,11 @@ export interface RelayInit<TTx> {
   retry?: Partial<RetryConfig>;
   delivery?: Partial<DeliveryConfig>;
   ssrf?: Partial<SsrfConfig>;
+  /**
+   * Registered-endpoint circuit breaker: after `failureThreshold` consecutive failed deliveries an
+   * endpoint is auto-disabled (a success resets the count). Default `{ failureThreshold: 0 }` = off.
+   */
+  circuitBreaker?: Partial<CircuitBreakerConfig>;
   clock?: Clock;
   logger?: Logger;
   /** Optional delivery-outcome callbacks (fail-open) applied to every dispatcher from this relay. */
@@ -141,10 +151,38 @@ export interface Relay<TTx> {
   enqueueUnsafe(input: EnqueueInput): Promise<{ id: string }>;
   /** Create a background dispatcher bound to this relay's store/deliver/config. */
   createDispatcher(options?: DispatcherOptions): Dispatcher;
+  /**
+   * Drain the queue once and return (no long-lived loop), for serverless/cron deployments. A
+   * one-shot convenience over `createDispatcher(options).runOnce(runOptions)`; it never subscribes
+   * the accelerator (the loop's wake seam is irrelevant to a single drain). Returns the number of
+   * rows dispatched this run.
+   */
+  dispatchOnce(
+    options?: DispatcherOptions,
+    runOptions?: RunOnceOptions,
+  ): Promise<{ processed: number }>;
   /** Read the delivery ledger for one outbox row. */
   attempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;
-  /** Replay matching rows as fresh pending copies; returns the new ids. */
-  replay(opts: { outboxId: string } | { filter: ReplayFilter }): Promise<{ ids: string[] }>;
+  /**
+   * Replay matching rows as fresh pending copies; returns the new ids and `capped` (true when the
+   * selection hit the safety limit, so not everything matched was replayed). To replay more, narrow
+   * the filter or raise `filter.limit` — re-calling with the same filter re-sends the same rows
+   * (replay does not change the source rows), so do not loop on `capped`. The limit is always clamped.
+   */
+  replay(
+    opts: { outboxId: string } | { filter: ReplayFilter },
+  ): Promise<{ ids: string[]; capped: boolean }>;
+  /** Cancel a not-yet-sent row (`pending` -&gt; `cancelled`); `cancelled` is false when it was too late. */
+  cancel(outboxId: string): Promise<{ cancelled: boolean }>;
+  /**
+   * Retention: delete terminal rows older than `olderThan` in a bounded batch (ledger attempts
+   * cascade). Only non-active statuses are eligible (default `delivered`/`dead`/`cancelled`); a
+   * `pending`/`in_flight` row is never deleted. Returns `{ deleted }` — when it equals the (clamped)
+   * limit, more may remain, so call again to keep pruning.
+   */
+  prune(opts: PruneOptions): Promise<{ deleted: number }>;
+  /** Fetch one outbox row by id (read-only, secret-free), or null when unknown. */
+  get(outboxId: string): Promise<OutboxListItem | null>;
   /**
    * List outbox rows (read-only, secret-free) for DLQ inspection/monitoring; newest-first by `seq`.
    * Pass `{ status: "dead" }` to inspect the DLQ; page with the returned `nextCursor`.
@@ -295,6 +333,10 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
         wakeSignal: accelerator ? (onWake) => accelerator.subscribe(onWake) : undefined,
       });
     },
+    dispatchOnce(options, runOptions) {
+      // No wakeSignal: runOnce never subscribes, so the accelerator seam is irrelevant to one drain.
+      return makeDispatcher({ store, deliver, config: resolved, options }).runOnce(runOptions);
+    },
     attempts(opts) {
       return adminAttempts(store, opts.outboxId);
     },
@@ -311,6 +353,15 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
         }
       }
       return result;
+    },
+    cancel(outboxId) {
+      return adminCancel(store, outboxId);
+    },
+    prune(opts) {
+      return adminPrune(store, opts);
+    },
+    get(outboxId) {
+      return adminGetOutbox(store, outboxId);
     },
     list(filter) {
       return adminListOutbox(store, filter);

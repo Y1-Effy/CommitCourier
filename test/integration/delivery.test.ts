@@ -71,6 +71,11 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
       captured.transitions.push({ id, t });
       return Promise.resolve();
     },
+    cancel: () => Promise.resolve(false),
+    getOutbox: () => Promise.resolve(null),
+    prune: () => Promise.resolve({ deleted: 0 }),
+    noteEndpointSuccess: () => Promise.resolve(),
+    noteEndpointFailure: () => Promise.resolve(),
     reclaimStuck: () => Promise.resolve(0),
     recordAttempt: (a) => {
       captured.attempts.push(a);
