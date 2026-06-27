@@ -38,7 +38,7 @@ const DEFAULTS = {
     allowlist: [] as readonly string[],
     blocklist: [] as readonly string[],
   },
-  circuitBreaker: { failureThreshold: 0 },
+  circuitBreaker: { failureThreshold: 0, cooldownMs: 0 },
 } as const satisfies Omit<RelayConfig, "clock" | "logger">;
 
 function fail(message: string): never {
@@ -105,6 +105,11 @@ function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
       `circuitBreaker.failureThreshold must be an integer >= 0 (0 disables), got ${String(cfg.circuitBreaker.failureThreshold)}`,
     );
   }
+  if (!(Number.isInteger(cfg.circuitBreaker.cooldownMs) && cfg.circuitBreaker.cooldownMs >= 0)) {
+    fail(
+      `circuitBreaker.cooldownMs must be an integer >= 0 (0 disables auto-recovery), got ${String(cfg.circuitBreaker.cooldownMs)}`,
+    );
+  }
 }
 
 /** Emit non-fatal warnings for dangerous-but-valid settings. */
@@ -143,6 +148,7 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
     circuitBreaker: {
       failureThreshold:
         input.circuitBreaker?.failureThreshold ?? DEFAULTS.circuitBreaker.failureThreshold,
+      cooldownMs: input.circuitBreaker?.cooldownMs ?? DEFAULTS.circuitBreaker.cooldownMs,
     },
   };
   validate(merged);

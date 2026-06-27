@@ -54,6 +54,7 @@ import {
   CANCEL_PENDING_SQL,
   GET_OUTBOX_SQL,
   NOTE_ENDPOINT_SUCCESS_SQL,
+  REACTIVATE_ENDPOINT_SQL,
   buildNoteEndpointFailureSql,
   noteEndpointFailureParams,
   buildPruneSql,
@@ -206,6 +207,10 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
         buildNoteEndpointFailureSql("numbered"),
         noteEndpointFailureParams("numbered", id, now, threshold),
       );
+    },
+
+    async reactivateEndpoint(id) {
+      await pool.query(REACTIVATE_ENDPOINT_SQL, [id]);
     },
 
     async reclaimStuck({ reclaimAfterMs, now }) {

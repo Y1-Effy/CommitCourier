@@ -22,6 +22,7 @@ const noopStore = (over: Partial<Store> = {}): Store => ({
   prune: () => Promise.resolve({ deleted: 0 }),
   noteEndpointSuccess: () => Promise.resolve(),
   noteEndpointFailure: () => Promise.resolve(),
+  reactivateEndpoint: () => Promise.resolve(),
   reclaimStuck: () => Promise.resolve(0),
   recordAttempt: () => Promise.resolve(),
   completeAttempt: () => Promise.resolve(),

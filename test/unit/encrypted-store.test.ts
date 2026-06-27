@@ -83,6 +83,7 @@ function recorder(): Recorder {
     disableEndpoint: () => Promise.resolve(),
     noteEndpointSuccess: () => Promise.resolve(),
     noteEndpointFailure: () => Promise.resolve(),
+    reactivateEndpoint: () => Promise.resolve(),
     stats: () => Promise.resolve({ counts: {} as never, oldestPendingAt: null }),
     diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),
     migrate: () => Promise.resolve(),

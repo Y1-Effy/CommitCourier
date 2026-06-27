@@ -173,6 +173,7 @@ export function createEncryptedStore<TTx>(
     disableEndpoint: (id, now) => inner.disableEndpoint(id, now),
     noteEndpointSuccess: (id) => inner.noteEndpointSuccess(id),
     noteEndpointFailure: (id, now, threshold) => inner.noteEndpointFailure(id, now, threshold),
+    reactivateEndpoint: (id) => inner.reactivateEndpoint(id),
     prune: (opts) => inner.prune(opts),
     stats: () => inner.stats(),
     diagnose: () => inner.diagnose(),

@@ -126,6 +126,15 @@ export interface CircuitBreakerConfig {
    * `{ url, secret }` deliveries have no endpoint to disable.
    */
   failureThreshold: number;
+  /**
+   * Auto-recovery cooldown in milliseconds (half-open). After an endpoint has been disabled for at
+   * least this long (measured from `disabled_at`), the dispatcher lets a single delivery through as a
+   * trial: success re-activates the endpoint and resets the counter; failure re-arms the cooldown so
+   * the next trial waits another `cooldownMs`. `0` (the default) disables auto-recovery, so a disabled
+   * endpoint stays down until an admin calls `endpoints.enable`. Applies to any disabled registered
+   * endpoint (whether disabled by the breaker or a `410 Gone`).
+   */
+  cooldownMs: number;
 }
 
 /** Fully-resolved relay configuration (output of {@link resolveConfig}). */

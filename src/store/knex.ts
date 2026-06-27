@@ -189,6 +189,12 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       );
     },
 
+    async reactivateEndpoint(id) {
+      await knex(ENDPOINTS_TABLE)
+        .where("id", id)
+        .update({ status: "active", consecutive_failures: 0, disabled_at: null });
+    },
+
     async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {
       const cutoff = new Date(now.getTime() - reclaimAfterMs);
       const affected = await knex(OUTBOX_TABLE)

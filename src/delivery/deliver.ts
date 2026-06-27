@@ -106,7 +106,9 @@ function hostOf(url: string | null): string | null {
   }
 }
 
-type Resolved = { ok: true; url: string; secrets: string[] } | { ok: false; error: string };
+type Resolved =
+  | { ok: true; url: string; secrets: string[]; halfOpen: boolean }
+  | { ok: false; error: string };
 
 /** Only a 2xx response is a success; everything else (including no response) is a retry. */
 function isSuccess(status: number | null): boolean {
@@ -131,19 +133,38 @@ function isPermanentResolveError(error: string): boolean {
   return error === "MISSING_SECRET" || error === "ENQUEUE_NO_TARGET";
 }
 
-/** Resolve the destination URL and signing secret for a row (registered endpoint or inline). */
-async function resolveTarget(row: OutboxRow, store: Store): Promise<Resolved> {
+/**
+ * Resolve the destination URL and signing secret for a row (registered endpoint or inline).
+ *
+ * A disabled registered endpoint normally fails as `ENDPOINT_DISABLED`. With circuit-breaker
+ * auto-recovery (`cooldownMs > 0`), once it has been disabled for at least `cooldownMs` (from
+ * `disabled_at`) a single delivery is let through as a half-open trial (`halfOpen: true`) so the
+ * caller can re-activate it on success or re-arm the cooldown on failure.
+ */
+async function resolveTarget(
+  row: OutboxRow,
+  store: Store,
+  recovery: { cooldownMs: number; now: Date },
+): Promise<Resolved> {
   if (row.endpointId != null) {
     const ep = await store.findEndpoint(row.endpointId);
     if (!ep) return { ok: false, error: "ENDPOINT_NOT_FOUND" };
-    if (ep.status === "disabled") return { ok: false, error: "ENDPOINT_DISABLED" };
     // Dual-sign with the secondary key too during a rotation window (current key first).
     const secrets = ep.secretSecondary == null ? [ep.secret] : [ep.secret, ep.secretSecondary];
-    return { ok: true, url: ep.url, secrets };
+    if (ep.status === "disabled") {
+      const { cooldownMs, now } = recovery;
+      const dueForTrial =
+        cooldownMs > 0 &&
+        ep.disabledAt != null &&
+        ep.disabledAt.getTime() + cooldownMs <= now.getTime();
+      if (!dueForTrial) return { ok: false, error: "ENDPOINT_DISABLED" };
+      return { ok: true, url: ep.url, secrets, halfOpen: true };
+    }
+    return { ok: true, url: ep.url, secrets, halfOpen: false };
   }
   if (row.targetUrl != null) {
     if (row.secretSnapshot == null) return { ok: false, error: "MISSING_SECRET" };
-    return { ok: true, url: row.targetUrl, secrets: [row.secretSnapshot] };
+    return { ok: true, url: row.targetUrl, secrets: [row.secretSnapshot], halfOpen: false };
   }
   return { ok: false, error: "ENQUEUE_NO_TARGET" };
 }
@@ -320,8 +341,35 @@ async function noteEndpointHealth(ctx: Ctx, success: boolean): Promise<void> {
   }
 }
 
+/**
+ * Half-open recovery outcome (fail-open). A registered endpoint disabled past its cooldown was let
+ * through as a single trial delivery: on success re-activate it (`status = 'active'`, counter reset);
+ * on failure re-arm the cooldown (refresh `disabled_at = now`) so it stays disabled and the next trial
+ * waits another `cooldownMs` instead of retrying every attempt. Any store error is logged and
+ * swallowed — the row's own transition has already been applied, so recovery never stalls a delivery.
+ */
+async function noteHalfOpenOutcome(ctx: Ctx, success: boolean): Promise<void> {
+  const { row, deps, now } = ctx;
+  if (row.endpointId == null) return;
+  try {
+    if (success) await deps.store.reactivateEndpoint(row.endpointId);
+    else await deps.store.disableEndpoint(row.endpointId, now);
+  } catch (err) {
+    deps.config.logger.error("circuit-breaker half-open recovery update failed", {
+      id: row.id,
+      endpointId: row.endpointId,
+      error: secretFreeSummary(err),
+    });
+  }
+}
+
 /** Run the POST, then write the ledger row and apply the success/failure transition in one round trip. */
-async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<void> {
+async function deliverHttp(
+  ctx: Ctx,
+  url: string,
+  secrets: string[],
+  halfOpen: boolean,
+): Promise<void> {
   const { row, now } = ctx;
   // Refine the instrumentation host now that the destination is resolved (registered endpoints
   // only have their URL after findEndpoint).
@@ -348,18 +396,24 @@ async function deliverHttp(ctx: Ctx, url: string, secrets: string[]): Promise<vo
   };
   if (success) {
     await applySuccess(ctx, attempt, eventFor(ctx, res.status, null, res.durationMs));
-    await noteEndpointHealth(ctx, true);
+    // A successful half-open trial recovers the endpoint; otherwise this is the normal health reset.
+    if (halfOpen) await noteHalfOpenOutcome(ctx, true);
+    else await noteEndpointHealth(ctx, true);
     return;
   }
   const event = eventFor(ctx, res.status, failure, res.durationMs);
   if (isPermanentFailure(res.status)) {
-    // 410 Gone already disables the endpoint via applyPermanentFailure; the breaker would be redundant.
+    // 410 Gone already disables the endpoint via applyPermanentFailure (which also re-arms the
+    // cooldown by refreshing disabled_at); the breaker / half-open re-arm would be redundant.
     await applyPermanentFailure(ctx, attempt, failure, event);
     return;
   }
   const retryAfterMs = parseRetryAfter(res.retryAfter, now.getTime());
   await applyFailure(ctx, attempt, failure, event, retryAfterMs);
-  await noteEndpointHealth(ctx, false);
+  // A failed half-open trial re-arms the cooldown (keep it disabled); otherwise note the failure so
+  // the breaker can trip. They are mutually exclusive: a half-open row's endpoint is already disabled.
+  if (halfOpen) await noteHalfOpenOutcome(ctx, false);
+  else await noteEndpointHealth(ctx, false);
 }
 
 /**
@@ -391,7 +445,10 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
   }
   const ctx: Ctx = { row, deps, now: deps.clock(), host, finish, settled: { done: false } };
   try {
-    const resolved = await resolveTarget(row, deps.store);
+    const resolved = await resolveTarget(row, deps.store, {
+      cooldownMs: deps.config.circuitBreaker.cooldownMs,
+      now: ctx.now,
+    });
     if (!resolved.ok) {
       const attempt = noHttpAttempt(row, resolved.error);
       const event = eventFor(ctx, null, resolved.error, 0);
@@ -406,7 +463,7 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
       }
       return;
     }
-    await deliverHttp(ctx, resolved.url, resolved.secrets);
+    await deliverHttp(ctx, resolved.url, resolved.secrets, resolved.halfOpen);
   } catch (err) {
     const summary = secretFreeSummary(err);
     deps.config.logger.error("deliverOne failed", { id: row.id, error: summary });

@@ -273,6 +273,13 @@ export interface Store<TTx = unknown> {
   noteEndpointFailure(id: string, now: Date, threshold: number): Promise<void>;
 
   /**
+   * Circuit breaker (auto-recovery): re-activate a disabled endpoint after a successful half-open
+   * trial delivery. Atomically clears the disabled marker and resets the counter (`status = 'active'`,
+   * `consecutive_failures = 0`, `disabled_at = NULL`). A no-op transition for an already-active row.
+   */
+  reactivateEndpoint(id: string): Promise<void>;
+
+  /**
    * Admin (read-only): page through outbox rows newest-first (by the monotonic `seq`), for DLQ
    * inspection and monitoring. Never returns the signing-key snapshot. Honours the optional
    * status/since/endpointId filters and seq-keyset paging in {@link OutboxListFilter}.

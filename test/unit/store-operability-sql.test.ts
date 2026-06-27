@@ -7,6 +7,7 @@ import { describe, expect, it } from "vitest";
 import {
   CANCEL_PENDING_SQL,
   NOTE_ENDPOINT_SUCCESS_SQL,
+  REACTIVATE_ENDPOINT_SQL,
   GET_OUTBOX_SQL,
   buildNoteEndpointFailureSql,
   noteEndpointFailureParams,
@@ -34,6 +35,13 @@ describe("circuit-breaker SQL", () => {
   it("resets the counter only when it is non-zero (no hot-path write when healthy)", () => {
     expect(NOTE_ENDPOINT_SUCCESS_SQL).toContain("consecutive_failures = 0");
     expect(NOTE_ENDPOINT_SUCCESS_SQL).toContain("WHERE id = $1 AND consecutive_failures <> 0");
+  });
+
+  it("reactivates a disabled endpoint atomically (status, counter, disabled_at) on half-open success", () => {
+    expect(REACTIVATE_ENDPOINT_SQL).toContain("status = 'active'");
+    expect(REACTIVATE_ENDPOINT_SQL).toContain("consecutive_failures = 0");
+    expect(REACTIVATE_ENDPOINT_SQL).toContain("disabled_at = NULL");
+    expect(REACTIVATE_ENDPOINT_SQL).toContain("WHERE id = $1");
   });
 
   it("increments and auto-disables atomically; numbered reuses $2 for the threshold (pg)", () => {

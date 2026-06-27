@@ -40,6 +40,7 @@ function fakeStore(over: Partial<Store> = {}): Store {
     prune: () => Promise.resolve({ deleted: 0 }),
     noteEndpointSuccess: () => Promise.resolve(),
     noteEndpointFailure: () => Promise.resolve(),
+    reactivateEndpoint: () => Promise.resolve(),
     recordAttempt: () => Promise.resolve(),
     completeAttempt: () => Promise.resolve(),
     queryAttempts: () => Promise.resolve([]),

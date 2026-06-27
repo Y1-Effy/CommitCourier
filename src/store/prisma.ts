@@ -62,6 +62,7 @@ import {
   CANCEL_PENDING_SQL,
   GET_OUTBOX_SQL,
   NOTE_ENDPOINT_SUCCESS_SQL,
+  REACTIVATE_ENDPOINT_SQL,
   buildNoteEndpointFailureSql,
   noteEndpointFailureParams,
   buildPruneSql,
@@ -207,6 +208,10 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
         buildNoteEndpointFailureSql("numbered"),
         ...noteEndpointFailureParams("numbered", id, now, threshold),
       );
+    },
+
+    async reactivateEndpoint(id) {
+      await prisma.$executeRawUnsafe(REACTIVATE_ENDPOINT_SQL, id);
     },
 
     async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {

@@ -65,6 +65,14 @@ export function createEndpointCache<TTx>(inner: Store<TTx>, opts: { ttlMs: numbe
     // on the hot path, so pass it straight through without invalidating.
     noteEndpointSuccess: (id) => inner.noteEndpointSuccess(id),
 
+    async reactivateEndpoint(id) {
+      // Half-open recovery flips the endpoint back to `active` and clears disabled_at, which the
+      // per-delivery resolveTarget reads — evict so the next findEndpoint reflects it promptly.
+      generation++;
+      cache.delete(id);
+      await inner.reactivateEndpoint(id);
+    },
+
     // --- pass-through ---
     insertOutbox: (trx, row) => inner.insertOutbox(trx, row),
     insertOutboxMany: (trx, rows) => inner.insertOutboxMany(trx, rows),

@@ -62,6 +62,7 @@ import {
   CANCEL_PENDING_SQL,
   GET_OUTBOX_SQL,
   NOTE_ENDPOINT_SUCCESS_SQL,
+  REACTIVATE_ENDPOINT_SQL,
   buildNoteEndpointFailureSql,
   noteEndpointFailureParams,
   buildPruneSql,
@@ -230,6 +231,10 @@ export function drizzleStore(opts: { db: DrizzleDb }): Store<DrizzleTx> {
         buildNoteEndpointFailureSql("numbered"),
         noteEndpointFailureParams("numbered", id, now, threshold),
       );
+    },
+
+    async reactivateEndpoint(id) {
+      await client.query(REACTIVATE_ENDPOINT_SQL, [id]);
     },
 
     async reclaimStuck({ reclaimAfterMs, now }): Promise<number> {

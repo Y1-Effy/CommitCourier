@@ -39,6 +39,7 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
     prune: () => Promise.resolve({ deleted: 0 }),
     noteEndpointSuccess: () => Promise.resolve(),
     noteEndpointFailure: () => Promise.resolve(),
+    reactivateEndpoint: () => Promise.resolve(),
     reclaimStuck: () => Promise.resolve(0),
     recordAttempt: () => Promise.resolve(),
     completeAttempt: () => Promise.resolve(),

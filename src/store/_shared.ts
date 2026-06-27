@@ -557,6 +557,13 @@ export const CANCEL_PENDING_SQL = `UPDATE ${OUTBOX_TABLE} SET status = 'cancelle
 export const NOTE_ENDPOINT_SUCCESS_SQL = `UPDATE ${ENDPOINTS_TABLE} SET consecutive_failures = 0 WHERE id = $1 AND consecutive_failures <> 0`;
 
 /**
+ * Re-activate a disabled endpoint after a successful half-open trial: clear the disabled marker and
+ * reset the failure counter in one UPDATE (`status = 'active'`, `consecutive_failures = 0`,
+ * `disabled_at = NULL`). One `$1` placeholder (the id). Used by the circuit breaker's auto-recovery.
+ */
+export const REACTIVATE_ENDPOINT_SQL = `UPDATE ${ENDPOINTS_TABLE} SET status = 'active', consecutive_failures = 0, disabled_at = NULL WHERE id = $1`;
+
+/**
  * Build the circuit-breaker failure UPDATE for either placeholder style: atomically increment
  * `consecutive_failures` and, when the new count reaches the threshold while still `active`, disable
  * the endpoint in the same statement (so the increment and the auto-disable can never diverge under

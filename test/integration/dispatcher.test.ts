@@ -80,6 +80,7 @@ function queueStore(seed: OutboxRow[]): {
     prune: () => Promise.resolve({ deleted: 0 }),
     noteEndpointSuccess: () => Promise.resolve(),
     noteEndpointFailure: () => Promise.resolve(),
+    reactivateEndpoint: () => Promise.resolve(),
     reclaimStuck: () => {
       reclaims++;
       return Promise.resolve(0);
