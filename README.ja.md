@@ -29,7 +29,7 @@ CommitCourier は、**あなた自身の DB トランザクションに相乗り
 
 - **トランザクショナル `enqueue`** — 業務トランザクションに相乗りし、webhook が業務の書き込みと原子的に整合（fail-closed）。
 - **Postgres だけ** — Redis も別ブローカーも別サーバーも不要。
-- **Standard Webhooks 署名** — 受信側は既存の Standard Webhooks 検証ライブラリでそのまま検証可能。
+- **Standard Webhooks 署名** — 受信側は既存の Standard Webhooks 検証ライブラリ、または同梱の依存ゼロ `verifySignature`（`commitcourier/core`）でそのまま検証可能。
 - **指数バックオフ＋ジッターのリトライと DLQ**（試行上限超過分の退避）。
 - **配信台帳** — 試行ごとのリクエストヘッダ・応答ステータス・本文スニペット・所要時間を記録（サポート・監査用）。
 - **リプレイ** — ID 指定、またはフィルタ指定（例：特定時刻以降の `dead` 全件）で再 enqueue。安全上限を内蔵し、広いリプレイが無制限な大量再送に膨らみません。
@@ -131,10 +131,9 @@ const dispatcher = relay.createDispatcher({
 });
 
 await dispatcher.start();
-
-// シャットダウン時 — graceful: 新しい tick を止め、配信中を待ってから停止。
-process.on("SIGTERM", () => void dispatcher.stop());
 ```
+
+プロセス停止時に配信中の行を取りこぼさないよう、graceful シャットダウンを配線してください（[graceful シャットダウン](#graceful-シャットダウン)を参照）。
 
 ### pg の代わりに Knex を使う
 
@@ -280,10 +279,25 @@ const res = await relay.replay({ filter: { status: "dead", since: new Date(Date.
 
 // 登録済みエンドポイントを無効化。
 await relay.endpoints.disable(endpointId);
-
-// graceful シャットダウン。
-await dispatcher.stop();
 ```
+
+### graceful シャットダウン
+
+`dispatcher.stop()` は新しい tick を止め、アイドル待機を中断し、配信中をドレインし、accelerator を unsubscribe します。ただしプロセスシグナルへの配線（と、その後の DB プールのクローズ）は利用者の責務です。コンテナオーケストレータ配下でシャットダウンを取りこぼすと、プロセスは配信中に強制 kill されます。行自体は安全（可視性タイムアウトで回収）ですが、避けられたはずの再配信のコストを払うことになります。常駐ワーカーの典型例：
+
+```ts
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return; // 2 度目の SIGTERM/SIGINT が drain と競合しないように
+  shuttingDown = true;
+  await dispatcher.stop(); // tick 停止 ＋ 配信中のドレイン
+  await pool.end(); // 他に誰も query しなくなってから pg プールを閉じる
+  process.exit(0);
+}
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => void shutdown());
+```
+
+1 回実行のサーバーレス／cron モデルでは止めるループがありません。`await relay.dispatchOnce(...)` は claim した行を配信し終えてから解決するので、返ってきたら `await pool.end()` するだけです（下記参照）。
 
 ### サーバーレス／cron 配信（1 回実行）
 
@@ -307,9 +321,28 @@ const relay = await createRelay({ store, circuitBreaker: { failureThreshold: 20 
 
 既定の `failureThreshold: 0` は無効。登録エンドポイント経路のみに適用（インライン `{ url, secret }` には disable 対象が無い）、fail-open で、再有効化は通常の `relay.endpoints.enable(endpointId)` です。
 
+手放しでの回復が欲しい場合は `cooldownMs` を足すと、disable されたエンドポイントが管理者を待たずに自力で回復します：
+
+```ts
+const relay = await createRelay({
+  store,
+  circuitBreaker: { failureThreshold: 20, cooldownMs: 5 * 60_000 },
+});
+```
+
+エンドポイントが `cooldownMs` 以上 disable され続けると、dispatcher は配信を 1 回だけ half-open 試行として通します。成功すれば再 active 化（＋ counter リセット）、失敗すれば cooldown を再武装し次の試行はさらに `cooldownMs` 待ちます。cooldown 内は HTTP 試行を一切行いません。breaker でも `410 Gone` でも disable された任意の登録エンドポイントに適用され、`cooldownMs: 0`（既定）は手動回復のままにします。
+
 ### ロギングと可観測性
 
-dispatch 経路は **fail-open** です。配信・claim・reclaim の失敗は throw されず、**logger** に送られます。その logger は**既定で no-op** です。logger を注入しないと配信障害は無音になります。本番では必ず注入してください。
+dispatch 経路は **fail-open** です。配信・claim・reclaim の失敗は throw されず、**logger** に送られます。その logger は**既定で no-op** です。logger を注入しないと配信障害は無音になるため、未設定のときは `createRelay` が起動時に 1 回だけ警告を出します。本番では必ず注入してください。同梱の `createConsoleLogger()` が安全なコピペ既定です：
+
+```ts
+import { createRelay, createConsoleLogger } from "commitcourier";
+
+const relay = await createRelay({ store, logger: createConsoleLogger() });
+```
+
+`Logger` インターフェースを満たす任意のオブジェクトでも構いません（例：pino/winston への橋渡し）：
 
 ```ts
 const relay = await createRelay({
@@ -466,7 +499,23 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 | `content-type`      | `application/json`。                                           |
 | `idempotency-key`   | enqueue 時に指定した場合のみ付与。                             |
 
-これは [Standard Webhooks](https://www.standardwebhooks.com/) の慣例なので、受信側は互換の検証ライブラリでそのまま検証できます。CommitCourier は独自署名方式を作りません。
+これは [Standard Webhooks](https://www.standardwebhooks.com/) の慣例なので、受信側は互換の検証ライブラリでそのまま検証できます。CommitCourier は独自署名方式を作りません。利便のため、純粋・依存ゼロの `verifySignature` ヘルパを `commitcourier/core` に同梱しています（内部サービス間 webhook や統合テストに便利で、検証用の別依存を追加せずに済みます）：
+
+```ts
+import { verifySignature } from "commitcourier/core";
+
+// `rawBody` は JSON.parse 前の生のリクエスト body 文字列。
+const ok = await verifySignature({
+  id: req.headers["webhook-id"],
+  timestamp: req.headers["webhook-timestamp"],
+  payload: rawBody,
+  header: req.headers["webhook-signature"],
+  secrets: [endpointSecret], // ローテーション期間中は両方の鍵を渡す
+});
+if (!ok) return res.status(400).end(); // タイムスタンプ期限切れ・署名不正・不一致
+```
+
+タイムスタンプの期限切れ（既定許容 300 秒、`toleranceSec` で上書き可）、欠落／壊れた署名、不一致のいずれでも `false` を返します（throw しません）。`secrets` を複数渡せばローテーションをまたいでどちらの鍵でも検証できます。
 
 > **body の正規化。** `payload` は Postgres `jsonb` で保存されるため、配信 body は enqueue した値の JSON ラウンドトリップになります（オブジェクトのキー順は非保持、重複キーは畳み込み、意味のない空白は除去）。署名は常に「実際に送るバイト列」に対して計算されるので、これが原因で検証が失敗することはありません。ただし配信バイト列が入力と完全一致する保証はありません。バイト厳密が必要なら payload を事前シリアライズ済みの文字列として enqueue してください。
 
@@ -486,7 +535,7 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 - エンドポイント横断の**全順序保証**。既定は順不同です（エンドポイント単位 FIFO はオプトインで提供：`createDispatcher({ ordering: "per-endpoint" })`）。
 - **無限スケール**。既存 Postgres 上の中〜中規模を正直な対象とし、billions/sec 級は対象外です。
 - **暗号鍵の管理**。署名 secret は `cipher` 設定で保管時暗号化できますが（「設定」参照）、鍵自体の保管・配布・ローテーションは利用者の責務です。`cipher` 未設定時の保管時暗号化は DB 側の責務です。
-- インバウンド webhook の受信・検証、および顧客向け管理ポータル UI。
+- インバウンド webhook の*受信*（HTTP サーバ／フレームワーク統合）、および顧客向け管理ポータル UI。受信側の `verifySignature` ヘルパは*提供します*（[署名の検証](#署名の検証受信側)参照）が、エンドポイントの構築は利用者の責務です。
 
 ## CommitCourier の取り外し
 
@@ -496,8 +545,8 @@ CommitCourier は非侵襲かつ可逆です。すべては 3 つの専用テー
 
 | import                         | エクスポート                                                                                                                                                             |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `commitcourier`                | `createRelay`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                                                    |
-| `commitcourier/core`           | 純粋・依存ゼロのドメイン層（`sign`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
+| `commitcourier`                | `createRelay`、`createConsoleLogger`、`Relay`/`RelayInit` 型、`Store` ポート、全ドメイン型。                                                                              |
+| `commitcourier/core`           | 純粋・依存ゼロのドメイン層（`sign`、`verifySignature`、`createConsoleLogger`、`backoffMs`、状態遷移、SSRF ヘルパ、`resolveConfig`、`RelayError`、型）。import してもドライバや `node:*` 組込みを一切引き込まない。 |
 | `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`。                                                                                                                        |
 | `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`。                                                                                                                      |
 | `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — Postgres LISTEN/NOTIFY による任意の低遅延 wake。`createRelay({ accelerator })` に渡す。                                        |

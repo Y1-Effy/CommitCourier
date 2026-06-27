@@ -11,6 +11,22 @@
 
 ### Added（追加）
 
+- **受信側 `verifySignature`（DX）**：インバウンドの Standard Webhooks リクエストを検証する、純粋・依存ゼロの
+  ヘルパを `commitcourier/core` に追加（`sign` の対）。`{id}.{timestamp}.{payload}` に対する `v1,<base64>` HMAC を
+  再計算し、`webhook-signature` の各トークンと定数時間比較します。`secrets` を複数受け付け（ローテーションをまたいで
+  どちらの鍵でも検証可）、タイムスタンプを許容差（既定 `300` 秒）で検証します。期限切れ・壊れた署名・不一致では
+  `false` を返し（throw しない）ので、`true` 以外はすべて reject 扱いにできます。内部 webhook のために別途検証用の
+  依存を追加する必要がなくなります。
+- **`createConsoleLogger()`（DX）**：すぐ使える `Logger`（`commitcourier` と `commitcourier/core` から export）。
+  これでリレーが無音ではなく一行で可観測になります。あわせて `createRelay` は `logger` 未設定時に起動時 1 回だけ
+  警告を出すようにしました。fail-open な dispatch 経路は、未設定だと配信失敗・DLQ 遷移・SSRF ブロックをすべて
+  握り潰すためです。
+- **回路遮断の自動復旧（half-open）**：`createRelay({ circuitBreaker: { cooldownMs: N } })`（既定 `0` = 無効）で、
+  disable されたエンドポイントが自力で回復できるようになります。`disabled_at` から `cooldownMs` 以上が経過すると、
+  dispatcher は配信を 1 回だけ試行（half-open）として通します。成功するとエンドポイントを再 active 化し失敗
+  カウンタをリセット、失敗すると cooldown を再武装して次の試行はさらに `cooldownMs` 待ちます。breaker でも `410`
+  でも disable された任意の登録エンドポイントに適用され、cooldown 内は HTTP 試行を一切行いません。4 アダプタ
+  すべてに `Store.reactivateEndpoint` として実装。
 - **Cancel API（v2.1）**：`relay.cancel(outboxId)` が未送信の行を取り消します。`pending → cancelled` へは
   `pending` のときのみ遷移し、既にクレーム済み（`in_flight`）や終端状態の行は変更しません。`{ cancelled }` を
   返すので「間に合った」か「既に送信済み／不明な id」かを呼び出し側で判別できます。4 アダプタすべてに実装し、

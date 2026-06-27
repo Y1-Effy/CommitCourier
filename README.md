@@ -29,7 +29,7 @@ CommitCourier is the one embedded library that rides **your own DB transaction**
 
 - **Transactional `enqueue`** — rides your DB transaction; the webhook is atomic with your business write (fail-closed).
 - **Postgres-only** — no Redis, no separate broker, no extra server.
-- **Standard Webhooks signing** — receivers verify with any off-the-shelf Standard Webhooks library.
+- **Standard Webhooks signing** — receivers verify with any off-the-shelf Standard Webhooks library, or with the bundled dependency-free `verifySignature` helper from `commitcourier/core`.
 - **Retries with exponential backoff + jitter, and a DLQ** for exhausted rows.
 - **Delivery ledger** — every attempt's request headers, response status, body snippet, and duration are recorded for support and audit.
 - **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time), with a built-in safety cap so a broad replay never fans out into an unbounded mass re-send.
@@ -131,10 +131,9 @@ const dispatcher = relay.createDispatcher({
 });
 
 await dispatcher.start();
-
-// On shutdown — graceful: stops new ticks and drains in-flight deliveries.
-process.on("SIGTERM", () => void dispatcher.stop());
 ```
+
+Wire a graceful shutdown so an in-flight delivery is not lost when the process is asked to stop — see [Graceful shutdown](#graceful-shutdown).
 
 ### Using Knex instead of pg
 
@@ -281,10 +280,25 @@ const res = await relay.replay({ filter: { status: "dead", since: new Date(Date.
 
 // Disable a registered endpoint.
 await relay.endpoints.disable(endpointId);
-
-// Graceful shutdown.
-await dispatcher.stop();
 ```
+
+### Graceful shutdown
+
+`dispatcher.stop()` stops new ticks, interrupts the idle wait, drains in-flight deliveries, and unsubscribes any accelerator — but binding it to your process signals (and closing the DB pool afterwards) is yours to wire. Under a container orchestrator a missed shutdown means the process is hard-killed mid-delivery; the row is still safe (the visibility timeout reclaims it), but you pay a redelivery you could have avoided. A typical long-lived worker:
+
+```ts
+let shuttingDown = false;
+async function shutdown() {
+  if (shuttingDown) return; // a second SIGTERM/SIGINT must not race the drain
+  shuttingDown = true;
+  await dispatcher.stop(); // stop ticks + drain in-flight deliveries
+  await pool.end(); // close the pg pool once nothing else will query
+  process.exit(0);
+}
+for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => void shutdown());
+```
+
+For a one-shot serverless/cron model there is no loop to stop: `await relay.dispatchOnce(...)` resolves only after the rows it claimed are delivered, so just `await pool.end()` once it returns (see below).
 
 ### Serverless / cron delivery (one-shot)
 
@@ -308,9 +322,28 @@ const relay = await createRelay({ store, circuitBreaker: { failureThreshold: 20 
 
 Default `failureThreshold: 0` keeps it off. It only applies to the registered-endpoint workflow (inline `{ url, secret }` deliveries have no endpoint to disable), is fail-open, and re-enabling is a normal `relay.endpoints.enable(endpointId)`.
 
+For hands-off recovery, add `cooldownMs` so a disabled endpoint heals on its own instead of waiting for an admin:
+
+```ts
+const relay = await createRelay({
+  store,
+  circuitBreaker: { failureThreshold: 20, cooldownMs: 5 * 60_000 },
+});
+```
+
+Once an endpoint has been disabled for at least `cooldownMs`, the dispatcher lets a single delivery through as a half-open trial: a success re-activates it (and resets the counter), a failure re-arms the cooldown so the next trial waits another `cooldownMs`. Within the cooldown no HTTP attempt is made. It applies to any disabled registered endpoint (whether disabled by the breaker or a `410 Gone`); `cooldownMs: 0` (the default) keeps recovery manual.
+
 ### Logging & observability
 
-The dispatch path is **fail-open**: delivery, claim, and reclaim failures are never thrown — they are sent to the **logger**, which **defaults to a no-op**. If you don't inject a logger, delivery problems are silent. In production, always pass one:
+The dispatch path is **fail-open**: delivery, claim, and reclaim failures are never thrown — they are sent to the **logger**, which **defaults to a no-op**. If you don't inject a logger, delivery problems are silent, so `createRelay` prints a one-time startup warning when none is set. In production, always pass one. The bundled `createConsoleLogger()` is a safe copy-paste default:
+
+```ts
+import { createRelay, createConsoleLogger } from "commitcourier";
+
+const relay = await createRelay({ store, logger: createConsoleLogger() });
+```
+
+Any object matching the `Logger` interface works too (e.g. to bridge to pino/winston):
 
 ```ts
 const relay = await createRelay({
@@ -467,7 +500,23 @@ Each delivery POSTs JSON with these headers:
 | `content-type`      | `application/json`.                                       |
 | `idempotency-key`   | Present only if you supplied one at enqueue time.         |
 
-Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) convention, your receiver can verify it with any compatible verification library — CommitCourier does not invent its own scheme.
+Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) convention, your receiver can verify it with any compatible verification library — CommitCourier does not invent its own scheme. For convenience the pure, dependency-free `verifySignature` helper ships in `commitcourier/core` (handy for internal service-to-service webhooks and integration tests, with no need to add a separate verification dependency):
+
+```ts
+import { verifySignature } from "commitcourier/core";
+
+// `rawBody` is the exact request body string, before JSON.parse.
+const ok = await verifySignature({
+  id: req.headers["webhook-id"],
+  timestamp: req.headers["webhook-timestamp"],
+  payload: rawBody,
+  header: req.headers["webhook-signature"],
+  secrets: [endpointSecret], // pass both keys during a rotation window
+});
+if (!ok) return res.status(400).end(); // stale timestamp, bad signature, or no match
+```
+
+It returns `false` (never throws) for a stale timestamp (default tolerance 300s, override with `toleranceSec`), a missing/garbled signature, or no match, and accepts multiple `secrets` so a receiver verifies either key across a rotation.
 
 > **Body normalization.** The `payload` is stored as Postgres `jsonb`, so the delivered body is the JSON round-trip of what you enqueued (object key order is not preserved, duplicate keys collapse, insignificant whitespace is dropped). The signature is always computed over the exact bytes sent, so verification never fails because of this — but the delivered bytes are not guaranteed identical to your input. If you need byte-exact delivery, enqueue the payload as a pre-serialized string.
 
@@ -487,7 +536,7 @@ Because this is the [Standard Webhooks](https://www.standardwebhooks.com/) conve
 - **Total ordering** across an endpoint. Default delivery is unordered (per-endpoint FIFO is available as an opt-in feature: `createDispatcher({ ordering: "per-endpoint" })`).
 - **Unbounded scale.** This targets small-to-medium volume on your existing Postgres, not billions/sec.
 - **Encryption-key management.** Signing secrets can be encrypted at rest by configuring a `cipher` (see Configuration); managing the key itself — storage, distribution, rotation — is yours. Without a `cipher`, at-rest encryption is your database's responsibility.
-- Inbound webhook receiving / verification, and a customer-facing management portal UI.
+- Inbound webhook _receiving_ (an HTTP server / framework integration) and a customer-facing management portal UI. A receiver-side `verifySignature` helper _is_ provided (see [Verifying signatures](#verifying-signatures-receiver-side)); standing up the endpoint is yours.
 
 ## Removing CommitCourier
 
@@ -497,8 +546,8 @@ CommitCourier is non-invasive and reversible. Everything lives in three dedicate
 
 | Import                         | Exports                                                                                                                                                                                       |
 | ------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `commitcourier`                | `createRelay`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                                         |
-| `commitcourier/core`           | The pure, dependency-free domain layer (`sign`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
+| `commitcourier`                | `createRelay`, `createConsoleLogger`, the `Relay`/`RelayInit` types, the `Store` port, and all domain types.                                                                                   |
+| `commitcourier/core`           | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
 | `commitcourier/store/pg`       | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                              |
 | `commitcourier/store/knex`     | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                            |
 | `commitcourier/accelerator/pg` | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                     |

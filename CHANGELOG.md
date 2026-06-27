@@ -11,6 +11,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Receiver-side `verifySignature` (DX):** a pure, dependency-free helper in `commitcourier/core` that verifies
+  an inbound Standard Webhooks request — the counterpart of `sign`. It recomputes the `v1,<base64>` HMAC over
+  `{id}.{timestamp}.{payload}` and constant-time compares it against every token in `webhook-signature`, accepts
+  multiple `secrets` (so a receiver verifies either key across a rotation), and checks the timestamp against a
+  tolerance (default `300`s). Returns `false` (never throws) for a stale timestamp, garbled signature, or no match,
+  so any non-`true` is a reject. Removes the need to add a separate verification dependency for internal webhooks.
+- **`createConsoleLogger()` (DX):** a ready-made `Logger` (exported from `commitcourier` and `commitcourier/core`)
+  so a relay is a one-liner away from being observable instead of silent. Relatedly, `createRelay` now prints a
+  one-time startup warning when no `logger` is configured, since the fail-open dispatch path otherwise swallows
+  every delivery failure, DLQ transition and SSRF block.
+- **Circuit-breaker auto-recovery (half-open):** `createRelay({ circuitBreaker: { cooldownMs: N } })` (default `0`
+  = off) lets a disabled endpoint heal on its own. After it has been disabled for at least `cooldownMs` (from
+  `disabled_at`), the dispatcher lets a single delivery through as a half-open trial: success re-activates the
+  endpoint and resets its failure counter; failure re-arms the cooldown so the next trial waits another
+  `cooldownMs`. Applies to any disabled registered endpoint (breaker- or `410`-disabled); within the cooldown no
+  HTTP attempt is made. Wired across all four adapters as `Store.reactivateEndpoint`.
 - **Cancel API (v2.1):** `relay.cancel(outboxId)` stops a not-yet-sent row, moving it `pending → cancelled`
   only while it is still pending (an already-claimed `in_flight` or terminal row is left untouched). Returns
   `{ cancelled }` so a caller can tell "stopped in time" from "already sent / unknown id". Implemented across
