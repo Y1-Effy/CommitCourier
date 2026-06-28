@@ -2,6 +2,7 @@
 
 > Transactional Outbound Webhook delivery for Node.js / TypeScript, backed by your **existing PostgreSQL**.
 
+[![CI](https://github.com/Y1-Effy/CommitCourier/actions/workflows/ci.yml/badge.svg)](https://github.com/Y1-Effy/CommitCourier/actions/workflows/ci.yml)
 [![npm version](https://img.shields.io/npm/v/commitcourier.svg)](https://www.npmjs.com/package/commitcourier)
 [![license](https://img.shields.io/github/license/Y1-Effy/CommitCourier)](./LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)](https://nodejs.org)
