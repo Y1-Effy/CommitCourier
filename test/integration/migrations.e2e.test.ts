@@ -5,9 +5,8 @@
  * them. Requires Docker; skips cleanly without one.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
-import { dockerAvailable, startPostgres, type PgConn } from "./_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "./_helpers";
 
 describe.skipIf(!dockerAvailable())("concurrent migrate (integration)", () => {
   let stop: () => Promise<void>;
@@ -25,7 +24,7 @@ describe.skipIf(!dockerAvailable())("concurrent migrate (integration)", () => {
 
   it("runs many migrate() calls at once on a fresh DB without error", async () => {
     // Separate pools so each migrate() races on its own connection(s), as distinct replicas would.
-    const pools = Array.from({ length: 8 }, () => new Pool(conn));
+    const pools = Array.from({ length: 8 }, () => newPgPool(conn));
     try {
       await Promise.all(pools.map((pool) => postgresStore({ pool }).migrate()));
 

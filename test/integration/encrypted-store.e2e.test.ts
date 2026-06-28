@@ -6,11 +6,11 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
 import { createEncryptedStore } from "../../src/store/encrypted-store";
 import { createAesGcmCipher, generateSecretKey } from "../../src/core/cipher";
-import { dockerAvailable, startPostgres, type PgConn } from "./_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "./_helpers";
 
 describe.skipIf(!dockerAvailable())("encrypted-store decryption isolation (integration)", () => {
   let stop: () => Promise<void>;
@@ -24,7 +24,7 @@ describe.skipIf(!dockerAvailable())("encrypted-store decryption isolation (integ
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    pool = new Pool(conn);
+    pool = newPgPool(conn);
     await postgresStore({ pool }).migrate();
   });
 

@@ -5,9 +5,9 @@
  */
 import http from "node:http";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
-import { dockerAvailable, startPostgres, type PgConn } from "../integration/_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "../integration/_helpers";
 import {
   pgRelay,
   RELAY_ADAPTERS,
@@ -95,7 +95,7 @@ describe.skipIf(!dockerAvailable())("fault injection (integration)", () => {
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    admin = new Pool(conn);
+    admin = newPgPool(conn);
     await postgresStore({ pool: admin }).migrate();
     await admin.query("CREATE TABLE IF NOT EXISTS e2e_business (id text PRIMARY KEY)");
   });

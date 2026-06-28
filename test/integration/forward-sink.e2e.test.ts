@@ -12,9 +12,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
-import { dockerAvailable, startPostgres, type PgConn } from "./_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "./_helpers";
 import { RELAY_ADAPTERS, type RelayHarness } from "./_relay-helpers";
 import type { Logger } from "../../src/core/index";
 import type { Sink, SinkEvent, SinkResult } from "../../src/forward/index";
@@ -70,7 +70,7 @@ describe.skipIf(!dockerAvailable())("forward sink e2e (integration)", () => {
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    admin = new Pool(conn);
+    admin = newPgPool(conn);
     // Applies 001_init AND 002_sink_targetless (drops the target CHECK so a sink row can be target-less).
     await postgresStore({ pool: admin }).migrate();
   });

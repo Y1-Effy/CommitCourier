@@ -10,10 +10,10 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
 import type { Store } from "../../src/store/store";
-import { dockerAvailable, startPostgres, type PgConn } from "../integration/_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "../integration/_helpers";
 
 const DELIVERED_ROWS = 10_000; // background bulk the hot index must NOT have to wade through
 const PENDING_ROWS = 2_000; // the live backlog to drain
@@ -32,7 +32,7 @@ describe.skipIf(!dockerAvailable())("claim throughput (integration)", () => {
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    pool = new Pool(conn);
+    pool = newPgPool(conn);
     store = postgresStore({ pool });
     await store.migrate();
     // Bulk-seed with a single set-returning insert per batch so setup stays well under the perf

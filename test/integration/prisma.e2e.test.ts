@@ -13,13 +13,13 @@ import { existsSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { sign } from "../../src/core/index";
 import { prismaStore, type PrismaTx } from "../../src/store/prisma";
 import { createRelay } from "../../src/relay";
 import type { Relay } from "../../src/relay";
 import type { EnqueueInput } from "../../src/core/index";
-import { dockerAvailable, startPostgres, type PgConn } from "./_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "./_helpers";
 
 const CLIENT_PATH = fileURLToPath(new URL("./.prisma-client/client.ts", import.meta.url));
 const prismaClientAvailable = existsSync(CLIENT_PATH);
@@ -98,7 +98,7 @@ describe.skipIf(!dockerAvailable() || !prismaClientAvailable)(
       const started = await startPostgres();
       conn = started.conn;
       stop = started.stop;
-      admin = new Pool(conn);
+      admin = newPgPool(conn);
 
       // Non-literal specifier so tsc neither resolves the generated `.ts` path nor fails on a fresh
       // checkout that has not run codegen (the suite is already guarded by `prismaClientAvailable`).

@@ -5,10 +5,10 @@
  * dispatch indexes, queue counts). Requires Docker; skips cleanly without it.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
 import { inspectDatabase } from "../../src/cli";
-import { dockerAvailable, startPostgres, type PgConn } from "./_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "./_helpers";
 
 describe.skipIf(!dockerAvailable())("cli doctor — database inspection (integration)", () => {
   let conn: PgConn;
@@ -19,7 +19,7 @@ describe.skipIf(!dockerAvailable())("cli doctor — database inspection (integra
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    pool = new Pool(conn);
+    pool = newPgPool(conn);
   });
 
   afterAll(async () => {

@@ -5,12 +5,12 @@
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
-import { Pool } from "pg";
+import type { Pool } from "pg";
 import { onSuccess, resolveConfig } from "../../src/core/index";
 import { postgresStore } from "../../src/store/pg";
 import type { Store } from "../../src/store/store";
 import { createDispatcher } from "../../src/dispatcher/dispatcher";
-import { dockerAvailable, startPostgres, type PgConn } from "../integration/_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "../integration/_helpers";
 
 async function waitFor(cond: () => boolean, timeoutMs = 20_000): Promise<void> {
   const start = Date.now();
@@ -41,7 +41,7 @@ describe.skipIf(!dockerAvailable())("dispatcher concurrency (integration)", () =
   const pools: Pool[] = [];
 
   function newStore(): Store {
-    const pool = new Pool(conn);
+    const pool = newPgPool(conn);
     pools.push(pool);
     return postgresStore({ pool });
   }
@@ -150,7 +150,7 @@ describe.skipIf(!dockerAvailable())("dispatcher concurrency (integration)", () =
     const id = randomUUID();
     await seedPending(store, id);
     // Simulate a worker that claimed the row then crashed, leaving a stale lock.
-    const pool = new Pool(conn);
+    const pool = newPgPool(conn);
     pools.push(pool);
     await pool.query(
       `UPDATE webhook_outbox SET status='in_flight', locked_at = now() - interval '1 hour', locked_by='dead' WHERE id=$1`,
