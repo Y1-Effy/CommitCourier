@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-28
+
 ### Added
 
 - **Enqueue payload validation:** `enqueue` / `enqueueMany` / `enqueueUnsafe` now reject a payload that
@@ -194,5 +196,6 @@ Initial development baseline (never published to npm).
 
 > ⚠️ Pre-`1.0.0`: the API and package name may still change.
 
-[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.2.0
