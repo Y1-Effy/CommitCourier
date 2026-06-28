@@ -56,6 +56,28 @@ jobs:
       - name: Verify public API surface
         run: npm run api:check
 
+  # Verify the supported PostgreSQL range. The build-test job already runs the full coverage
+  # suite against the default image; this job re-runs only the integration suite across the
+  # minimum and latest supported majors so the README's "PostgreSQL 12+" claim is actually
+  # exercised, without multiplying the coverage matrix.
+  integration-postgres:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        postgres: ["postgres:12-alpine", "postgres:16-alpine", "postgres:17-alpine"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - name: Integration tests (PostgreSQL ${{ matrix.postgres }})
+        run: npm run test:integration
+        env:
+          POSTGRES_IMAGE: ${{ matrix.postgres }}
+
   # Pack the tarball and import it from a clean, separate project (ESM + CJS) so a broken
   # published surface — missing files, wrong exports, an optional peer turned mandatory — fails
   # CI rather than the first consumer's install.

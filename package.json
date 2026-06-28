@@ -143,6 +143,7 @@
     "format:check": "prettier --check .",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
     "test:coverage": "vitest run --coverage",
     "test:types": "vitest --typecheck --run --project unit",
     "test:prisma:gen": "prisma generate --schema prisma/schema.prisma",
