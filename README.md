@@ -28,9 +28,12 @@ CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeSc
 - [Error handling](#error-handling)
 - [Verifying signatures (receiver side)](#verifying-signatures-receiver-side)
 - [Guarantees & non-goals](#guarantees--non-goals)
+- [Migrations](#migrations)
 - [Removing CommitCourier](#removing-commitcourier)
 - [API surface](#api-surface)
-- [Status & roadmap](#status--roadmap)
+- [Feature status](#feature-status)
+- [Compatibility & support](#compatibility--support)
+- [Roadmap](#roadmap)
 - [Security](#security)
 - [License](#license)
 
@@ -41,9 +44,9 @@ Updating business state and sending a webhook are two separate actions. If a cra
 - **Phantom webhook** — you enqueue the webhook first, then the business transaction rolls back. A customer receives `order.created` for an order that never existed.
 - **Lost webhook** — you commit the business transaction first, then the process dies before enqueuing. The order is final, but the notification never fires.
 
-Existing tools can't fix this structurally: SaaS senders (Svix, Outpost) and Redis-backed queues (BullMQ) enqueue to a remote system that **can't join your local DB transaction**, and broker-outbox libraries ride your transaction but only deliver to a **message broker** — no HTTP webhook delivery, no signing, no SSRF guard, no delivery ledger.
+Most of the usual tools don't address this structurally: SaaS senders (Svix, Outpost) and Redis-backed queues (BullMQ) enqueue to a remote system that **can't join your local DB transaction**, and broker-outbox libraries ride your transaction but only deliver to a **message broker** — no HTTP webhook delivery, no signing, no SSRF guard, no delivery ledger.
 
-CommitCourier is the one embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible _by construction_.
+CommitCourier is an embedded library that rides **your own DB transaction** and carries it all the way to **webhook-grade HTTP delivery**. Because the outbox row is written in the same transaction as your business change, dual-write inconsistency is impossible _by construction_.
 
 ## Quick start
 
@@ -55,11 +58,11 @@ npm install commitcourier
 npm install pg      # or: npm install knex
 ```
 
-**Requirements:** Node.js **22.19.0+**, **PostgreSQL 12+** (anything with `FOR UPDATE SKIP LOCKED`, i.e. ≥ 9.5, works). Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
+**Requirements:** Node.js **22.19.0+**, **PostgreSQL 12+** (the minimum supported version; the DDL uses `GENERATED ALWAYS AS IDENTITY` and `FOR UPDATE SKIP LOCKED`). CI integration tests run against **PostgreSQL 16**. Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
 
 ### 1. Create the tables
 
-`migrate()` applies idempotent DDL (`webhook_outbox`, `webhook_delivery_attempts`, `webhook_endpoints`). Run it once at deploy time.
+`migrate()` applies idempotent DDL — three business tables (`webhook_outbox`, `webhook_delivery_attempts`, `webhook_endpoints`) plus a `commitcourier_migrations` tracking table. Run it once at deploy time (see [Migrations](#migrations)).
 
 ```ts
 import { Pool } from "pg";
@@ -178,7 +181,9 @@ How CommitCourier differs from the usual ways to send outbound webhooks:
 | BullMQ & similar queues |            ❌             | Do-it-yourself (handler) |    Do-it-yourself    | Redis                         |
 | Broker-outbox libraries |            ✅             |   ❌ (message broker)    |          ❌          | A message broker              |
 
-Only CommitCourier combines both halves: the outbox row is written **inside your transaction** (so dual-write inconsistency is impossible) _and_ carried all the way to **webhook-grade HTTP delivery** (signing, retries, DLQ, ledger, SSRF). SaaS and Redis-backed senders can't join your local transaction; broker-outbox libraries ride it but stop at a message broker.
+CommitCourier combines both halves: the outbox row is written **inside your transaction** (so dual-write inconsistency is impossible) _and_ carried all the way to **webhook-grade HTTP delivery** (signing, retries, DLQ, ledger, SSRF). SaaS and Redis-backed senders can't join your local transaction; broker-outbox libraries ride it but stop at a message broker.
+
+It isn't the only embedded library in this space — [Postel](https://postel.sh) takes a comparable transactional-outbox approach and casts wider in some directions (a polyglot roadmap, SQLite, and inbound webhook _receiving_). CommitCourier's focus is depth on Postgres: SSRF protection, at-rest secret encryption, an endpoint circuit breaker, OpenTelemetry, a LISTEN/NOTIFY low-latency accelerator, `pg` / Knex / Drizzle / Prisma adapters, a `doctor` CLI, a read-only DLQ inspection + replay API, and an optional handoff to a delivery SaaS via the `sink` transport.
 
 ## Features
 
@@ -192,7 +197,7 @@ Only CommitCourier combines both halves: the outbox row is written **inside your
 - **Serverless / cron friendly** — `relay.dispatchOnce()` drains the queue once and returns, so you can deliver from a Lambda or cron tick without a long-lived process.
 - **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops filling the DLQ.
 - **Built-in retention** — `relay.prune({ olderThan })` deletes old terminal rows in bounded batches (active rows are never touched), so tables don't grow forever.
-- **SSRF protection on by default** — private / loopback / link-local / cloud-metadata destinations are blocked.
+- **SSRF protection on by default** — common private, loopback, link-local, cloud-metadata, and other non-public network targets (shared/CGNAT, multicast, broadcast, reserved/documentation ranges) are blocked, against both the parsed URL host and every DNS-resolved IP, with the vetted IP pinned at connect time.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
 - **Observe mode** — record what _would_ be sent without sending, for safe phased rollout.
 - **Built-in at-rest encryption** for signing secrets — plug in `cipher` (a built-in WebCrypto AES-256-GCM helper, or your own KMS/Vault adapter) to keep `secret_snapshot` / endpoint secrets as ciphertext in the DB. At-rest encryption is a precondition (this, DB disk encryption, or column encryption); skipping it triggers a startup warning.
@@ -252,6 +257,21 @@ manual cancel           ─▶ cancelled
 ```
 
 If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` exceeds the visibility timeout (`reclaimAfterMs`, default 5 min); the next tick reclaims it back to `pending`. That's how CommitCourier guarantees **at-least-once**.
+
+### Retry & failure classification
+
+What happens to a delivery is a stable part of the contract:
+
+| Outcome of an attempt                                   | Action                                                                                              |
+| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `2xx`                                                   | `delivered` (terminal).                                                                              |
+| `410 Gone`                                              | Straight to `dead` **without** consuming the retry budget; a registered endpoint is also disabled.  |
+| Any other `4xx` / `5xx`                                 | Retry with exponential backoff until `retry.maxAttempts`, then `dead` (DLQ).                         |
+| Network error / connection reset / TLS / timeout        | Same as above — retried, then `dead`.                                                                |
+| `SSRF_BLOCKED` (destination resolved to a blocked IP)   | Retryable failure, surfaced on every attempt; ends in `dead` if it never clears.                    |
+| Missing/invalid signing secret (pre-HTTP, deterministic)| Straight to `dead` (the endpoint is not disabled — the row, not the endpoint, is the problem).      |
+
+A server-sent `Retry-After` (delta-seconds or an HTTP-date) is honoured when it exceeds the computed backoff, clamped to `retry.capMs` so a hostile or buggy header cannot park a row indefinitely; an unparseable value falls back to the normal backoff. Only `2xx` is treated as success.
 
 ## Configuration
 
@@ -313,9 +333,9 @@ const { cancelled } = await relay.cancel(outboxId);
 
 // Replay: re-enqueue as fresh pending copies. By id…
 const { ids } = await relay.replay({ outboxId });
-// …or by filter (e.g. everything dead since a timestamp). The selection is capped for safety:
+// …or by filter (e.g. everything dead for one endpoint since a timestamp). The selection is capped:
 const res = await relay.replay({
-  filter: { status: "dead", since: new Date(Date.now() - 86_400_000) },
+  filter: { status: "dead", endpointId, since: new Date(Date.now() - 86_400_000) },
 });
 // `res.capped === true` means the cap truncated the match set, so not everything was re-sent. To
 // replay more, NARROW the filter (e.g. by `endpointId` or a tighter `since`) or raise `filter.limit` —
@@ -325,6 +345,14 @@ const res = await relay.replay({
 // Disable a registered endpoint.
 await relay.endpoints.disable(endpointId);
 ```
+
+### Delivery hooks
+
+`createRelay({ hooks })` accepts `onDelivered` / `onRetry` / `onDead`, each called with a secret-free `DeliveryEvent` (id, event type, attempt number, endpoint id, host, status, error, duration — never the payload or signing secret). The contract:
+
+- **Fired only after the row's state transition actually commits.** A worker that lost its lease to a visibility-timeout reclaim records its ledger attempt but fires **no** hook — the worker that owns the row does.
+- **At-least-once, not exactly-once.** A retry fires `onRetry` again, and a redelivery after a crash can fire `onDelivered` more than once. Treat them as notifications keyed by `id` + attempt, not as a ledger (the ledger is `relay.attempts`).
+- **Fail-open.** A throwing hook is caught, logged, and swallowed; it never rolls back the delivery state or stalls the dispatcher. Keep hooks fast — they run inline on the dispatch path (offload slow work to your own queue).
 
 ### Graceful shutdown
 
@@ -405,7 +433,7 @@ The logger also surfaces startup warnings for dangerous-but-valid config (e.g. a
 
 ### OpenTelemetry (tracing & metrics)
 
-The optional `commitcourier/otel` adapter (v1.2) maps deliveries onto OpenTelemetry spans and metrics. It depends on `@opentelemetry/api` as an optional peer dependency, so the main entry never pulls OTel into scope. Wire the result into `createRelay`:
+The optional `commitcourier/otel` adapter maps deliveries onto OpenTelemetry spans and metrics. It depends on `@opentelemetry/api` as an optional peer dependency, so the main entry never pulls OTel into scope. Wire the result into `createRelay`:
 
 ```ts
 import { trace, metrics } from "@opentelemetry/api";
@@ -425,7 +453,7 @@ The counter and histogram are recorded **per delivery attempt** (each retry coun
 
 ### Low-latency delivery (accelerator)
 
-By default the dispatcher polls, so a row enqueued onto a quiet queue waits up to `pollIntervalMs` before delivery starts. The optional **accelerator (v2)** cuts that wait: each enqueue wakes a listening dispatcher so delivery begins near-immediately. The outbox row stays the single source of truth — a missed wake only delays delivery (the poller still reclaims the row), so the accelerator never affects correctness or availability.
+By default the dispatcher polls, so a row enqueued onto a quiet queue waits up to `pollIntervalMs` before delivery starts. The optional **accelerator** cuts that wait: each enqueue wakes a listening dispatcher so delivery begins near-immediately. The outbox row stays the single source of truth — a missed wake only delays delivery (the poller still reclaims the row), so the accelerator never affects correctness or availability.
 
 The first implementation, `commitcourier/accelerator/pg`, uses Postgres LISTEN/NOTIFY (no extra infrastructure). The `NOTIFY` rides the enqueue transaction, so a listener never wakes before the row is visible; the LISTEN runs on its own self-healing connection.
 
@@ -499,7 +527,7 @@ Configuration
 
 ### Inspecting the DLQ (`dead` rows)
 
-Use the read-only `relay.list({ filter })` API (v1.2) to inspect dead rows before replaying. It returns secret-free rows newest-first (by a monotonic `seq`) with keyset pagination — `replay({ filter })` then **re-enqueues** the ones you choose (a write):
+Use the read-only `relay.list({ filter })` API to inspect dead rows before replaying. It returns secret-free rows newest-first (by a monotonic `seq`) with keyset pagination — `replay({ filter })` then **re-enqueues** the ones you choose (a write):
 
 ```ts
 // First page of the DLQ, newest first.
@@ -570,9 +598,9 @@ It returns `false` (never throws) for a stale timestamp (default tolerance 300s,
 
 - No phantom / lost webhooks from dual-write — the outbox row is atomic with your business transaction.
 - No event loss on process crash — at-least-once via visibility-timeout reclaim.
-- No double delivery across instances — `FOR UPDATE SKIP LOCKED`.
+- No concurrent double-claim across instances — `FOR UPDATE SKIP LOCKED` stops two dispatchers grabbing the same row at once. Delivery is still **at-least-once**, not exactly-once: a crash after a successful HTTP send but before the status commit is redelivered once the visibility-timeout reclaim kicks in (see Non-goals).
 - Tamper / spoof detection — Standard Webhooks signatures.
-- Outbound SSRF blocked by default.
+- Outbound SSRF: common private, loopback, link-local, metadata, and other non-public targets are blocked by default (best-effort, not an absolute guarantee — see the [security policy](./SECURITY.md)).
 
 **Non-goals** (called out honestly)
 
@@ -582,9 +610,27 @@ It returns `false` (never throws) for a stale timestamp (default tolerance 300s,
 - **Encryption-key management.** At-rest encryption of signing secrets is a precondition you must meet — via DB disk encryption, column encryption, or a `cipher` (see Configuration). When you use a `cipher`, managing the key itself (storage, distribution, rotation) is yours. Without a `cipher`, `createRelay` warns at startup and at-rest encryption is your database's responsibility; acknowledge with `unsafeAllowPlaintextSecrets: true`.
 - Inbound webhook _receiving_ (an HTTP server / framework integration) and a customer-facing management portal UI. A receiver-side `verifySignature` helper _is_ provided (see [Verifying signatures](#verifying-signatures-receiver-side)); standing up the endpoint is yours.
 
+## Migrations
+
+`store.migrate()` applies the schema. It creates **three business tables plus one migration-tracking table** (four total) in your existing database:
+
+| Table                       | Purpose                                                                    | Retention                                  |
+| --------------------------- | -------------------------------------------------------------------------- | ------------------------------------------ |
+| `webhook_outbox`            | The queue + source of truth; one row per enqueued event.                   | Prune terminal rows with `relay.prune`.    |
+| `webhook_delivery_attempts` | Append-only delivery ledger; one row per attempt (cascades from outbox).   | Removed with its outbox row (`ON DELETE CASCADE`). |
+| `webhook_endpoints`         | Optional registered-endpoint registry (only the registered-endpoint flow). | Long-lived config; not pruned.             |
+| `commitcourier_migrations`  | Tracks which migrations have been applied. Not your data — never pruned.    | Permanent.                                 |
+
+Policy:
+
+- **Forward-only.** Migrations are applied in order and are **idempotent** (re-running `migrate()` is safe and a no-op once applied — it records each applied script in `commitcourier_migrations` and runs only the not-yet-applied ones). There are no down/rollback scripts; roll forward.
+- **Concurrency-safe.** `migrate()` takes a Postgres transaction-scoped advisory lock (`pg_advisory_xact_lock`), so running it from several instances at deploy time serialises rather than racing.
+- **Expand-and-contract.** Schema changes avoid immediately dropping or renaming existing columns, so an old app version and a new schema can co-exist during a rolling deploy.
+- **When to run.** Run it once at deploy time (a release/CI step or app boot before the dispatcher starts) — not on every request. `commitcourier doctor` reports any pending migrations.
+
 ## Removing CommitCourier
 
-CommitCourier is non-invasive and reversible. Everything lives in three dedicated tables (`webhook_outbox`, `webhook_delivery_attempts`, `webhook_endpoints`). Stop the dispatcher, remove the `enqueue` calls, and drop those tables — your business schema is untouched.
+CommitCourier is non-invasive and reversible. Everything lives in the four dedicated tables above (`webhook_outbox`, `webhook_delivery_attempts`, `webhook_endpoints`, `commitcourier_migrations`) — all prefixed and namespaced. Stop the dispatcher, remove the `enqueue` calls, and drop those tables — your business schema is untouched.
 
 ## API surface
 
@@ -648,13 +694,32 @@ const relay = await createRelay({
 
 In `sink` mode, signing / SSRF / circuit breaker are delegated to the SaaS. Implement the `Sink` port (`commitcourier/forward`) yourself to target any other provider.
 
-## Status & roadmap
+## Feature status
 
-- **v1 (current):** Postgres store, `pg` + Knex adapters, transactional enqueue, poller-based dispatcher (no external queue), Standard Webhooks signing (single key), retry / backoff / jitter / DLQ, delivery ledger, replay by id, SSRF protection, observe mode, a registered-endpoint admin API (`register` / `update` / `enable` / `disable` / `get`), optional at-rest secret encryption (`cipher`), and throughput tuning (partial claim/reclaim indexes, undici keep-alive, an optional registered-endpoint cache, adaptive idle polling).
-- **v1.1:** key rotation / dual signing (`endpoints.rotateSecret` / `finalizeRotation`), `Retry-After` support, immediate `410 Gone` endpoint invalidation, opt-in per-endpoint FIFO (`createDispatcher({ ordering: "per-endpoint" })`), and Drizzle (`commitcourier/store/drizzle`) + Prisma (`commitcourier/store/prisma`) adapters.
-- **v1.2:** read-only DLQ/outbox list API (`relay.list({ status: "dead", … })`, secret-free, seq-keyset paging), endpoint listing (`endpoints.list({ status, … })`), and the OpenTelemetry adapter (`commitcourier/otel` — span per delivery + outcome counter/duration histogram, via the fail-open `instrument` / `hooks` seam).
-- **v2:** Low-latency delivery accelerator (generic `Accelerator` seam + Postgres LISTEN/NOTIFY adapter `commitcourier/accelerator/pg`; the outbox row stays the source of truth), schema migration version table (`commitcourier_migrations` + incremental `migrate()`). A BullMQ accelerator and further endpoint-management API remain planned on the same seams.
-- **v2.1:** operability — cancel a not-yet-sent row (`relay.cancel`), one-shot serverless/cron drain (`relay.dispatchOnce` / `dispatcher.runOnce`), single-row read (`relay.get`), a replay safety cap (`replay` returns `{ ids, capped }`), an opt-in endpoint circuit breaker (`createRelay({ circuitBreaker: { failureThreshold } })`), and built-in retention/pruning (`relay.prune({ olderThan })`).
+CommitCourier is pre-1.0 (`0.x`). During `0.x`, a **minor** release may contain breaking changes; the table sets expectations per surface (see [Compatibility & support](#compatibility--support) for the full policy). The full list of shipped capabilities is in [Features](#features) and the [CHANGELOG](./CHANGELOG.md).
+
+| Stability                                          | Surface                                                                                                                                                                                                          |
+| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Stable**                                         | Transactional `enqueue`, the HTTP dispatcher, the `pg` / Knex / Drizzle / Prisma stores, retry / backoff / jitter, the delivery-attempts ledger, the DLQ, Standard Webhooks signing, SSRF protection, and at-rest secret encryption. |
+| **Beta** — may change in a minor                   | The registered-endpoint admin API, the circuit breaker, the registered-endpoint cache, the OpenTelemetry adapter, the LISTEN/NOTIFY accelerator, replay, retention/pruning, `cancel`, and the `doctor` CLI.       |
+| **Experimental** — may change in a minor (opt-in subpath) | The generic `sink` transport (`commitcourier/forward`) and the Svix sample adapter (`commitcourier/forward/svix`).                                                                                          |
+
+## Compatibility & support
+
+| Dependency     | Supported                                                                                  |
+| -------------- | ------------------------------------------------------------------------------------------ |
+| **Node.js**    | 22.19.0+.                                                                                   |
+| **PostgreSQL** | 12+ (the minimum; CI integration tests run against PostgreSQL 16).                          |
+| **Adapters**   | `pg`, `knex`, `drizzle-orm`, and `@prisma/client` are optional peer dependencies — install only the one you use; ranges are declared in `peerDependencies`. |
+
+- **SemVer in `0.x`.** Per SemVer, a minor (`0.y`) release may include breaking changes during `0.x`. Stable surfaces above are changed conservatively with CHANGELOG notes; Beta and Experimental surfaces are where breaking changes are most likely.
+- **Breaking changes** are called out in the [CHANGELOG](./CHANGELOG.md); once stabilised at `1.0`, the public API will follow SemVer in the usual way.
+- **Security fixes** and the supported-version / private-reporting policy live in the [security policy](./SECURITY.md).
+
+## Roadmap
+
+- **Toward 1.0:** stabilise the Beta surfaces and decide whether the `sink` transport graduates from experimental (a stable-API commitment) or stays a thin handoff.
+- **On the existing seams:** a BullMQ accelerator and further endpoint-management APIs, both building on the `Accelerator` / admin seams already in place.
 
 ## Security
 
