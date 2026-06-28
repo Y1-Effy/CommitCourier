@@ -150,6 +150,7 @@
     "test:mutation": "stryker run",
     "test:watch": "vitest",
     "lint:publish": "publint && attw --pack . --ignore-rules no-resolution",
+    "smoke:pack": "node scripts/smoke-pack.mjs",
     "api:check": "api-extractor run",
     "api:update": "api-extractor run --local",
     "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run test:unit",
