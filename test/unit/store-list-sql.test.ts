@@ -1,7 +1,8 @@
 /**
  * Docker-free guard for the read-only list/DLQ query builders (v1.2). Locks the secret-free column
- * sets, keyset ordering, filter/cursor placeholders (both `$n` and `?` styles), the page-size clamp,
- * and the `nextCursor` derivation the four relational adapters share via these helpers.
+ * sets, keyset ordering, numbered (`$n`) filter/cursor placeholders (knex translates them to `?` via
+ * numberedToQmark), the page-size clamp, and the `nextCursor` derivation the four relational adapters
+ * share via these helpers.
  */
 import { describe, expect, it } from "vitest";
 import {
@@ -14,6 +15,7 @@ import {
   clampListLimit,
   LIST_DEFAULT_LIMIT,
   LIST_MAX_LIMIT,
+  numberedToQmark,
 } from "../../src/store/_shared";
 
 describe("list column sets are secret-free", () => {
@@ -33,7 +35,7 @@ describe("list column sets are secret-free", () => {
 
 describe("buildOutboxListQuery", () => {
   it("orders newest-first by seq and clamps the limit when no filter is given (pg)", () => {
-    const { sql, params } = buildOutboxListQuery({}, "numbered");
+    const { sql, params } = buildOutboxListQuery({});
     expect(sql).toContain("ORDER BY seq DESC");
     expect(sql).not.toContain("WHERE");
     // Only the LIMIT binding is present, defaulted.
@@ -43,10 +45,13 @@ describe("buildOutboxListQuery", () => {
 
   it("emits status/since/endpointId filters and a bigint-cast cursor in textual order (pg)", () => {
     const since = new Date(0);
-    const { sql, params } = buildOutboxListQuery(
-      { status: "dead", since, endpointId: "ep-1", cursor: "42", limit: 10 },
-      "numbered",
-    );
+    const { sql, params } = buildOutboxListQuery({
+      status: "dead",
+      since,
+      endpointId: "ep-1",
+      cursor: "42",
+      limit: 10,
+    });
     expect(sql).toContain("status = $1");
     expect(sql).toContain("created_at >= $2");
     expect(sql).toContain("endpoint_id = $3");
@@ -56,21 +61,20 @@ describe("buildOutboxListQuery", () => {
     expect(params).toEqual(["dead", since, "ep-1", "42", 10]);
   });
 
-  it("uses positional ? in the same textual order for knex.raw", () => {
-    const { sql, params } = buildOutboxListQuery({ status: "dead", cursor: "7" }, "qmark");
+  it("translates to positional ? in the same textual order for knex.raw", () => {
+    // The knex adapter runs the numbered SQL + params through numberedToQmark.
+    const built = buildOutboxListQuery({ status: "dead", cursor: "7" });
+    const { sql, bindings } = numberedToQmark(built.sql, built.params);
     expect(sql).toContain("status = ?");
     expect(sql).toContain("seq < (?)::bigint");
     expect(sql).toContain("LIMIT ?");
-    expect(params).toEqual(["dead", "7", LIST_DEFAULT_LIMIT]);
+    expect(bindings).toEqual(["dead", "7", LIST_DEFAULT_LIMIT]);
   });
 });
 
 describe("buildEndpointListQuery", () => {
   it("orders by id ascending, with an id-keyset cursor and status filter (pg)", () => {
-    const { sql, params } = buildEndpointListQuery(
-      { status: "active", cursor: "id-1", limit: 5 },
-      "numbered",
-    );
+    const { sql, params } = buildEndpointListQuery({ status: "active", cursor: "id-1", limit: 5 });
     expect(sql).toContain("ORDER BY id ASC");
     expect(sql).toContain("status = $1");
     expect(sql).toContain("id > $2");

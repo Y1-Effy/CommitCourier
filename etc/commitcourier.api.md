@@ -134,6 +134,25 @@ export interface DispatcherOptions {
 }
 
 // @public
+export interface DispatchStore {
+    applyTransition(id: string, t: Transition): Promise<void>;
+    claimDue(opts: {
+        limit: number;
+        lockedBy: string;
+        now: Date;
+        ordering?: "none" | "per-endpoint";
+    }): Promise<OutboxRow[]>;
+    completeAttempt(attempt: NewDeliveryAttempt, transition: Transition, expectedLockedBy: string | null): Promise<{
+        transitionApplied: boolean;
+    }>;
+    reclaimStuck(opts: {
+        reclaimAfterMs: number;
+        now: Date;
+    }): Promise<number>;
+    recordAttempt(attempt: NewDeliveryAttempt): Promise<void>;
+}
+
+// @public
 export interface EndpointAdmin {
     disable(endpointId: string): Promise<void>;
     enable(endpointId: string): Promise<void>;
@@ -194,6 +213,18 @@ export interface EndpointRow {
 }
 
 // @public
+export interface EndpointStore {
+    disableEndpoint(id: string, now: Date): Promise<void>;
+    findEndpoint(id: string): Promise<EndpointRow | null>;
+    insertEndpoint(ep: NewEndpointRow): Promise<void>;
+    listEndpoints(filter: EndpointListFilter): Promise<Page<EndpointSummary>>;
+    noteEndpointFailure(id: string, now: Date, threshold: number): Promise<void>;
+    noteEndpointSuccess(id: string): Promise<void>;
+    reactivateEndpoint(id: string): Promise<void>;
+    updateEndpoint(id: string, patch: EndpointPatch): Promise<void>;
+}
+
+// @public
 export interface EndpointSummary {
     // (undocumented)
     consecutiveFailures: number;
@@ -248,6 +279,17 @@ export interface Logger {
     info(msg: string, meta?: Record<string, unknown>): void;
     // (undocumented)
     warn(msg: string, meta?: Record<string, unknown>): void;
+}
+
+// @public
+export interface MaintenanceStore {
+    prune(opts: {
+        olderThan: Date;
+        statuses: Status[];
+        limit: number;
+    }): Promise<{
+        deleted: number;
+    }>;
 }
 
 // @public
@@ -330,6 +372,13 @@ export function onReclaim(): Transition;
 export function onSuccess(now: Date): Transition;
 
 // @public
+export interface OutboxEnqueueStore<TTx = unknown> {
+    insertOutbox(trx: TTx, row: NewOutboxRow): Promise<void>;
+    insertOutboxAutonomous(row: NewOutboxRow): Promise<void>;
+    insertOutboxMany(trx: TTx, rows: NewOutboxRow[]): Promise<void>;
+}
+
+// @public
 export interface OutboxListFilter {
     cursor?: string;
     // (undocumented)
@@ -371,6 +420,17 @@ export interface OutboxListItem {
     status: Status;
     // (undocumented)
     targetUrl: string | null;
+}
+
+// @public
+export interface OutboxQueryStore {
+    cancel(id: string): Promise<boolean>;
+    getOutbox(id: string): Promise<OutboxListItem | null>;
+    listOutbox(filter: OutboxListFilter): Promise<Page<OutboxListItem>>;
+    queryAttempts(opts: {
+        outboxId: string;
+    }): Promise<DeliveryAttempt[]>;
+    stats(): Promise<OutboxStats>;
 }
 
 // @public
@@ -549,6 +609,12 @@ export interface ReplayFilter {
 }
 
 // @public
+export interface ReplayStore {
+    insertReplayCopies(rows: NewOutboxRow[]): Promise<string[]>;
+    selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]>;
+}
+
+// @public
 export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig;
 
 // @public
@@ -568,6 +634,15 @@ export interface RetryConfig {
 export interface RunOnceOptions {
     maxRows?: number;
     reclaim?: boolean;
+}
+
+// @public
+export interface SchemaStore {
+    diagnose(): Promise<{
+        ok: boolean;
+        missingTables: string[];
+    }>;
+    migrate(): Promise<void>;
 }
 
 // @public
@@ -648,54 +723,7 @@ export type SsrfDecision = {
 export type Status = "pending" | "in_flight" | "delivered" | "dead" | "observed" | "cancelled";
 
 // @public
-export interface Store<TTx = unknown> {
-    applyTransition(id: string, t: Transition): Promise<void>;
-    cancel(id: string): Promise<boolean>;
-    claimDue(opts: {
-        limit: number;
-        lockedBy: string;
-        now: Date;
-        ordering?: "none" | "per-endpoint";
-    }): Promise<OutboxRow[]>;
-    completeAttempt(attempt: NewDeliveryAttempt, transition: Transition, expectedLockedBy: string | null): Promise<{
-        transitionApplied: boolean;
-    }>;
-    diagnose(): Promise<{
-        ok: boolean;
-        missingTables: string[];
-    }>;
-    disableEndpoint(id: string, now: Date): Promise<void>;
-    findEndpoint(id: string): Promise<EndpointRow | null>;
-    getOutbox(id: string): Promise<OutboxListItem | null>;
-    insertEndpoint(ep: NewEndpointRow): Promise<void>;
-    insertOutbox(trx: TTx, row: NewOutboxRow): Promise<void>;
-    insertOutboxAutonomous(row: NewOutboxRow): Promise<void>;
-    insertOutboxMany(trx: TTx, rows: NewOutboxRow[]): Promise<void>;
-    insertReplayCopies(rows: NewOutboxRow[]): Promise<string[]>;
-    listEndpoints(filter: EndpointListFilter): Promise<Page<EndpointSummary>>;
-    listOutbox(filter: OutboxListFilter): Promise<Page<OutboxListItem>>;
-    migrate(): Promise<void>;
-    noteEndpointFailure(id: string, now: Date, threshold: number): Promise<void>;
-    noteEndpointSuccess(id: string): Promise<void>;
-    prune(opts: {
-        olderThan: Date;
-        statuses: Status[];
-        limit: number;
-    }): Promise<{
-        deleted: number;
-    }>;
-    queryAttempts(opts: {
-        outboxId: string;
-    }): Promise<DeliveryAttempt[]>;
-    reactivateEndpoint(id: string): Promise<void>;
-    reclaimStuck(opts: {
-        reclaimAfterMs: number;
-        now: Date;
-    }): Promise<number>;
-    recordAttempt(attempt: NewDeliveryAttempt): Promise<void>;
-    selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]>;
-    stats(): Promise<OutboxStats>;
-    updateEndpoint(id: string, patch: EndpointPatch): Promise<void>;
+export interface Store<TTx = unknown> extends OutboxEnqueueStore<TTx>, DispatchStore, EndpointStore, OutboxQueryStore, ReplayStore, MaintenanceStore, SchemaStore {
 }
 
 // @public

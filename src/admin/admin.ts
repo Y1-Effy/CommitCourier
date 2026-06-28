@@ -14,7 +14,10 @@ import {
   DEFAULT_PRUNE_STATUSES,
 } from "../store/_shared";
 import type {
-  Store,
+  OutboxQueryStore,
+  EndpointStore,
+  ReplayStore,
+  MaintenanceStore,
   ReplayFilter,
   NewOutboxRow,
   NewEndpointRow,
@@ -27,7 +30,7 @@ import type {
 } from "../store/store";
 
 /** Read the delivery ledger for one outbox row. */
-export function attempts(store: Store, outboxId: string): Promise<DeliveryAttempt[]> {
+export function attempts(store: OutboxQueryStore, outboxId: string): Promise<DeliveryAttempt[]> {
   return store.queryAttempts({ outboxId });
 }
 
@@ -48,7 +51,7 @@ const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0
  * the rejection is delivered through the returned Promise, never thrown synchronously.
  */
 export async function listOutbox(
-  store: Store,
+  store: OutboxQueryStore,
   filter: OutboxListFilter = {},
 ): Promise<Page<OutboxListItem>> {
   if (filter.status !== undefined && !(ALL_STATUSES as readonly string[]).includes(filter.status)) {
@@ -79,7 +82,7 @@ export async function listOutbox(
  * delivered through the returned Promise, never thrown synchronously.
  */
 export async function listEndpoints(
-  store: Store,
+  store: EndpointStore,
   filter: EndpointListFilter = {},
 ): Promise<Page<EndpointSummary>> {
   if (
@@ -103,7 +106,10 @@ export async function listEndpoints(
  * unknown, so a caller can tell "stopped in time" from "too late". Validates the id up front so a
  * malformed value fails as a clean `INVALID_ARGUMENT` rather than a raw uuid-cast error.
  */
-export async function cancel(store: Store, outboxId: string): Promise<{ cancelled: boolean }> {
+export async function cancel(
+  store: OutboxQueryStore,
+  outboxId: string,
+): Promise<{ cancelled: boolean }> {
   if (!UUID_RE.test(outboxId)) {
     throw new RelayError("INVALID_ARGUMENT", `cancel: outboxId must be a uuid, got "${outboxId}"`);
   }
@@ -114,7 +120,10 @@ export async function cancel(store: Store, outboxId: string): Promise<{ cancelle
  * Fetch one outbox row by id (read-only, secret-free), or null when unknown. Validates the id so a
  * malformed value fails as a clean `INVALID_ARGUMENT` rather than a raw uuid-cast error.
  */
-export async function getOutbox(store: Store, outboxId: string): Promise<OutboxListItem | null> {
+export async function getOutbox(
+  store: OutboxQueryStore,
+  outboxId: string,
+): Promise<OutboxListItem | null> {
   if (!UUID_RE.test(outboxId)) {
     throw new RelayError("INVALID_ARGUMENT", `get: outboxId must be a uuid, got "${outboxId}"`);
   }
@@ -133,7 +142,7 @@ export async function getOutbox(store: Store, outboxId: string): Promise<OutboxL
  * rows untouched, so an identical call re-selects the same head rows and re-sends them (duplicates).
  */
 export async function replay(
-  store: Store,
+  store: ReplayStore,
   now: Date,
   opts: { outboxId: string } | { filter: ReplayFilter },
 ): Promise<{ ids: string[]; capped: boolean }> {
@@ -186,7 +195,10 @@ export interface PruneOptions {
  * may remain, so call again to keep pruning. Validates that every requested status is prunable
  * (non-active) up front, so a `pending`/`in_flight` row is never deleted.
  */
-export async function prune(store: Store, opts: PruneOptions): Promise<{ deleted: number }> {
+export async function prune(
+  store: MaintenanceStore,
+  opts: PruneOptions,
+): Promise<{ deleted: number }> {
   if (!(opts.olderThan instanceof Date) || Number.isNaN(opts.olderThan.getTime())) {
     throw new RelayError("INVALID_ARGUMENT", "prune: olderThan must be a valid Date");
   }
@@ -205,7 +217,7 @@ export async function prune(store: Store, opts: PruneOptions): Promise<{ deleted
 
 /** Register a new endpoint (status defaults to `active`). Returns the generated id. */
 export async function registerEndpoint(
-  store: Store,
+  store: EndpointStore,
   input: {
     url: string;
     secret: string;
@@ -225,7 +237,11 @@ export async function registerEndpoint(
 }
 
 /** Patch a registered endpoint; only the provided fields change. */
-export function updateEndpoint(store: Store, id: string, patch: EndpointPatch): Promise<void> {
+export function updateEndpoint(
+  store: EndpointStore,
+  id: string,
+  patch: EndpointPatch,
+): Promise<void> {
   return store.updateEndpoint(id, patch);
 }
 
@@ -235,7 +251,7 @@ export function updateEndpoint(store: Store, id: string, patch: EndpointPatch): 
  * one. Throws `ENDPOINT_NOT_FOUND` when the id is unknown.
  */
 export async function rotateEndpointSecret(
-  store: Store,
+  store: EndpointStore,
   id: string,
   newSecret: string,
 ): Promise<void> {
@@ -245,7 +261,7 @@ export async function rotateEndpointSecret(
 }
 
 /** Finish a key rotation: drop the secondary secret so deliveries sign with the new key only. */
-export function finalizeRotation(store: Store, id: string): Promise<void> {
+export function finalizeRotation(store: EndpointStore, id: string): Promise<void> {
   return store.updateEndpoint(id, { secretSecondary: null });
 }
 
@@ -257,16 +273,20 @@ export function finalizeRotation(store: Store, id: string): Promise<void> {
  * single-UPDATE the circuit breaker's half-open recovery uses (`status='active'`,
  * `consecutive_failures=0`, `disabled_at=NULL`), so manual and automatic recovery behave identically.
  */
-export function enableEndpoint(store: Store, id: string): Promise<void> {
+export function enableEndpoint(store: EndpointStore, id: string): Promise<void> {
   return store.reactivateEndpoint(id);
 }
 
 /** Look up a registered endpoint. */
-export function getEndpoint(store: Store, id: string): Promise<EndpointRow | null> {
+export function getEndpoint(store: EndpointStore, id: string): Promise<EndpointRow | null> {
   return store.findEndpoint(id);
 }
 
 /** Disable a registered endpoint so no further deliveries target it. */
-export function disableEndpoint(store: Store, endpointId: string, now: Date): Promise<void> {
+export function disableEndpoint(
+  store: EndpointStore,
+  endpointId: string,
+  now: Date,
+): Promise<void> {
   return store.disableEndpoint(endpointId, now);
 }

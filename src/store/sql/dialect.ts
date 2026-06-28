@@ -16,20 +16,19 @@ export interface SqlDialect {
   readonly name: string;
   /**
    * The claim statement (atomic `SELECT ... FOR UPDATE SKIP LOCKED` then `UPDATE ... RETURNING`),
-   * rendered for each driver's placeholder convention:
-   * - `numbered`: `$1, $2, …` (node-postgres), bindings `[now, limit, lockedBy]` ($1 reused).
-   * - `qmark`: positional `?` (knex.raw), bindings `[now, limit, now, lockedBy]`.
+   * rendered with numbered (`$1, $2, …`) placeholders and bindings `[now, limit, lockedBy]` (`$1`
+   * reused for both `now` slots). The knex adapter translates it to positional `?` via
+   * `numberedToQmark`, which re-binds the reused `$1`.
    */
-  readonly claimSql: { readonly numbered: string; readonly qmark: string };
+  readonly claimSql: string;
   /**
    * Opt-in per-endpoint FIFO claim (v1.1). Same atomic shape as {@link claimSql}, but claims at most
    * the single oldest due row per registered endpoint and only when that endpoint has no earlier
    * non-terminal row in flight or awaiting retry — so deliveries to one endpoint stay strictly
-   * ordered. Inline (null-endpoint) rows are unaffected (claimed as in {@link claimSql}). Bindings:
-   * - `numbered`: `[now, limit, lockedBy]` ($1 reused for every `now` slot).
-   * - `qmark`: `[now, now, limit, now, lockedBy]` (`now` appears in two filters and the SET).
+   * ordered. Inline (null-endpoint) rows are unaffected (claimed as in {@link claimSql}). Numbered
+   * (`$n`) with bindings `[now, limit, lockedBy]` (`$1` reused for every `now` slot).
    */
-  readonly claimSqlPerEndpoint: { readonly numbered: string; readonly qmark: string };
+  readonly claimSqlPerEndpoint: string;
   /** Object-existence probe whose result row is consumed by the shared diagnose helpers. */
   readonly diagnoseSql: string;
 }

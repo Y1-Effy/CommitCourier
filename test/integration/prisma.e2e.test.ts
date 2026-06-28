@@ -14,11 +14,12 @@ import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import type { Pool } from "pg";
-import { sign } from "../../src/core/index";
+import { sign, onSuccess } from "../../src/core/index";
 import { prismaStore, type PrismaTx } from "../../src/store/prisma";
 import { createRelay } from "../../src/relay";
 import type { Relay } from "../../src/relay";
 import type { EnqueueInput } from "../../src/core/index";
+import type { NewOutboxRow, NewDeliveryAttempt } from "../../src/store/store";
 import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "./_helpers";
 
 const CLIENT_PATH = fileURLToPath(new URL("./.prisma-client/client.ts", import.meta.url));
@@ -257,6 +258,53 @@ describe.skipIf(!dockerAvailable() || !prismaClientAvailable)(
       const found = eps.items.find((e) => e.id === epId);
       expect(found).toBeTruthy();
       expect(found).not.toHaveProperty("secret");
+    });
+
+    it("completeAttempt is guarded by locked_by over Prisma: a stale worker appends the ledger but does not transition", async () => {
+      // The locked_by guard's transitionApplied result comes from Prisma's `$executeRawUnsafe` affected
+      // count on the CTE UPDATE — a path the pg/knex/drizzle contract suite covers but the Prisma exec
+      // seam does not. Drive the store directly to exercise it.
+      const store = prismaStore({ prisma });
+      const id = randomUUID();
+      const row: NewOutboxRow = {
+        id,
+        eventType: "order.created",
+        payload: { n: 1 },
+        endpointId: null,
+        targetUrl: "https://x.test/h",
+        secretSnapshot: "whsec",
+        status: "pending",
+        attempts: 0,
+        availableAt: new Date(),
+        idempotencyKey: null,
+      };
+      await store.insertOutboxAutonomous(row);
+
+      const claimed = await store.claimDue({ limit: 10, lockedBy: "w1", now: new Date() });
+      expect(claimed.map((r) => r.id)).toContain(id);
+
+      const attempt = (n: number): NewDeliveryAttempt => ({
+        outboxId: id,
+        attemptNo: n,
+        requestHeaders: {},
+        responseStatus: 200,
+        responseBodySnippet: "ok",
+        durationMs: 1,
+        error: null,
+      });
+
+      // A worker that no longer holds the lock must NOT transition the row (transitionApplied=false),
+      // even though it is still in_flight, but its ledger attempt is still recorded.
+      const stale = await store.completeAttempt(attempt(1), onSuccess(new Date()), "w-stale");
+      expect(stale.transitionApplied).toBe(false);
+      expect(await statusOf(id)).toBe("in_flight");
+      expect(await store.queryAttempts({ outboxId: id })).toHaveLength(1);
+
+      // The lock owner transitions it (transitionApplied=true) and its attempt is also recorded.
+      const owner = await store.completeAttempt(attempt(2), onSuccess(new Date()), "w1");
+      expect(owner.transitionApplied).toBe(true);
+      expect(await statusOf(id)).toBe("delivered");
+      expect(await store.queryAttempts({ outboxId: id })).toHaveLength(2);
     });
     /* eslint-enable @typescript-eslint/no-explicit-any, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
   },

@@ -13,7 +13,7 @@ import { randomBytes } from "node:crypto";
 import pLimit, { type LimitFunction } from "p-limit";
 import { RelayError } from "../core/index";
 import type { OutboxRow, RelayConfig } from "../core/index";
-import type { Store } from "../store/store";
+import type { DispatchStore } from "../store/store";
 import type { WakeSignal } from "../accelerator/accelerator";
 
 export interface DispatcherOptions {
@@ -148,7 +148,7 @@ function makeLockedBy(): string {
 
 /** Everything the continuous dispatch loop needs, bundled so it can live at module scope. */
 interface LoopCtx {
-  store: Store;
+  store: DispatchStore;
   deliver: (row: OutboxRow) => Promise<void>;
   config: RelayConfig;
   opts: ResolvedOptions;
@@ -163,7 +163,7 @@ interface LoopCtx {
 
 /** One-shot visibility-timeout reclaim (fail-open): used by runOnce before draining. */
 async function reclaimQuietly(
-  store: Store,
+  store: DispatchStore,
   opts: ResolvedOptions,
   config: RelayConfig,
 ): Promise<void> {
@@ -251,7 +251,7 @@ async function runLoop(ctx: LoopCtx): Promise<void> {
 }
 
 export function createDispatcher(deps: {
-  store: Store;
+  store: DispatchStore;
   deliver: (row: OutboxRow) => Promise<void>;
   config: RelayConfig;
   options?: DispatcherOptions;

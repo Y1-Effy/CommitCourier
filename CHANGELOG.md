@@ -19,6 +19,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   caps the serialized payload's UTF-8 byte length. Exposed as the pure helper `validatePayload` from
   `commitcourier/core`.
 
+### Changed
+
+- **`Store` decomposed into capability roles (additive, non-breaking).** The single ~25-method
+  `Store<TTx>` port is now the composition of seven focused role interfaces —
+  `OutboxEnqueueStore<TTx>`, `DispatchStore`, `EndpointStore`, `OutboxQueryStore`, `ReplayStore`,
+  `MaintenanceStore`, and `SchemaStore` — each documenting its own atomicity/transaction contract.
+  `Store` still extends all of them, so the bundled `pg` / Knex / Drizzle / Prisma adapters and any
+  existing `Store` implementation are unchanged. Internally, each consumer now depends only on the
+  role it uses (e.g. the dispatcher on `DispatchStore`), and the roles are exported from
+  `commitcourier` so a third-party adapter author can see which methods belong to which concern.
+- **All four relational adapters de-duplicated behind a shared SQL store (internal, no behavior change).**
+  The `pg`, Drizzle, Prisma and Knex adapters previously each re-implemented the same Postgres SQL
+  (~300 lines apiece). That logic now lives once in an internal `createSqlStore` over a thin
+  per-adapter `SqlExecutor` seam (query / execute / insert-on-tx / withTx), so a new Store method is
+  written in one place instead of four. Knex binds positional `?` rather than `$n`, so it translates
+  the shared numbered SQL with a small `numberedToQmark` helper just before `knex.raw` (its
+  query-builder implementation is gone); the four adapters dropped from ~1310 to ~360 lines combined.
+  The SQL is effectively unchanged and the full integration / concurrency / fault suites pass against
+  Postgres 12/16/17. Separately, the shared `_shared.ts` plumbing was split by concern into
+  `store/sql/{constants,migrations,row-mappers,columns,query-builders,placeholders}.ts` (re-exported
+  from `_shared.ts`, so every import is unchanged). No public API change.
+
 ### Documentation
 
 - Quick start now injects `createConsoleLogger()` from the outset, so the default no-op logger does not
