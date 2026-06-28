@@ -97,7 +97,10 @@ export async function startPostgres(): Promise<{ conn: PgConn; stop: () => Promi
   const user = "commitcourier";
   const password = "commitcourier";
   const database = "commitcourier";
-  const container: StartedTestContainer = await new GenericContainer("postgres:16-alpine")
+  // Image is overridable via POSTGRES_IMAGE so CI can exercise the supported version range
+  // (e.g. the minimum and latest). Defaults to the version the local suite is developed against.
+  const image = process.env.POSTGRES_IMAGE ?? "postgres:16-alpine";
+  const container: StartedTestContainer = await new GenericContainer(image)
     .withEnvironment({ POSTGRES_USER: user, POSTGRES_PASSWORD: password, POSTGRES_DB: database })
     .withExposedPorts(5432)
     .withWaitStrategy(Wait.forLogMessage(/database system is ready to accept connections/, 2))

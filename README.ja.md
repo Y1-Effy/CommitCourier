@@ -58,7 +58,7 @@ npm install commitcourier
 npm install pg      # または: npm install knex
 ```
 
-**動作要件**：Node.js **22.19.0 以上**、**PostgreSQL 12 以上**（最低サポートバージョン。DDL は `GENERATED ALWAYS AS IDENTITY` と `FOR UPDATE SKIP LOCKED` を使用）。CI の integration テストは **PostgreSQL 16** に対して実行しています。**ESM/CJS** デュアルビルドと TypeScript 型定義を同梱します。`pg` と `knex` は **optional peer dependency** です。使う方だけをインストールしてください。
+**動作要件**：Node.js **22.19.0 以上**、**PostgreSQL 12 以上**（最低サポートバージョン。DDL は `GENERATED ALWAYS AS IDENTITY` と `FOR UPDATE SKIP LOCKED` を使用）。CI の integration テストは **PostgreSQL 12 / 16 / 17** に対して実行しています。**ESM/CJS** デュアルビルドと TypeScript 型定義を同梱します。`pg` と `knex` は **optional peer dependency** です。使う方だけをインストールしてください。
 
 ### 1. テーブルを作成する
 
@@ -708,7 +708,7 @@ CommitCourier は 1.0 前（`0.x`）です。`0.x` の間は **minor** リリー
 | 依存            | 対象                                                                                                    |
 | --------------- | ------------------------------------------------------------------------------------------------------- |
 | **Node.js**     | 22.19.0 以上。                                                                                          |
-| **PostgreSQL**  | 12 以上（最低ライン。CI の integration テストは PostgreSQL 16 で実行）。                                 |
+| **PostgreSQL**  | 12 以上（最低ライン。CI の integration テストは PostgreSQL 12 / 16 / 17 で実行）。                       |
 | **アダプタ**    | `pg` / `knex` / `drizzle-orm` / `@prisma/client` は optional peer dependency — 使う 1 つだけをインストール。範囲は `peerDependencies` に宣言。 |
 
 - **`0.x` の SemVer。** SemVer に従い、`0.x` の間は minor（`0.y`）リリースでも破壊的変更が入り得ます。上記 Stable サーフェスは CHANGELOG への記載とともに保守的に変更し、Beta / Experimental サーフェスは破壊的変更が最も起こりやすい領域です。

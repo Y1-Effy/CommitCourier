@@ -3,6 +3,7 @@
  * are served by their partial indexes rather than degrading to sequential scans. Throughput/latency
  * measurements live in throughput.test.ts; this asserts only the plan shape. Requires Docker.
  */
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool, type PoolClient } from "pg";
 import { postgresStore } from "../../src/store/pg";
@@ -26,15 +27,19 @@ describe.skipIf(!dockerAvailable())("index health (integration)", () => {
     stop = started.stop;
     pool = new Pool(conn);
     await postgresStore({ pool }).migrate();
+    // IDs are generated in JS (like the rest of the suite) rather than via SQL gen_random_uuid(),
+    // which is only built in on PostgreSQL 13+; this keeps the seeding portable down to PG 12.
     for (let i = 0; i < 50; i++) {
       await pool.query(
-        "INSERT INTO webhook_outbox (id, event_type, payload, target_url, status) VALUES (gen_random_uuid(), 'e', '{}'::jsonb, 'https://x.test/hook', 'pending')",
+        "INSERT INTO webhook_outbox (id, event_type, payload, target_url, status) VALUES ($1, 'e', '{}'::jsonb, 'https://x.test/hook', 'pending')",
+        [randomUUID()],
       );
     }
     // A few in_flight rows so the reclaim partial index has live entries to plan against.
     for (let i = 0; i < 10; i++) {
       await pool.query(
-        "INSERT INTO webhook_outbox (id, event_type, payload, target_url, status, locked_at, locked_by) VALUES (gen_random_uuid(), 'e', '{}'::jsonb, 'https://x.test/hook', 'in_flight', now() - interval '1 hour', 'w')",
+        "INSERT INTO webhook_outbox (id, event_type, payload, target_url, status, locked_at, locked_by) VALUES ($1, 'e', '{}'::jsonb, 'https://x.test/hook', 'in_flight', now() - interval '1 hour', 'w')",
+        [randomUUID()],
       );
     }
     await pool.query("ANALYZE webhook_outbox");

@@ -58,7 +58,7 @@ npm install commitcourier
 npm install pg      # or: npm install knex
 ```
 
-**Requirements:** Node.js **22.19.0+**, **PostgreSQL 12+** (the minimum supported version; the DDL uses `GENERATED ALWAYS AS IDENTITY` and `FOR UPDATE SKIP LOCKED`). CI integration tests run against **PostgreSQL 16**. Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
+**Requirements:** Node.js **22.19.0+**, **PostgreSQL 12+** (the minimum supported version; the DDL uses `GENERATED ALWAYS AS IDENTITY` and `FOR UPDATE SKIP LOCKED`). CI integration tests run against **PostgreSQL 12, 16, and 17**. Ships dual **ESM/CJS** builds with bundled TypeScript types. `pg` and `knex` are **optional peer dependencies** — install whichever one you use.
 
 ### 1. Create the tables
 
@@ -709,7 +709,7 @@ CommitCourier is pre-1.0 (`0.x`). During `0.x`, a **minor** release may contain 
 | Dependency     | Supported                                                                                  |
 | -------------- | ------------------------------------------------------------------------------------------ |
 | **Node.js**    | 22.19.0+.                                                                                   |
-| **PostgreSQL** | 12+ (the minimum; CI integration tests run against PostgreSQL 16).                          |
+| **PostgreSQL** | 12+ (the minimum; CI integration tests run against PostgreSQL 12, 16, and 17).              |
 | **Adapters**   | `pg`, `knex`, `drizzle-orm`, and `@prisma/client` are optional peer dependencies — install only the one you use; ranges are declared in `peerDependencies`. |
 
 - **SemVer in `0.x`.** Per SemVer, a minor (`0.y`) release may include breaking changes during `0.x`. Stable surfaces above are changed conservatively with CHANGELOG notes; Beta and Experimental surfaces are where breaking changes are most likely.
