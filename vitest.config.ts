@@ -3,7 +3,7 @@ import { defineConfig, type Plugin } from "vitest/config";
 // Load `.sql` files as a default-export string, mirroring the esbuild `text` loader used by the
 // tsup build, so source/tests resolve the embedded DDL the same way the bundle does. Declared per
 // project because `test.projects` entries do not inherit the root-level `plugins`.
-const rawSql: Plugin = {
+export const rawSql: Plugin = {
   name: "raw-sql",
   // Run before vite's import-analysis so the `.sql` content is turned into JS first.
   enforce: "pre",
