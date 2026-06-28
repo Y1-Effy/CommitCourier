@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-28
+
 ### Added（追加）
 
 - **enqueue payload の検証**：`enqueue` / `enqueueMany` / `enqueueUnsafe` は、`jsonb` として保存できない
@@ -182,5 +184,6 @@ npm への初の公開リリース。（下記の未公開 0.1.0 開発ベース
 
 > ⚠️ `1.0.0` 以前: API およびパッケージ名は今後変更される可能性があります。
 
-[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.2.0
