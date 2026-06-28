@@ -56,6 +56,22 @@ jobs:
       - name: Verify public API surface
         run: npm run api:check
 
+  # Pack the tarball and import it from a clean, separate project (ESM + CJS) so a broken
+  # published surface — missing files, wrong exports, an optional peer turned mandatory — fails
+  # CI rather than the first consumer's install.
+  pack-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Pack & install smoke test
+        run: npm run smoke:pack
+
   # Mutation testing is heavy, so run it as a separate job (core only).
   mutation:
     runs-on: ubuntu-latest
