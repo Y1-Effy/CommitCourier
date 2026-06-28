@@ -115,6 +115,19 @@ export async function startPostgres(): Promise<{ conn: PgConn; stop: () => Promi
   return { conn, stop: () => container.stop().then(() => undefined) };
 }
 
+/**
+ * Create a pg Pool with an `error` listener attached. node-postgres escalates an idle-client
+ * `error` to an uncaughtException when the pool has no `error` listener, so when a disposable
+ * container is stopped at teardown the resulting benign "terminating connection due to
+ * administrator command" (SQLSTATE 57P01) would otherwise fail the run as an unhandled error.
+ * Swallowing it here is safe: errors from awaited queries still surface to the caller as normal.
+ */
+export function newPgPool(conn: PgConn): Pool {
+  const pool = new Pool(conn);
+  pool.on("error", () => {});
+  return pool;
+}
+
 /** Sentinel thrown to force a knex transaction to roll back. */
 class RollbackSignal extends Error {}
 
@@ -123,7 +136,7 @@ const TRUNCATE_SQL =
 
 /** pg-backed harness. */
 export function pgHarness(conn: PgConn): Harness {
-  const pool = new Pool(conn);
+  const pool = newPgPool(conn);
   const store = postgresStore({ pool });
   return {
     name: "pg",
@@ -215,7 +228,7 @@ export function knexHarness(conn: PgConn): Harness {
 
 /** drizzle-backed harness (node-postgres). Uses the same pool for raw setup helpers. */
 export function drizzleHarness(conn: PgConn): Harness {
-  const pool = new Pool(conn);
+  const pool = newPgPool(conn);
   const db = drizzle(pool);
   const store = drizzleStore({ db });
   const rollbackIfRequested = async (

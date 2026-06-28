@@ -4,7 +4,7 @@
  * on both adapters. The transaction-typed `enqueue` is exposed only through `enqueueCommitted` /
  * `enqueueWithBusiness`; everything else is reached through `api` (TTx-independent).
  */
-import { Pool, type PoolClient } from "pg";
+import type { PoolClient } from "pg";
 import knexLib from "knex";
 import { drizzle } from "drizzle-orm/node-postgres";
 import { sql } from "drizzle-orm";
@@ -15,7 +15,7 @@ import { createRelay } from "../../src/relay";
 import type { Relay, RelayInit } from "../../src/relay";
 import type { EnqueueInput } from "../../src/core/index";
 import type { Store } from "../../src/store/store";
-import type { PgConn } from "./_helpers";
+import { newPgPool, type PgConn } from "./_helpers";
 
 /** The relay surface that does not depend on the transaction-handle type. */
 export type RelayApi = Omit<Relay<unknown>, "enqueue">;
@@ -44,7 +44,7 @@ export interface RelayHarness {
 class Rollback extends Error {}
 
 export async function pgRelay(conn: PgConn, init: RelayConfigInit): Promise<RelayHarness> {
-  const pool = new Pool(conn);
+  const pool = newPgPool(conn);
   const store = postgresStore({ pool });
   const relay = await createRelay({ store, ...init });
   return {
@@ -112,7 +112,7 @@ export async function knexRelay(conn: PgConn, init: RelayConfigInit): Promise<Re
 }
 
 export async function drizzleRelay(conn: PgConn, init: RelayConfigInit): Promise<RelayHarness> {
-  const pool = new Pool(conn);
+  const pool = newPgPool(conn);
   const db = drizzle(pool);
   const store = drizzleStore({ db });
   const relay = await createRelay({ store, ...init });

@@ -5,13 +5,13 @@
  * cleanly without one.
  */
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool, Client } from "pg";
+import { Client, type Pool } from "pg";
 import { postgresStore } from "../../src/store/pg";
 import { createPgAccelerator } from "../../src/accelerator/pg";
 import { createDispatcher } from "../../src/dispatcher/dispatcher";
 import { resolveConfig } from "../../src/core/index";
 import type { OutboxRow } from "../../src/core/index";
-import { dockerAvailable, startPostgres, sampleRow, type PgConn } from "./_helpers";
+import { dockerAvailable, newPgPool, startPostgres, sampleRow, type PgConn } from "./_helpers";
 
 describe.skipIf(!dockerAvailable())("accelerator (integration)", () => {
   let stop: () => Promise<void>;
@@ -23,7 +23,7 @@ describe.skipIf(!dockerAvailable())("accelerator (integration)", () => {
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    pool = new Pool(conn);
+    pool = newPgPool(conn);
     store = postgresStore({ pool });
     await store.migrate();
   });

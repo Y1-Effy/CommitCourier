@@ -5,9 +5,9 @@
  */
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { Pool, type PoolClient } from "pg";
+import type { Pool, PoolClient } from "pg";
 import { postgresStore } from "../../src/store/pg";
-import { dockerAvailable, startPostgres, type PgConn } from "../integration/_helpers";
+import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "../integration/_helpers";
 
 // The dispatcher's claim filter (02-store section 6): find pending rows that are due, oldest first.
 const DUE_QUERY =
@@ -25,7 +25,7 @@ describe.skipIf(!dockerAvailable())("index health (integration)", () => {
     const started = await startPostgres();
     conn = started.conn;
     stop = started.stop;
-    pool = new Pool(conn);
+    pool = newPgPool(conn);
     await postgresStore({ pool }).migrate();
     // IDs are generated in JS (like the rest of the suite) rather than via SQL gen_random_uuid(),
     // which is only built in on PostgreSQL 13+; this keeps the seeding portable down to PG 12.
