@@ -323,6 +323,34 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(ep?.disabledAt).toBeInstanceOf(Date);
     });
 
+    it("reactivateEndpoint resets the breaker counter so a re-enabled endpoint regains its full budget", async () => {
+      // admin.enableEndpoint routes through reactivateEndpoint (see admin-operability.test.ts); this
+      // proves the underlying SQL clears the marker AND resets consecutive_failures end-to-end (NF1) —
+      // otherwise the next failure would re-disable the endpoint immediately.
+      const epId = randomUUID();
+      await h().insertEndpoint({ id: epId, url: "https://ep.test/hook", secret: "s" });
+      const now = new Date();
+      // Trip the breaker (threshold 3) so the endpoint is disabled with consecutive_failures at 3.
+      await h().store.noteEndpointFailure(epId, now, 3);
+      await h().store.noteEndpointFailure(epId, now, 3);
+      await h().store.noteEndpointFailure(epId, now, 3);
+      let ep = await h().store.findEndpoint(epId);
+      expect(ep?.status).toBe("disabled");
+      expect(ep?.consecutiveFailures).toBe(3);
+
+      await h().store.reactivateEndpoint(epId);
+      ep = await h().store.findEndpoint(epId);
+      expect(ep?.status).toBe("active");
+      expect(ep?.disabledAt).toBeNull();
+      expect(ep?.consecutiveFailures).toBe(0);
+
+      // One subsequent failure does NOT re-disable: the endpoint has its full threshold budget back.
+      await h().store.noteEndpointFailure(epId, now, 3);
+      ep = await h().store.findEndpoint(epId);
+      expect(ep?.status).toBe("active");
+      expect(ep?.consecutiveFailures).toBe(1);
+    });
+
     it("selectForReplay honours an explicit limit (replay safety cap)", async () => {
       for (let i = 0; i < 5; i++) await h().enqueue(sampleRow({ status: "dead" }));
       const capped = await h().store.selectForReplay({ status: "dead", limit: 2 });

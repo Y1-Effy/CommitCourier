@@ -216,8 +216,10 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  *
  * A disabled registered endpoint normally fails as `ENDPOINT_DISABLED`. With circuit-breaker
  * auto-recovery (`cooldownMs > 0`), once it has been disabled for at least `cooldownMs` (from
- * `disabled_at`) a single delivery is let through as a half-open trial (`halfOpen: true`) so the
- * caller can re-activate it on success or re-arm the cooldown on failure.
+ * `disabled_at`) a delivery is let through as a half-open trial (`halfOpen: true`) so the caller can
+ * re-activate it on success or re-arm the cooldown on failure. Note this is evaluated per row: under
+ * the default `ordering: "none"` every currently-due `pending` row for the endpoint resolves
+ * `halfOpen: true` in the same claim, so the trial is single only under `ordering: "per-endpoint"`.
  */
 async function resolveTarget(
   row: OutboxRow,
@@ -483,10 +485,12 @@ async function noteEndpointHealth(ctx: Ctx, success: boolean): Promise<void> {
 
 /**
  * Half-open recovery outcome (fail-open). A registered endpoint disabled past its cooldown was let
- * through as a single trial delivery: on success re-activate it (`status = 'active'`, counter reset);
- * on failure re-arm the cooldown (refresh `disabled_at = now`) so it stays disabled and the next trial
- * waits another `cooldownMs` instead of retrying every attempt. Any store error is logged and
- * swallowed — the row's own transition has already been applied, so recovery never stalls a delivery.
+ * through as a trial delivery: on success re-activate it (`status = 'active'`, counter reset); on
+ * failure re-arm the cooldown (refresh `disabled_at = now`) so it stays disabled and the next trial
+ * waits another `cooldownMs` instead of retrying every attempt. Under `ordering: "none"` several of
+ * the endpoint's due rows may run this concurrently (each call is idempotent: reactivate/disable
+ * converge), so the redundant writes are harmless. Any store error is logged and swallowed — the
+ * row's own transition has already been applied, so recovery never stalls a delivery.
  */
 async function noteHalfOpenOutcome(ctx: Ctx, success: boolean): Promise<void> {
   const { row, deps, now } = ctx;

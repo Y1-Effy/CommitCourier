@@ -14,6 +14,7 @@ export type RelayErrorCode =
   | "ENDPOINT_DISABLED" // endpoint is disabled
   | "MISSING_SECRET" // inline target has no secret snapshot to sign with
   | "ENQUEUE_NO_TARGET" // neither url nor endpointId provided
+  | "ENQUEUE_INVALID_PAYLOAD" // payload is not JSON-serializable, or exceeds maxPayloadBytes
   | "INVALID_ARGUMENT"; // an admin-call argument failed validation (e.g. a malformed list cursor)
 
 /** Base error for all library failures. */

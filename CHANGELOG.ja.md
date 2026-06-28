@@ -7,6 +7,24 @@
 形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に基づき、本プロジェクトは
 [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
+## [Unreleased]
+
+### Added（追加）
+
+- **enqueue payload の検証**：`enqueue` / `enqueueMany` / `enqueueUnsafe` は、`jsonb` として保存できない
+  payload（循環参照・`BigInt`・`undefined` にシリアライズされる値）を、生のドライバエラーを業務トランザクション
+  に漏らす代わりに安定コード `RelayError("ENQUEUE_INVALID_PAYLOAD")` で拒否するようになりました（エンドポイント
+  欠落時の `ENQUEUE_NO_TARGET` と対称）。任意の `createRelay({ maxPayloadBytes })`（既定オフ）でシリアライズ後の
+  UTF-8 バイト長の上限も設定できます。純粋ヘルパ `validatePayload` として `commitcourier/core` から公開。
+
+### Documentation（ドキュメント）
+
+- Quick start で最初から `createConsoleLogger()` を注入するようにしました。既定の no-op logger が通常の
+  配信失敗・リトライを黙って握り潰さないようにするためです。
+- マイグレーション：既に巨大な `webhook_outbox` へのインデックス構築が書き込みロックを取る点（`migrate()` は
+  `CONCURRENTLY` ではなく通常の `CREATE INDEX` を使う）と、大規模既存 DB 向けの指針を明記。
+- アクセラレータ：常駐 Dispatcher 多数時のアイドルポーリング負荷と、長めの `pollIntervalMs` との併用方針を明記。
+
 ## [0.2.0] - 2026-06-28
 
 npm への初の公開リリース。（下記の未公開 0.1.0 開発ベースラインを置き換えます。）

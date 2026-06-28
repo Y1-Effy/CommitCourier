@@ -7,7 +7,7 @@
  * generic flows through so `enqueue`'s `trx` type is the driver's transaction handle.
  */
 import { newId } from "./id";
-import { resolveConfig, initialState, RelayError } from "./core/index";
+import { resolveConfig, initialState, validatePayload, RelayError } from "./core/index";
 import type {
   EnqueueInput,
   OutboxRow,
@@ -77,7 +77,10 @@ export interface EndpointAdmin {
   register(input: RegisterEndpointInput): Promise<{ id: string }>;
   /** Patch a registered endpoint; only the provided fields change. */
   update(endpointId: string, patch: EndpointPatch): Promise<void>;
-  /** Re-enable a disabled endpoint. */
+  /**
+   * Re-enable a disabled endpoint. Also resets the circuit-breaker failure counter, so the endpoint
+   * gets a full `failureThreshold` budget again rather than being re-disabled by the next failure.
+   */
   enable(endpointId: string): Promise<void>;
   /** Disable an endpoint so no further deliveries target it. */
   disable(endpointId: string): Promise<void>;
@@ -132,6 +135,13 @@ export interface RelayInit<TTx> {
    * endpoint is auto-disabled (a success resets the count). Default `{ failureThreshold: 0 }` = off.
    */
   circuitBreaker?: Partial<CircuitBreakerConfig>;
+  /**
+   * Optional ceiling on the UTF-8 byte length of an enqueued payload's JSON serialization. When set,
+   * `enqueue`/`enqueueMany`/`enqueueUnsafe` reject an over-size payload with
+   * `RelayError("ENQUEUE_INVALID_PAYLOAD")`. Omitted (default) = no limit; payload serializability is
+   * validated either way.
+   */
+  maxPayloadBytes?: number;
   clock?: Clock;
   logger?: Logger;
   /** Optional delivery-outcome callbacks (fail-open) applied to every dispatcher from this relay. */
@@ -351,6 +361,10 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
 
   /** Build the outbox row from enqueue input, snapshotting the inline secret at enqueue time. */
   function buildRow(input: EnqueueInput): NewOutboxRow {
+    // Validate the payload up front so an unserializable/over-size payload fails with a stable
+    // ENQUEUE_INVALID_PAYLOAD rather than a raw driver error from the jsonb serialization step
+    // (symmetric to the endpoint-shape check below). Covers enqueue/enqueueMany/enqueueUnsafe.
+    validatePayload(input.payload, resolved.maxPayloadBytes);
     const init = initialState(resolved.mode, resolved.clock());
     const inline = asInline(input.endpoint);
     const registered = inline ? null : asRegistered(input.endpoint);

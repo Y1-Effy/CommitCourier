@@ -101,6 +101,9 @@ describe("config.resolveConfig validation (fail-fast)", () => {
     ["non-integer failureThreshold", { circuitBreaker: { failureThreshold: 2.5 } }],
     ["negative cooldownMs", { circuitBreaker: { cooldownMs: -1 } }],
     ["non-integer cooldownMs", { circuitBreaker: { cooldownMs: 1.5 } }],
+    ["maxPayloadBytes <= 0", { maxPayloadBytes: 0 }],
+    ["non-integer maxPayloadBytes", { maxPayloadBytes: 1.5 }],
+    ["maxPayloadBytes Infinity", { maxPayloadBytes: Number.POSITIVE_INFINITY }],
   ])("throws CONFIG_INVALID for %s", (_label, input) => {
     try {
       resolveConfig(input);
@@ -144,6 +147,14 @@ describe("config.resolveConfig validation (fail-fast)", () => {
 
   it('accepts delivery.transport "sink" (08-forward-sink)', () => {
     expect(resolveConfig({ delivery: { transport: "sink" } }).delivery.transport).toBe("sink");
+  });
+
+  it("leaves maxPayloadBytes undefined by default (no limit)", () => {
+    expect(resolveConfig({}).maxPayloadBytes).toBeUndefined();
+  });
+
+  it("accepts a positive maxPayloadBytes and keeps it on the resolved config", () => {
+    expect(resolveConfig({ maxPayloadBytes: 1_048_576 }).maxPayloadBytes).toBe(1_048_576);
   });
 });
 

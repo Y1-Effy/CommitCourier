@@ -143,11 +143,17 @@ export interface CircuitBreakerConfig {
   failureThreshold: number;
   /**
    * Auto-recovery cooldown in milliseconds (half-open). After an endpoint has been disabled for at
-   * least this long (measured from `disabled_at`), the dispatcher lets a single delivery through as a
-   * trial: success re-activates the endpoint and resets the counter; failure re-arms the cooldown so
-   * the next trial waits another `cooldownMs`. `0` (the default) disables auto-recovery, so a disabled
-   * endpoint stays down until an admin calls `endpoints.enable`. Applies to any disabled registered
-   * endpoint (whether disabled by the breaker or a `410 Gone`).
+   * least this long (measured from `disabled_at`), the dispatcher lets a trial delivery through:
+   * success re-activates the endpoint and resets the counter; failure re-arms the cooldown so the next
+   * trial waits another `cooldownMs`. `0` (the default) disables auto-recovery, so a disabled endpoint
+   * stays down until an admin calls `endpoints.enable`. Applies to any disabled registered endpoint
+   * (whether disabled by the breaker or a `410 Gone`).
+   *
+   * Trial concurrency depends on the dispatcher's `ordering`: with `"per-endpoint"` (and a single
+   * dispatcher instance) exactly one trial is admitted per endpoint, strictly serialised. With the
+   * default `"none"` ordering, all of that endpoint's currently-due `pending` rows are admitted as
+   * trials at once, so a still-fragile endpoint can see a burst on recovery. Use `"per-endpoint"`
+   * ordering if you need the trial to be a single probe.
    */
   cooldownMs: number;
 }
@@ -161,6 +167,13 @@ export interface RelayConfig {
   ssrf: SsrfConfig;
   /** Registered-endpoint auto-disable policy. `failureThreshold: 0` (default) disables it. */
   circuitBreaker: CircuitBreakerConfig;
+  /**
+   * Optional ceiling on the UTF-8 byte length of an enqueued payload's JSON serialization. When set,
+   * `enqueue`/`enqueueMany`/`enqueueUnsafe` reject an over-size payload with
+   * `RelayError("ENQUEUE_INVALID_PAYLOAD")` before it reaches the database. Omitted (the default) =
+   * no limit. Serializability (circular references, BigInt, etc.) is always validated regardless.
+   */
+  maxPayloadBytes?: number;
   /** Defaults to `() => new Date()`. */
   clock: Clock;
   /** Defaults to a no-op logger. */
