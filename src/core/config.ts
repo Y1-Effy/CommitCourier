@@ -49,6 +49,17 @@ function fail(message: string): never {
   throw new RelayError("CONFIG_INVALID", message);
 }
 
+/**
+ * Reject a numeric setting unless it is a finite positive integer. `Number.isInteger` already rejects
+ * `NaN`, `Infinity` and fractions (so a typo'd `1500.5` or a stray `Infinity` cannot slip through a
+ * bare `> 0` check), and the `> 0` guard rejects `0` and negatives.
+ */
+function requirePositiveInt(name: string, value: number): void {
+  if (!(Number.isInteger(value) && value > 0)) {
+    fail(`${name} must be a finite positive integer, got ${String(value)}`);
+  }
+}
+
 /** Validate the retry policy; `backoff` is typed to a literal but may be untyped at runtime. */
 function validateRetry(retry: RelayConfig["retry"]): void {
   const { maxAttempts, backoff, baseMs, capMs, jitter } = retry;
@@ -58,12 +69,8 @@ function validateRetry(retry: RelayConfig["retry"]): void {
   if (!Number.isInteger(maxAttempts) || maxAttempts < 1) {
     fail(`retry.maxAttempts must be an integer >= 1, got ${String(maxAttempts)}`);
   }
-  if (!(baseMs > 0)) {
-    fail(`retry.baseMs must be > 0, got ${String(baseMs)}`);
-  }
-  if (!(capMs > 0)) {
-    fail(`retry.capMs must be > 0, got ${String(capMs)}`);
-  }
+  requirePositiveInt("retry.baseMs", baseMs);
+  requirePositiveInt("retry.capMs", capMs);
   if (!(capMs >= baseMs)) {
     fail(
       `retry.capMs must be >= retry.baseMs, got capMs=${String(capMs)}, baseMs=${String(baseMs)}`,
@@ -80,15 +87,9 @@ function validateDelivery(delivery: RelayConfig["delivery"]): void {
   if ((delivery.transport as string) !== "http" && (delivery.transport as string) !== "sink") {
     fail(`delivery.transport must be "http" or "sink", got ${delivery.transport}`);
   }
-  if (!(delivery.timeoutMs > 0)) {
-    fail(`delivery.timeoutMs must be > 0, got ${String(delivery.timeoutMs)}`);
-  }
-  if (!(delivery.bodySnippetBytes > 0)) {
-    fail(`delivery.bodySnippetBytes must be > 0, got ${String(delivery.bodySnippetBytes)}`);
-  }
-  if (!(delivery.keepAliveTimeoutMs > 0)) {
-    fail(`delivery.keepAliveTimeoutMs must be > 0, got ${String(delivery.keepAliveTimeoutMs)}`);
-  }
+  requirePositiveInt("delivery.timeoutMs", delivery.timeoutMs);
+  requirePositiveInt("delivery.bodySnippetBytes", delivery.bodySnippetBytes);
+  requirePositiveInt("delivery.keepAliveTimeoutMs", delivery.keepAliveTimeoutMs);
   if (
     delivery.connections !== undefined &&
     !(Number.isInteger(delivery.connections) && delivery.connections >= 1)

@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDispatcher } from "../../src/dispatcher/dispatcher";
 import { resolveConfig } from "../../src/core/index";
+import { RelayError } from "../../src/core/errors";
 import type { Store } from "../../src/store/store";
 
 const stubStore = {} as unknown as Store;
@@ -63,5 +64,37 @@ describe("createDispatcher reclaimAfterMs vs delivery.timeoutMs", () => {
       options: { concurrency: 8, batchSize: 64, reclaimAfterMs: 30_000 },
     });
     expect(b.reclaimWarnings()).toHaveLength(1);
+  });
+});
+
+describe("createDispatcher option validation (fail-fast)", () => {
+  it.each([
+    ["concurrency 0", { concurrency: 0 }],
+    ["concurrency Infinity", { concurrency: Number.POSITIVE_INFINITY }],
+    ["concurrency fractional", { concurrency: 1.5 }],
+    ["batchSize 0", { batchSize: 0 }],
+    ["batchSize NaN", { batchSize: Number.NaN }],
+    ["pollIntervalMs negative", { pollIntervalMs: -1 }],
+    ["pollIntervalMs Infinity", { pollIntervalMs: Number.POSITIVE_INFINITY }],
+    ["pollIntervalMs fractional", { pollIntervalMs: 250.5 }],
+    ["reclaimAfterMs Infinity", { reclaimAfterMs: Number.POSITIVE_INFINITY }],
+    ["reclaimIntervalMs negative", { reclaimIntervalMs: -1 }],
+  ])("throws CONFIG_INVALID for %s", (_label, options) => {
+    const config = resolveConfig({});
+    expect(() => createDispatcher({ store: stubStore, deliver, config, options })).toThrow(
+      RelayError,
+    );
+  });
+
+  it("accepts pollIntervalMs/reclaimIntervalMs of 0 (finite non-negative integers)", () => {
+    const config = resolveConfig({});
+    expect(() =>
+      createDispatcher({
+        store: stubStore,
+        deliver,
+        config,
+        options: { pollIntervalMs: 0, reclaimIntervalMs: 0 },
+      }),
+    ).not.toThrow();
   });
 });
