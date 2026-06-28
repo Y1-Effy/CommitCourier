@@ -53,7 +53,7 @@ npm run check   # typecheck + lint + lint:lang + unit tests
   `CODE_OF_CONDUCT`）。一方を変更したら、**同一 PR** で対となる版も更新し、対が乖離しないように
   します。
 
-詳細設計は `docs/` にあります（npm には同梱されません）。利用者向けの真実は `README` です。
+利用者向けの真実は `README` です。詳細設計のメモは作者がこのリポジトリ外で管理しており、ここにも npm にも同梱されません。
 
 ## 公開 API の変更
 
