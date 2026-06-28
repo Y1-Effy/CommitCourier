@@ -114,6 +114,8 @@ export interface ReplayFilter {
   outboxId?: string;
   status?: Status; // e.g. "dead"
   since?: Date;
+  /** Restrict the replay to rows targeting one registered endpoint (matches `webhook_outbox.endpoint_id`). */
+  endpointId?: string;
   /** Max rows to replay in one call; the admin layer clamps to a safe ceiling. */
   limit?: number;
 }
@@ -226,12 +228,18 @@ export interface Store<TTx = unknown> {
    * row reclaimed and re-locked by another worker (visibility-timeout race under a too-tight
    * `reclaimAfterMs`) cannot be transitioned by the stale worker — its ledger row is still recorded.
    * Pass `null` to keep only the `status = 'in_flight'` guard.
+   *
+   * Returns `{ transitionApplied }`: `true` when the guarded UPDATE actually moved the outbox row
+   * (this worker still owned the row), `false` when the guard matched nothing (a stale worker whose
+   * lease was reclaimed). The ledger INSERT always happens regardless. Callers MUST gate side effects
+   * that imply "I changed the row's state" — success/retry/dead hooks, endpoint-health/breaker
+   * updates, success metrics — on `transitionApplied`, so a stale worker cannot fire them.
    */
   completeAttempt(
     attempt: NewDeliveryAttempt,
     transition: Transition,
     expectedLockedBy: string | null,
-  ): Promise<void>;
+  ): Promise<{ transitionApplied: boolean }>;
 
   /** Admin: read the ledger for one outbox row, ordered by attempt number. */
   queryAttempts(opts: { outboxId: string }): Promise<DeliveryAttempt[]>;

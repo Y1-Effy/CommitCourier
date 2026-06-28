@@ -86,7 +86,7 @@ function queueStore(seed: OutboxRow[]): {
       return Promise.resolve(0);
     },
     recordAttempt: () => Promise.resolve(),
-    completeAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve({ transitionApplied: true }),
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: () => Promise.resolve([]),

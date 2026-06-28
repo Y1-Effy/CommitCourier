@@ -48,6 +48,9 @@ Please make sure `npm run check` is green before opening a pull request.
 - **Formatting** is Prettier (2-space, double quotes, semicolons, trailing commas, width 100).
 - State columns use `text + CHECK` (not Postgres enums); times are `timestamptz` in the DB and
   millisecond `number`s at the API boundary.
+- **Bilingual docs stay in sync.** Several root docs ship an English `*.md` and a Japanese
+  `*.ja.md` (`README`, `CHANGELOG`, `SECURITY`, `CONTRIBUTING`, `CODE_OF_CONDUCT`). When you change
+  one, update its counterpart in the **same PR** so the pair never drifts.
 
 The detailed design lives in `docs/` (not shipped to npm). The `README` is the source of truth
 for consumers.

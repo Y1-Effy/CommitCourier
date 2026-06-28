@@ -233,6 +233,20 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(copy?.idempotencyKey).toBe("idem-1");
     });
 
+    it("selectForReplay scopes to one endpoint when endpointId is given", async () => {
+      const epA = randomUUID();
+      const epB = randomUUID();
+      const deadA = sampleRow({ status: "dead", endpointId: epA });
+      const deadB = sampleRow({ status: "dead", endpointId: epB });
+      await h().enqueue(deadA);
+      await h().enqueue(deadB);
+
+      const onlyA = await h().store.selectForReplay({ status: "dead", endpointId: epA });
+      const ids = onlyA.map((r) => r.id);
+      expect(ids).toContain(deadA.id);
+      expect(ids).not.toContain(deadB.id);
+    });
+
     it("selectForReplay never returns active (pending/in_flight) rows", async () => {
       const pending = sampleRow(); // defaults to pending
       const claimed = sampleRow();
@@ -428,7 +442,7 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       await h().enqueue(r);
       await h().store.claimDue({ limit: 10, lockedBy: "w1", now: new Date() });
 
-      await h().store.completeAttempt(
+      const first = await h().store.completeAttempt(
         {
           outboxId: r.id,
           attemptNo: 1,
@@ -441,6 +455,7 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
         onSuccess(new Date()),
         "w1",
       );
+      expect(first.transitionApplied).toBe(true); // this worker owned the row
 
       expect((await h().getOutbox(r.id))?.status).toBe("delivered");
       const attempts = await h().store.queryAttempts({ outboxId: r.id });
@@ -448,8 +463,8 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(attempts[0]?.responseStatus).toBe(200);
 
       // Guard: a second completeAttempt still appends the ledger row but does not transition
-      // (row is no longer in_flight).
-      await h().store.completeAttempt(
+      // (row is no longer in_flight), and reports transitionApplied=false.
+      const second = await h().store.completeAttempt(
         {
           outboxId: r.id,
           attemptNo: 2,
@@ -462,6 +477,7 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
         onSuccess(new Date()),
         "w1",
       );
+      expect(second.transitionApplied).toBe(false); // no row matched the in_flight guard
       expect((await h().getOutbox(r.id))?.status).toBe("delivered"); // unchanged
       expect(await h().store.queryAttempts({ outboxId: r.id })).toHaveLength(2);
     });
@@ -482,14 +498,16 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       });
 
       // A worker that no longer holds the lock (e.g. the row was reclaimed and re-locked by another
-      // worker) must NOT transition the row, even though it is still in_flight. The ledger row is
-      // still recorded so the attempt is not lost.
-      await h().store.completeAttempt(attempt(1), onSuccess(new Date()), "w-stale");
+      // worker) must NOT transition the row, even though it is still in_flight, and must report
+      // transitionApplied=false. The ledger row is still recorded so the attempt is not lost.
+      const stale = await h().store.completeAttempt(attempt(1), onSuccess(new Date()), "w-stale");
+      expect(stale.transitionApplied).toBe(false);
       expect((await h().getOutbox(r.id))?.status).toBe("in_flight"); // not transitioned
       expect(await h().store.queryAttempts({ outboxId: r.id })).toHaveLength(1); // ledger recorded
 
-      // The worker that actually holds the lock transitions it.
-      await h().store.completeAttempt(attempt(2), onSuccess(new Date()), "w1");
+      // The worker that actually holds the lock transitions it and reports transitionApplied=true.
+      const owner = await h().store.completeAttempt(attempt(2), onSuccess(new Date()), "w1");
+      expect(owner.transitionApplied).toBe(true);
       expect((await h().getOutbox(r.id))?.status).toBe("delivered");
       expect(await h().store.queryAttempts({ outboxId: r.id })).toHaveLength(2);
     });

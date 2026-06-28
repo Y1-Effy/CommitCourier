@@ -25,7 +25,7 @@ const noopStore = (over: Partial<Store> = {}): Store => ({
   reactivateEndpoint: () => Promise.resolve(),
   reclaimStuck: () => Promise.resolve(0),
   recordAttempt: () => Promise.resolve(),
-  completeAttempt: () => Promise.resolve(),
+  completeAttempt: () => Promise.resolve({ transitionApplied: true }),
   queryAttempts: () => Promise.resolve([]),
   selectForReplay: () => Promise.resolve([]),
   insertReplayCopies: () => Promise.resolve([]),
@@ -143,7 +143,7 @@ describe("delivery hooks", () => {
     const store = noopStore({
       completeAttempt: () => {
         calls.complete++;
-        return Promise.resolve();
+        return Promise.resolve({ transitionApplied: true });
       },
       recordAttempt: () => {
         calls.record++;
@@ -172,7 +172,7 @@ describe("delivery hooks", () => {
     const store = noopStore({
       completeAttempt: (_a, t) => {
         transition = t;
-        return Promise.resolve();
+        return Promise.resolve({ transitionApplied: true });
       },
     });
     const config = resolveConfig({ retry: { maxAttempts: 12 } });
@@ -221,7 +221,7 @@ describe("delivery hooks", () => {
     const store = noopStore({
       completeAttempt: (_a, t) => {
         transition = t;
-        return Promise.resolve();
+        return Promise.resolve({ transitionApplied: true });
       },
     });
     // baseMs 1000 would back off ~1s on attempt 1; Retry-After: 120 wins (120s), under the cap.

@@ -19,6 +19,24 @@ describe("ssrf.evaluateIp blocked ranges", () => {
     ["fe80::1", "link-local"],
     ["fc00::1", "private"],
     ["fd00:ec2::254", "metadata"],
+    // Shared Address Space / CGNAT (RFC 6598).
+    ["100.64.0.1", "shared"],
+    ["100.127.255.255", "shared"],
+    // Multicast.
+    ["224.0.0.1", "multicast"],
+    ["239.255.255.255", "multicast"],
+    ["ff02::1", "multicast"],
+    // Limited broadcast and reserved/future use.
+    ["255.255.255.255", "reserved"],
+    ["240.0.0.1", "reserved"],
+    // Benchmarking (RFC 2544).
+    ["198.18.0.1", "reserved"],
+    ["198.19.255.255", "reserved"],
+    // Documentation/example ranges (RFC 5737 / RFC 3849).
+    ["192.0.2.5", "reserved"],
+    ["198.51.100.5", "reserved"],
+    ["203.0.113.5", "reserved"],
+    ["2001:db8::1", "reserved"],
   ])("blocks %s as %s", (ip, reason) => {
     const d = evaluateIp(ip, base);
     if (d.allowed) {

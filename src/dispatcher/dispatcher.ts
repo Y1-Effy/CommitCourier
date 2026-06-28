@@ -94,25 +94,24 @@ function resolveOptions(o: DispatcherOptions = {}): ResolvedOptions {
  * nothing (claimDue with limit 0 always returns []), so reject it loudly rather than stall forever.
  */
 function validateOptions(resolved: ResolvedOptions): void {
-  if (!(resolved.concurrency >= 1)) {
-    fail(`dispatcher concurrency must be >= 1, got ${String(resolved.concurrency)}`);
-  }
-  if (!(resolved.batchSize >= 1)) {
-    fail(`dispatcher batchSize must be >= 1, got ${String(resolved.batchSize)}`);
-  }
-  if (!(resolved.pollIntervalMs >= 0)) {
-    fail(`dispatcher pollIntervalMs must be >= 0, got ${String(resolved.pollIntervalMs)}`);
-  }
-  if (!(resolved.reclaimAfterMs >= 0)) {
-    fail(`dispatcher reclaimAfterMs must be >= 0, got ${String(resolved.reclaimAfterMs)}`);
-  }
-  if (!(resolved.reclaimIntervalMs >= 0)) {
-    fail(`dispatcher reclaimIntervalMs must be >= 0, got ${String(resolved.reclaimIntervalMs)}`);
-  }
+  // `Number.isInteger` rejects NaN/Infinity/fractions; the bound rejects out-of-range values. A bare
+  // `>= 0` comparison would have let Infinity and fractional millisecond counts through.
+  requireInt("dispatcher concurrency", resolved.concurrency, 1);
+  requireInt("dispatcher batchSize", resolved.batchSize, 1);
+  requireInt("dispatcher pollIntervalMs", resolved.pollIntervalMs, 0);
+  requireInt("dispatcher reclaimAfterMs", resolved.reclaimAfterMs, 0);
+  requireInt("dispatcher reclaimIntervalMs", resolved.reclaimIntervalMs, 0);
 }
 
 function fail(message: string): never {
   throw new RelayError("CONFIG_INVALID", message);
+}
+
+/** Reject a setting unless it is a finite integer at or above `min`. */
+function requireInt(name: string, value: number, min: number): void {
+  if (!(Number.isInteger(value) && value >= min)) {
+    fail(`${name} must be a finite integer >= ${String(min)}, got ${String(value)}`);
+  }
 }
 
 /**

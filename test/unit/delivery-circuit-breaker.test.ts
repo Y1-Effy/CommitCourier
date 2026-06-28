@@ -40,7 +40,7 @@ function fakeStore(): { store: Store; calls: Calls } {
   const calls: Calls = { success: [], failure: [] };
   const store = {
     findEndpoint: () => Promise.resolve(endpoint()),
-    completeAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve({ transitionApplied: true }),
     disableEndpoint: () => Promise.resolve(),
     noteEndpointSuccess: (id: string) => Promise.resolve(void calls.success.push(id)),
     noteEndpointFailure: (id: string, _now: Date, threshold: number) =>
@@ -145,7 +145,7 @@ describe("circuit breaker on the delivery path", () => {
     const error = vi.fn();
     const store = {
       findEndpoint: () => Promise.resolve(endpoint()),
-      completeAttempt: () => Promise.resolve(),
+      completeAttempt: () => Promise.resolve({ transitionApplied: true }),
       noteEndpointSuccess: () => Promise.reject(new Error("db down")),
       noteEndpointFailure: () => Promise.reject(new Error("db down")),
     } as unknown as Store;

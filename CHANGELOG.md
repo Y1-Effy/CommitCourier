@@ -34,33 +34,33 @@ First public release to npm. (Supersedes the unpublished 0.1.0 development basel
   endpoint and resets its failure counter; failure re-arms the cooldown so the next trial waits another
   `cooldownMs`. Applies to any disabled registered endpoint (breaker- or `410`-disabled); within the cooldown no
   HTTP attempt is made. Wired across all four adapters as `Store.reactivateEndpoint`.
-- **Cancel API (v2.1):** `relay.cancel(outboxId)` stops a not-yet-sent row, moving it `pending → cancelled`
+- **Cancel API:** `relay.cancel(outboxId)` stops a not-yet-sent row, moving it `pending → cancelled`
   only while it is still pending (an already-claimed `in_flight` or terminal row is left untouched). Returns
   `{ cancelled }` so a caller can tell "stopped in time" from "already sent / unknown id". Implemented across
   all four adapters and validated up front (a malformed id fails as `INVALID_ARGUMENT`).
-- **Auto-disable circuit breaker (v2.1):** `createRelay({ circuitBreaker: { failureThreshold: N } })` (default
+- **Auto-disable circuit breaker:** `createRelay({ circuitBreaker: { failureThreshold: N } })` (default
   `0` = off) auto-disables a registered endpoint after `N` consecutive failed deliveries; a success resets the
   counter. The increment-and-disable is a single atomic UPDATE on the previously inert `consecutive_failures`
   column. Fail-open (a counter-update error never stalls a delivery) and only affects the registered-endpoint
   workflow; the `410 Gone` path still disables directly.
-- **One-shot dispatch for serverless/cron (v2.1):** `dispatcher.runOnce({ reclaim, maxRows })` and the
+- **One-shot dispatch for serverless/cron:** `dispatcher.runOnce({ reclaim, maxRows })` and the
   convenience `relay.dispatchOnce(options, runOptions)` drain the queue once and return (no long-lived loop),
   honouring `concurrency`/`batchSize`/`ordering`. Returns `{ processed }`; refuses to run while the continuous
   loop is active. Suitable for Lambda/cron where a persistent dispatcher cannot run.
-- **Operability guards (v2.1):** `relay.get(outboxId)` fetches a single outbox row (read-only, secret-free), and
+- **Operability guards:** `relay.get(outboxId)` fetches a single outbox row (read-only, secret-free), and
   `relay.replay(...)` now clamps its selection to a safe ceiling and returns `{ ids, capped }` so a broad
   `{ status: "dead" }` replay can never fan out into an unbounded mass re-send — page on while `capped` is true.
-- **Built-in retention / pruning (v2.1):** `relay.prune({ olderThan, statuses?, limit? })` deletes terminal rows
+- **Built-in retention / pruning:** `relay.prune({ olderThan, statuses?, limit? })` deletes terminal rows
   older than a cutoff in bounded, oldest-first batches (ledger attempts cascade), returning `{ deleted }`. Only
   non-active statuses are eligible (default `delivered`/`dead`/`cancelled`); passing `pending`/`in_flight` fails as
   `INVALID_ARGUMENT`, so a live row is never deleted. Implemented across all four adapters; each call is capped
   (default 10 000, max 100 000) so it never deletes — or locks — an unbounded set.
-- **`commitcourier doctor` CLI (v2.1):** a `bin` for local dev and CI that checks readiness — database schema,
+- **`commitcourier doctor` CLI:** a `bin` for local dev and CI that checks readiness — database schema,
   applied vs pending migrations, dispatch indexes, queue health, and configuration (defaults vs overrides, the
   recommended-but-unset checklist with rationale, and risk warnings). Supports `--config <file>`, `--skip-db`,
   `--database-url`, and `--json`, and exits non-zero when the core tables are missing or the config is invalid
   (so a deploy can gate on it). `pg` is needed only for the database checks.
-- **Low-latency delivery accelerator (v2):** an optional, fail-open wake seam. `createRelay({ accelerator })`
+- **Low-latency delivery accelerator:** an optional, fail-open wake seam. `createRelay({ accelerator })`
   signals the accelerator after each enqueue and subscribes every dispatcher it creates, so a freshly
   enqueued row is delivered near-immediately instead of after the poll interval. The first
   implementation, `createPgAccelerator` from `commitcourier/accelerator/pg`, uses Postgres
@@ -69,40 +69,40 @@ First public release to npm. (Supersedes the unpublished 0.1.0 development basel
   The outbox row stays the single source of truth — a missed wake only delays delivery, never loses it
   (the poller reclaims it). The generic `Accelerator` seam is dependency-free; a BullMQ accelerator is a
   planned future adapter on the same seam.
-- **Schema migration version table (v2):** `migrate()` now records applied migrations in a
+- **Schema migration version table:** `migrate()` now records applied migrations in a
   `commitcourier_migrations` table and applies only the not-yet-applied ones in order (still idempotent,
   and safe on deployments that pre-date the table). This replaces the single-file apply across all four
   adapters and prepares the ground for incremental `00N_*` schema changes.
-- **Read-only DLQ / outbox list API (v1.2):** `relay.list({ status, since, endpointId, limit, cursor })`
+- **Read-only DLQ / outbox list API:** `relay.list({ status, since, endpointId, limit, cursor })`
   pages outbox rows newest-first by a monotonic `seq`, for DLQ inspection and monitoring. Rows are
   secret-free (the signing-key snapshot is never selected) and paging is seq-keyset (`nextCursor`).
-- **Endpoint listing (v1.2):** `endpoints.list({ status, limit, cursor })` returns secret-free endpoint
+- **Endpoint listing:** `endpoints.list({ status, limit, cursor })` returns secret-free endpoint
   summaries (no `secret`/`secret_secondary`), id-keyset paged. Both list methods are implemented across
   all four adapters (`pg`/`knex`/`drizzle`/`prisma`). List filters are validated up front, so a malformed
   `cursor`/`status` fails as a new `INVALID_ARGUMENT` `RelayError` instead of a raw Postgres cast error.
-- **OpenTelemetry adapter (v1.2):** `commitcourier/otel` exports `createOtelInstrumentation({ tracer, meter })`,
+- **OpenTelemetry adapter:** `commitcourier/otel` exports `createOtelInstrumentation({ tracer, meter })`,
   returning `{ instrument, hooks }` to pass to `createRelay`. Each delivery attempt emits one CLIENT span
   with secret-free attributes; the outcome updates a `commitcourier.deliveries` counter
   (`outcome = delivered | retry | dead`) and a `commitcourier.delivery.duration` histogram.
   `@opentelemetry/api` is an optional peer; the seam itself (`RelayInit.instrument` + secret-free
   `DeliveryStart`/`DeliveryEvent` carrying `endpointId`/`host`) is dependency-free and fail-open.
-- **Key rotation / dual signing (v1.1):** during a rotation, deliveries to a registered endpoint are
+- **Key rotation / dual signing:** during a rotation, deliveries to a registered endpoint are
   signed with both the current and previous keys (Standard Webhooks space-separated `v1,…` signatures),
   so a receiver on either key verifies. New admin ops `endpoints.rotateSecret(id, newSecret)` and
   `endpoints.finalizeRotation(id)`, backed by a new `secret_secondary` column (added via idempotent
   migration; encrypted at rest when a `cipher` is configured).
-- **`Retry-After` support (v1.1):** a retryable response carrying `Retry-After` (delta-seconds or
+- **`Retry-After` support:** a retryable response carrying `Retry-After` (delta-seconds or
   HTTP-date) schedules the next attempt at `max(backoff, Retry-After)`, clamped to `retry.capMs`.
-- **Immediate `410 Gone` invalidation (v1.1):** a `410` response moves the row straight to `dead`
+- **Immediate `410 Gone` invalidation:** a `410` response moves the row straight to `dead`
   without consuming the retry budget and disables the registered endpoint.
-- **Opt-in per-endpoint FIFO (v1.1):** `createDispatcher({ ordering: "per-endpoint" })` delivers each
+- **Opt-in per-endpoint FIFO:** `createDispatcher({ ordering: "per-endpoint" })` delivers each
   registered endpoint's rows strictly in arrival order (one in-flight per endpoint); the default
   (`"none"`) stays unordered and fully concurrent. Inline destinations are unaffected. Ordering uses a
   monotonic insertion sequence (`webhook_outbox.seq`), so events enqueued together in one transaction
   (a bulk/same-TX enqueue) are still delivered in insertion order.
-- **Drizzle adapter (v1.1):** `drizzleStore` exported from `commitcourier/store/drizzle`, reusing the
+- **Drizzle adapter:** `drizzleStore` exported from `commitcourier/store/drizzle`, reusing the
   same Postgres dialect and contract as the `pg`/`knex` adapters. `drizzle-orm` is an optional peer.
-- **Prisma adapter (v1.1):** `prismaStore` exported from `commitcourier/store/prisma`, raw-SQL based
+- **Prisma adapter:** `prismaStore` exported from `commitcourier/store/prisma`, raw-SQL based
   (reusing the same dialect/contract); enqueue rides the caller's `prisma.$transaction`. `@prisma/client`
   is an optional peer; Prisma is typed structurally so the library builds without it.
 - Optional at-rest encryption for signing secrets: `createAesGcmCipher` (WebCrypto AES-256-GCM),

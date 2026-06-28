@@ -48,6 +48,10 @@ npm run check   # typecheck + lint + lint:lang + unit tests
 - **整形**は Prettier（2 スペース、ダブルクォート、セミコロンあり、末尾カンマ all、印字幅 100）。
 - 状態カラムは Postgres enum ではなく `text + CHECK`。時刻は DB では `timestamptz`、API 境界では
   ミリ秒の `number`。
+- **英日ドキュメントは常に同期する。** いくつかのルートドキュメントは英語版 `*.md` と日本語版
+  `*.ja.md` を併せて配布します（`README`・`CHANGELOG`・`SECURITY`・`CONTRIBUTING`・
+  `CODE_OF_CONDUCT`）。一方を変更したら、**同一 PR** で対となる版も更新し、対が乖離しないように
+  します。
 
 詳細設計は `docs/` にあります（npm には同梱されません）。利用者向けの真実は `README` です。
 

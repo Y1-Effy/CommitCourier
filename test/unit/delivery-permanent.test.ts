@@ -34,7 +34,7 @@ function store(over: Partial<Store> = {}): { store: Store; captured: Captured } 
     recordAttempt: () => Promise.resolve(),
     completeAttempt: (_a: NewDeliveryAttempt, t: Transition) => {
       captured.transitions.push(t);
-      return Promise.resolve();
+      return Promise.resolve({ transitionApplied: true });
     },
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
@@ -171,7 +171,7 @@ describe("pre-HTTP permanent classification", () => {
         calls += 1;
         if (calls === 1) return Promise.reject(new Error("connection reset"));
         transitions.push(t);
-        return Promise.resolve();
+        return Promise.resolve({ transitionApplied: true });
       },
     });
     await deliverOne(row(), deps(s.store));

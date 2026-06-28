@@ -536,6 +536,7 @@ export interface RelayInit<TTx> {
 
 // @public
 export interface ReplayFilter {
+    endpointId?: string;
     limit?: number;
     // (undocumented)
     outboxId?: string;
@@ -638,7 +639,7 @@ export type SsrfDecision = {
     allowed: true;
 } | {
     allowed: false;
-    reason: "private" | "loopback" | "link-local" | "metadata" | "blocklist";
+    reason: "private" | "loopback" | "link-local" | "metadata" | "shared" | "multicast" | "reserved" | "blocklist";
 };
 
 // @public
@@ -654,7 +655,9 @@ export interface Store<TTx = unknown> {
         now: Date;
         ordering?: "none" | "per-endpoint";
     }): Promise<OutboxRow[]>;
-    completeAttempt(attempt: NewDeliveryAttempt, transition: Transition, expectedLockedBy: string | null): Promise<void>;
+    completeAttempt(attempt: NewDeliveryAttempt, transition: Transition, expectedLockedBy: string | null): Promise<{
+        transitionApplied: boolean;
+    }>;
     diagnose(): Promise<{
         ok: boolean;
         missingTables: string[];

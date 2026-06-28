@@ -47,7 +47,7 @@ function store(): Store {
     reactivateEndpoint: () => Promise.resolve(),
     reclaimStuck: () => Promise.resolve(0),
     recordAttempt: () => Promise.resolve(),
-    completeAttempt: (_a: NewDeliveryAttempt) => Promise.resolve(),
+    completeAttempt: (_a: NewDeliveryAttempt) => Promise.resolve({ transitionApplied: true }),
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: () => Promise.resolve([]),

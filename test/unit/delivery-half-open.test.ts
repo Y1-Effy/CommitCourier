@@ -43,7 +43,7 @@ function fakeStore(ep: EndpointRow): { store: Store; calls: Calls } {
   const calls: Calls = { reactivate: [], disable: [], posts: 0 };
   const store = {
     findEndpoint: () => Promise.resolve(ep),
-    completeAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve({ transitionApplied: true }),
     reactivateEndpoint: (id: string) => Promise.resolve(void calls.reactivate.push(id)),
     disableEndpoint: (id: string) => Promise.resolve(void calls.disable.push(id)),
     noteEndpointSuccess: () => Promise.resolve(),
