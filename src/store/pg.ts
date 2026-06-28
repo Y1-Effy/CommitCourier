@@ -232,7 +232,10 @@ export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
       const sql = completeAttemptSql(columns, "numbered", { guardLockedBy });
       const params = [...attemptValues(newId(), a), ...values, a.outboxId];
       if (guardLockedBy) params.push(expectedLockedBy);
-      await pool.query(sql, params);
+      // rowCount is the affected count of the CTE's top-level UPDATE: 0 when the guard matched no row
+      // (stale worker reclaimed), 1 when this worker still owned the row.
+      const res = await pool.query(sql, params);
+      return { transitionApplied: (res.rowCount ?? 0) > 0 };
     },
 
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {

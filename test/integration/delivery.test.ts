@@ -86,7 +86,7 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
       // The dispatch path uses the combined op; capture both halves for the assertions.
       captured.attempts.push(a);
       captured.transitions.push({ id: a.outboxId, t });
-      return Promise.resolve();
+      return Promise.resolve({ transitionApplied: true });
     },
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),

@@ -82,7 +82,7 @@ function recorder(): Recorder {
     prune: () => Promise.resolve({ deleted: 0 }),
     reclaimStuck: () => Promise.resolve(0),
     recordAttempt: () => Promise.resolve(),
-    completeAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve({ transitionApplied: true }),
     queryAttempts: () => Promise.resolve([]),
     listOutbox: () => Promise.resolve({ items: [], nextCursor: null }),
     listEndpoints: () => Promise.resolve({ items: [], nextCursor: null }),

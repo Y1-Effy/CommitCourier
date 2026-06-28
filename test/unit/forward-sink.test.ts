@@ -26,7 +26,7 @@ const noopStore = (over: Partial<Store> = {}): Store => ({
   reactivateEndpoint: () => Promise.resolve(),
   reclaimStuck: () => Promise.resolve(0),
   recordAttempt: () => Promise.resolve(),
-  completeAttempt: () => Promise.resolve(),
+  completeAttempt: () => Promise.resolve({ transitionApplied: true }),
   queryAttempts: () => Promise.resolve([]),
   selectForReplay: () => Promise.resolve([]),
   insertReplayCopies: () => Promise.resolve([]),
@@ -99,7 +99,7 @@ function deps(opts: {
         cap.attempt = attempt;
         cap.transition = transition;
       }
-      return Promise.resolve();
+      return Promise.resolve({ transitionApplied: true });
     },
   });
   return {

@@ -42,7 +42,7 @@ function fakeStore(over: Partial<Store> = {}): Store {
     noteEndpointFailure: () => Promise.resolve(),
     reactivateEndpoint: () => Promise.resolve(),
     recordAttempt: () => Promise.resolve(),
-    completeAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve({ transitionApplied: true }),
     queryAttempts: () => Promise.resolve([]),
     selectForReplay: () => Promise.resolve([]),
     insertReplayCopies: (rows: NewOutboxRow[]) => Promise.resolve(rows.map((r) => r.id)),

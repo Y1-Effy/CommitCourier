@@ -42,15 +42,26 @@ export interface DeliveryEvent {
 }
 
 /**
- * Optional, fail-open delivery-outcome callbacks. Exactly one fires per delivery attempt; an
- * exception thrown by a hook is logged and swallowed so it cannot stall the dispatcher loop.
+ * Optional, fail-open delivery-outcome callbacks, each passed a secret-free {@link DeliveryEvent}
+ * (never the payload or signing secret). Contract:
+ *
+ * - A hook fires only when the row's state transition actually committed. A worker that lost its
+ *   lease to a visibility-timeout reclaim still records its ledger attempt but fires NO hook — the
+ *   worker that owns the row does. So at most one hook fires per attempt, and a stale attempt fires
+ *   none.
+ * - At-least-once, not exactly-once: a retry fires `onRetry` again, and a redelivery after a crash
+ *   can fire `onDelivered` more than once. Treat them as notifications keyed by id + attempt, not as
+ *   the ledger (use the delivery-attempts ledger for that).
+ * - Fail-open: an exception thrown by a hook is logged and swallowed so it can neither roll back the
+ *   delivery state nor stall the dispatcher loop. Hooks run inline on the dispatch path, so keep them
+ *   fast and offload slow work.
  */
 export interface DeliveryHooks {
   /** A 2xx response moved the row to `delivered`. */
   onDelivered?: (event: DeliveryEvent) => void | Promise<void>;
   /** The attempt failed but more remain; the row is back to `pending` with a backoff. */
   onRetry?: (event: DeliveryEvent) => void | Promise<void>;
-  /** The attempt failed and exhausted `maxAttempts`; the row moved to `dead`. */
+  /** The attempt failed and exhausted `maxAttempts` (or hit a permanent failure); the row moved to `dead`. */
   onDead?: (event: DeliveryEvent) => void | Promise<void>;
 }
 
@@ -316,16 +327,43 @@ async function fireHook(
 }
 
 /**
+ * A guarded transition matched no row: this worker lost its lease to a visibility-timeout reclaim and
+ * another worker now owns the row. The ledger attempt is still recorded, but we must NOT fire
+ * success/retry/dead hooks, endpoint-health/breaker updates, or dead-letter alarms — the winning
+ * worker will. We still settle the instrumentation with the real attempt outcome (the HTTP/sink call
+ * did happen) and log the skip so the race is observable rather than silent.
+ */
+function noteStaleTransition(ctx: Ctx, event: DeliveryEvent): void {
+  settle(ctx, event);
+  ctx.deps.config.logger.info(
+    "delivery transition skipped: row reclaimed by another worker (stale lease)",
+    { id: ctx.row.id, endpointId: ctx.row.endpointId, attempt: ctx.row.attempts + 1 },
+  );
+}
+
+/**
  * Success: write the ledger row and move to `delivered` in one round trip (store guards on
- * `status = 'in_flight'`), then notify onDelivered.
+ * `status = 'in_flight'` and on `locked_by`), then — only when the transition actually applied —
+ * notify onDelivered. Returns whether the transition applied so the caller can gate endpoint-health /
+ * half-open recovery the same way. A stale worker (lease reclaimed) records its ledger row but fires
+ * no success side effects.
  */
 async function applySuccess(
   ctx: Ctx,
   attempt: NewDeliveryAttempt,
   event: DeliveryEvent,
-): Promise<void> {
-  await ctx.deps.store.completeAttempt(attempt, onSuccess(ctx.now), ctx.row.lockedBy);
+): Promise<boolean> {
+  const { transitionApplied } = await ctx.deps.store.completeAttempt(
+    attempt,
+    onSuccess(ctx.now),
+    ctx.row.lockedBy,
+  );
+  if (!transitionApplied) {
+    noteStaleTransition(ctx, event);
+    return false;
+  }
   await fireHook(ctx, ctx.deps.hooks?.onDelivered, event);
+  return true;
 }
 
 /**
@@ -345,7 +383,10 @@ function noteDeadLetter(ctx: Ctx, summary: string): void {
 
 /**
  * Failure: write the ledger row and schedule the next retry or move to `dead` in one round trip
- * (guarded on `status = 'in_flight'`), then notify onRetry/onDead.
+ * (guarded on `status = 'in_flight'` and `locked_by`), then — only when the transition actually
+ * applied — fire the dead-letter alarm and notify onRetry/onDead. Returns whether the transition
+ * applied so the caller can gate endpoint-health. A stale worker (lease reclaimed) records its ledger
+ * row but fires no retry/dead side effects.
  */
 // eslint-disable-next-line max-params -- one optional Retry-After hint kept inline with the failure path
 async function applyFailure(
@@ -354,7 +395,7 @@ async function applyFailure(
   summary: string,
   event: DeliveryEvent,
   retryAfterMs?: number | null,
-): Promise<void> {
+): Promise<boolean> {
   const { row, deps, now } = ctx;
   const { retry } = deps.config;
   const dead = row.attempts + 1 >= retry.maxAttempts;
@@ -362,13 +403,18 @@ async function applyFailure(
   // hostile/buggy header cannot park a row indefinitely.
   const base = backoffMs(row.attempts + 1, retry);
   const backoff = Math.min(Math.max(base, retryAfterMs ?? 0), retry.capMs);
-  await deps.store.completeAttempt(
+  const { transitionApplied } = await deps.store.completeAttempt(
     attempt,
     onFailure(row, retry, now, summary, backoff),
     row.lockedBy,
   );
+  if (!transitionApplied) {
+    noteStaleTransition(ctx, event);
+    return false;
+  }
   if (dead) noteDeadLetter(ctx, summary);
   await fireHook(ctx, dead ? deps.hooks?.onDead : deps.hooks?.onRetry, event);
+  return true;
 }
 
 /**
@@ -385,9 +431,17 @@ async function applyPermanentFailure(
   summary: string,
   event: DeliveryEvent,
   opts: { disableEndpoint?: boolean } = {},
-): Promise<void> {
+): Promise<boolean> {
   const { row, deps, now } = ctx;
-  await deps.store.completeAttempt(attempt, onPermanentFailure(row, summary), row.lockedBy);
+  const { transitionApplied } = await deps.store.completeAttempt(
+    attempt,
+    onPermanentFailure(row, summary),
+    row.lockedBy,
+  );
+  if (!transitionApplied) {
+    noteStaleTransition(ctx, event);
+    return false;
+  }
   noteDeadLetter(ctx, summary);
   if ((opts.disableEndpoint ?? true) && row.endpointId != null) {
     try {
@@ -401,6 +455,7 @@ async function applyPermanentFailure(
     }
   }
   await fireHook(ctx, deps.hooks?.onDead, event);
+  return true;
 }
 
 /**
@@ -480,10 +535,17 @@ async function deliverHttp(
     error: success ? null : failure,
   };
   if (success) {
-    await applySuccess(ctx, attempt, eventFor(ctx, res.status, null, res.durationMs));
-    // A successful half-open trial recovers the endpoint; otherwise this is the normal health reset.
-    if (halfOpen) await noteHalfOpenOutcome(ctx, true);
-    else await noteEndpointHealth(ctx, true);
+    const applied = await applySuccess(
+      ctx,
+      attempt,
+      eventFor(ctx, res.status, null, res.durationMs),
+    );
+    // Only when this worker actually owned the transition: a successful half-open trial recovers the
+    // endpoint, otherwise this is the normal health reset. A stale worker touches neither.
+    if (applied) {
+      if (halfOpen) await noteHalfOpenOutcome(ctx, true);
+      else await noteEndpointHealth(ctx, true);
+    }
     return;
   }
   const event = eventFor(ctx, res.status, failure, res.durationMs);
@@ -507,11 +569,14 @@ async function deliverHttp(
     return;
   }
   const retryAfterMs = parseRetryAfter(res.retryAfter, now.getTime());
-  await applyFailure(ctx, attempt, failure, event, retryAfterMs);
-  // A failed half-open trial re-arms the cooldown (keep it disabled); otherwise note the failure so
-  // the breaker can trip. They are mutually exclusive: a half-open row's endpoint is already disabled.
-  if (halfOpen) await noteHalfOpenOutcome(ctx, false);
-  else await noteEndpointHealth(ctx, false);
+  const applied = await applyFailure(ctx, attempt, failure, event, retryAfterMs);
+  // Only when this worker actually owned the transition: a failed half-open trial re-arms the cooldown
+  // (keep it disabled), otherwise note the failure so the breaker can trip. They are mutually
+  // exclusive: a half-open row's endpoint is already disabled. A stale worker touches neither.
+  if (applied) {
+    if (halfOpen) await noteHalfOpenOutcome(ctx, false);
+    else await noteEndpointHealth(ctx, false);
+  }
 }
 
 /**

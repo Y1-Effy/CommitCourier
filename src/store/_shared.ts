@@ -543,6 +543,10 @@ export function replayWhere(filter: ReplayFilter): { sql: string; params: unknow
     params.push(filter.since);
     conds.push(`created_at >= $${String(params.length)}`);
   }
+  if (filter.endpointId !== undefined) {
+    params.push(filter.endpointId);
+    conds.push(`endpoint_id = $${String(params.length)}`);
+  }
   return { sql: `WHERE ${conds.join(" AND ")}`, params };
 }
 

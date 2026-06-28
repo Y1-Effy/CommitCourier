@@ -138,6 +138,21 @@ describe("admin.replay safety cap", () => {
     expect(res.capped).toBe(true);
   });
 
+  it("forwards an endpointId filter to the store so a replay can be scoped to one endpoint", async () => {
+    let seen: ReplayFilter | undefined;
+    const store = {
+      selectForReplay: (f: ReplayFilter) => {
+        seen = f;
+        return Promise.resolve([]);
+      },
+      insertReplayCopies: () => Promise.resolve([]),
+    } as unknown as Store;
+
+    await replay(store, NOW, { filter: { status: "dead", endpointId: "ep-1" } });
+    expect(seen?.endpointId).toBe("ep-1");
+    expect(seen?.status).toBe("dead");
+  });
+
   it.each(["pending", "in_flight"] as const)(
     "rejects an explicit active status (%s) so a live row is never duplicated",
     async (bad) => {

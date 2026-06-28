@@ -232,7 +232,10 @@ export function prismaStore(opts: { prisma: PrismaClientLike }): Store<PrismaTx>
       const sql = completeAttemptSql(columns, "numbered", { guardLockedBy });
       const params = [...attemptValuesStringified(newId(), a), ...values, a.outboxId];
       if (guardLockedBy) params.push(expectedLockedBy);
-      await prisma.$executeRawUnsafe(sql, ...params);
+      // $executeRaw returns the affected count of the CTE's top-level UPDATE: 0 when the guard matched
+      // no row (stale worker reclaimed), 1 when this worker still owned the row.
+      const affected = await prisma.$executeRawUnsafe(sql, ...params);
+      return { transitionApplied: affected > 0 };
     },
 
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {

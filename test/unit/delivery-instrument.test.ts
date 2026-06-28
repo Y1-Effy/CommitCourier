@@ -32,7 +32,7 @@ const noopStore = (over: Partial<Store> = {}): Store => ({
   reactivateEndpoint: () => Promise.resolve(),
   reclaimStuck: () => Promise.resolve(0),
   recordAttempt: () => Promise.resolve(),
-  completeAttempt: () => Promise.resolve(),
+  completeAttempt: () => Promise.resolve({ transitionApplied: true }),
   queryAttempts: () => Promise.resolve([]),
   selectForReplay: () => Promise.resolve([]),
   insertReplayCopies: () => Promise.resolve([]),
@@ -201,7 +201,7 @@ describe("delivery instrumentation seam", () => {
     const store = noopStore({
       completeAttempt: () => {
         completed++;
-        return Promise.resolve();
+        return Promise.resolve({ transitionApplied: true });
       },
     });
     await deliverOne(row(), deps({ result: ok, instrument, store, onError }));
@@ -218,7 +218,7 @@ describe("delivery instrumentation seam", () => {
     const store = noopStore({
       completeAttempt: () => {
         completed++;
-        return Promise.resolve();
+        return Promise.resolve({ transitionApplied: true });
       },
     });
     await deliverOne(row(), deps({ result: ok, instrument, store, onError }));

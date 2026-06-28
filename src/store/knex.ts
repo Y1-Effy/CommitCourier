@@ -81,6 +81,7 @@ function applyReplayFilter(q: Knex.QueryBuilder, filter: ReplayFilter): Knex.Que
   if (filter.outboxId !== undefined) out = out.where("id", filter.outboxId);
   if (filter.status !== undefined) out = out.where("status", filter.status);
   if (filter.since !== undefined) out = out.where("created_at", ">=", filter.since);
+  if (filter.endpointId !== undefined) out = out.where("endpoint_id", filter.endpointId);
   return out;
 }
 
@@ -216,7 +217,10 @@ export function knexStore(opts: { knex: Knex }): Store<Knex.Transaction> {
       const sql = completeAttemptSql(columns, "qmark", { guardLockedBy });
       const bindings = [...attemptValuesStringified(newId(), a), ...values, a.outboxId];
       if (guardLockedBy) bindings.push(expectedLockedBy);
-      await knex.raw(sql, bindings as Knex.RawBinding[]);
+      // knex.raw on pg resolves to the node-postgres Result; rowCount is the CTE's top-level UPDATE
+      // count: 0 when the guard matched no row (stale worker reclaimed), 1 when this worker owned it.
+      const res: { rowCount?: number } = await knex.raw(sql, bindings as Knex.RawBinding[]);
+      return { transitionApplied: (res.rowCount ?? 0) > 0 };
     },
 
     async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {

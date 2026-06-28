@@ -44,7 +44,7 @@ function fakeStore(rows: Record<string, EndpointRow | null>): {
     applyTransition: () => Promise.resolve(),
     reclaimStuck: () => Promise.resolve(0),
     recordAttempt: () => Promise.resolve(),
-    completeAttempt: () => Promise.resolve(),
+    completeAttempt: () => Promise.resolve({ transitionApplied: true }),
     queryAttempts: () => Promise.resolve([]),
     stats: () => Promise.resolve({ counts: {} as never, oldestPendingAt: null }),
     diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),

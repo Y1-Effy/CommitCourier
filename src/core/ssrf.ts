@@ -13,7 +13,15 @@ export type SsrfDecision =
   | { allowed: true }
   | {
       allowed: false;
-      reason: "private" | "loopback" | "link-local" | "metadata" | "blocklist";
+      reason:
+        | "private"
+        | "loopback"
+        | "link-local"
+        | "metadata"
+        | "shared"
+        | "multicast"
+        | "reserved"
+        | "blocklist";
     };
 
 interface ParsedIp {
@@ -28,7 +36,10 @@ const V6_MAX = (1n << 128n) - 1n;
 /**
  * Blocked CIDR ranges with their reason, in priority order (most specific first).
  * Unspecified/reserved addresses (`0.0.0.0/8`, `::/128`) route to the local host and are
- * reported as `loopback`, the closest category in {@link SsrfDecision}.
+ * reported as `loopback`, the closest category in {@link SsrfDecision}. Beyond loopback/private/
+ * link-local/metadata, we also block the non-global ("not public unicast") ranges — shared/CGNAT,
+ * multicast, broadcast, and the benchmark/documentation/reserved blocks — since none of them is a
+ * legitimate public webhook target and several are routable into internal or carrier networks.
  */
 const BLOCKED: ReadonlyArray<
   readonly [string, Exclude<SsrfDecision, { allowed: true }>["reason"]]
@@ -45,6 +56,22 @@ const BLOCKED: ReadonlyArray<
   ["fc00::/7", "private"],
   ["0.0.0.0/8", "loopback"],
   ["::/128", "loopback"],
+  // Shared Address Space / carrier-grade NAT (RFC 6598).
+  ["100.64.0.0/10", "shared"],
+  // Multicast (RFC 5771 / RFC 4291 §2.7).
+  ["224.0.0.0/4", "multicast"],
+  ["ff00::/8", "multicast"],
+  // Limited broadcast; matched before the 240.0.0.0/4 reserved block for an accurate reason.
+  ["255.255.255.255/32", "reserved"],
+  // Benchmarking (RFC 2544).
+  ["198.18.0.0/15", "reserved"],
+  // Documentation/example ranges (RFC 5737 / RFC 3849) — must never carry real traffic.
+  ["192.0.2.0/24", "reserved"],
+  ["198.51.100.0/24", "reserved"],
+  ["203.0.113.0/24", "reserved"],
+  ["2001:db8::/32", "reserved"],
+  // Reserved for future use (RFC 1112 §4); 255.255.255.255 already handled above.
+  ["240.0.0.0/4", "reserved"],
 ];
 
 function parseIpv4(s: string): bigint | null {
