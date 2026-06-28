@@ -52,8 +52,8 @@ Please make sure `npm run check` is green before opening a pull request.
   `*.ja.md` (`README`, `CHANGELOG`, `SECURITY`, `CONTRIBUTING`, `CODE_OF_CONDUCT`). When you change
   one, update its counterpart in the **same PR** so the pair never drifts.
 
-The detailed design lives in `docs/` (not shipped to npm). The `README` is the source of truth
-for consumers.
+The `README` is the source of truth for consumers. The detailed design notes are maintained by
+the author outside this repository and are not published here or to npm.
 
 ## Public API changes
 
