@@ -15,7 +15,7 @@ import {
   RelayError,
 } from "../core/index";
 import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/index";
-import type { Store, NewDeliveryAttempt } from "../store/store";
+import type { DispatchStore, EndpointStore, NewDeliveryAttempt } from "../store/store";
 import type { createHttpClient } from "./http";
 import type { Sink, SinkResult } from "../forward/index";
 import { secretFreeSummary } from "./_error";
@@ -89,7 +89,7 @@ export type DeliveryInstrument = (
 ) => ((event: DeliveryEvent) => void) | undefined;
 
 export interface DeliverDeps {
-  store: Store;
+  store: DispatchStore & EndpointStore;
   http: ReturnType<typeof createHttpClient>;
   config: RelayConfig;
   clock: Clock;
@@ -221,7 +221,7 @@ function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
  */
 async function resolveTarget(
   row: OutboxRow,
-  store: Store,
+  store: EndpointStore,
   recovery: { cooldownMs: number; now: Date },
 ): Promise<Resolved> {
   if (row.endpointId != null) {

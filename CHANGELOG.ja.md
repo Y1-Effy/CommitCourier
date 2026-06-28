@@ -7,6 +7,29 @@
 形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/) に基づき、本プロジェクトは
 [セマンティック バージョニング](https://semver.org/lang/ja/) に従います。
 
+## [Unreleased]
+
+### Changed（変更）
+
+- **`Store` を capability ロールに分解（追加的・非破壊）**。約 25 メソッドを単一に集約していた
+  `Store<TTx>` ポートを、責務ごとの 7 つのロールインターフェース——`OutboxEnqueueStore<TTx>` /
+  `DispatchStore` / `EndpointStore` / `OutboxQueryStore` / `ReplayStore` / `MaintenanceStore` /
+  `SchemaStore`——の合成として再定義しました（各ロールが自身の atomicity・トランザクション契約を
+  明記）。`Store` は従来どおりこれら全ロールを extends するため、同梱の `pg` / Knex / Drizzle /
+  Prisma アダプタや既存の `Store` 実装は無変更です。内部では各 consumer が使用するロールのみに依存
+  するようになり（例：dispatcher は `DispatchStore`）、各ロールは `commitcourier` から export して
+  いるため、第三者アダプタ作者がどのメソッドがどの責務に属するかを把握できます。
+- **4 つのリレーショナルアダプタの重複をすべて共有 SQL ストアへ集約（内部のみ・振る舞い不変）**。
+  `pg` / Drizzle / Prisma / Knex の各アダプタは、同じ Postgres SQL を約 300 行ずつ重複実装して
+  いました。このロジックを、薄いアダプタ別 `SqlExecutor` シーム（query / execute / insert-on-tx /
+  withTx）の上の内部 `createSqlStore` に一元化し、Store メソッド追加が 4 箇所から 1 箇所で済むように
+  しました。Knex は `$n` ではなく positional `?` を束縛するため、共有の numbered SQL を小さな
+  `numberedToQmark` ヘルパで `knex.raw` 直前に変換します（クエリビルダ実装は廃止）。4 アダプタ合計で
+  約 1310 → 約 360 行に削減。SQL は実質不変で、integration / concurrency / fault スイートが
+  Postgres 12/16/17 で全通過します。あわせて共有 `_shared.ts` を責務別に
+  `store/sql/{constants,migrations,row-mappers,columns,query-builders,placeholders}.ts` へ分割しました
+  （`_shared.ts` から再 export するため import は不変）。公開 API の変更はありません。
+
 ## [0.2.0] - 2026-06-28
 
 npm への初の公開リリース。（下記の未公開 0.1.0 開発ベースラインを置き換えます。）

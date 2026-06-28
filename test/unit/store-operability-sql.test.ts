@@ -19,6 +19,7 @@ import {
   clampPruneLimit,
   PRUNE_DEFAULT_LIMIT,
   PRUNE_MAX_LIMIT,
+  numberedToQmark,
 } from "../../src/store/_shared";
 
 describe("cancel SQL", () => {
@@ -45,29 +46,25 @@ describe("circuit-breaker SQL", () => {
   });
 
   it("increments and auto-disables atomically; numbered reuses $2 for the threshold (pg)", () => {
-    const sql = buildNoteEndpointFailureSql("numbered");
+    const sql = buildNoteEndpointFailureSql();
     expect(sql).toContain("consecutive_failures = consecutive_failures + 1");
     // The threshold is $2 (reused in both CASE arms), now is $3, id is $1.
     expect(sql).toContain("consecutive_failures + 1 >= $2 AND status = 'active' THEN 'disabled'");
     expect(sql).toContain("THEN $3 ELSE disabled_at END");
     expect(sql).toContain("WHERE id = $1");
-    expect(noteEndpointFailureParams("numbered", "ep-1", new Date(0), 5)).toEqual([
-      "ep-1",
-      5,
-      new Date(0),
-    ]);
+    expect(noteEndpointFailureParams("ep-1", new Date(0), 5)).toEqual(["ep-1", 5, new Date(0)]);
   });
 
-  it("lists the threshold twice for knex.raw (positional ? cannot be reused)", () => {
-    const sql = buildNoteEndpointFailureSql("qmark");
-    expect((sql.match(/\?/g) ?? []).length).toBe(4); // thr, thr, now, id
-    // qmark binds in textual order: threshold, threshold, now, id.
-    expect(noteEndpointFailureParams("qmark", "ep-1", new Date(0), 5)).toEqual([
-      5,
+  it("lists the threshold twice once translated for knex.raw (positional ? cannot be reused)", () => {
+    // The knex adapter runs the numbered SQL + [id, threshold, now] through numberedToQmark, which
+    // re-binds the reused $2 — so the threshold ends up listed twice in textual order.
+    const { sql, bindings } = numberedToQmark(buildNoteEndpointFailureSql(), [
+      "ep-1",
       5,
       new Date(0),
-      "ep-1",
     ]);
+    expect((sql.match(/\?/g) ?? []).length).toBe(4); // thr, thr, now, id
+    expect(bindings).toEqual([5, 5, new Date(0), "ep-1"]);
   });
 });
 
@@ -82,7 +79,7 @@ describe("getOutbox SQL is secret-free", () => {
 
 describe("prune SQL", () => {
   it("deletes via a bounded oldest-first inner SELECT; statuses expanded as IN placeholders (pg)", () => {
-    const sql = buildPruneSql(3, "numbered");
+    const sql = buildPruneSql(3);
     // The status set is expanded into individual placeholders (no bound array), then olderThan, then limit.
     expect(sql).toContain("status IN ($1, $2, $3)");
     expect(sql).toContain("created_at < $4");
@@ -91,8 +88,8 @@ describe("prune SQL", () => {
     expect(sql).toMatch(/^DELETE FROM webhook_outbox WHERE id IN \(SELECT id FROM webhook_outbox/);
   });
 
-  it("emits positional ? in textual order for knex.raw", () => {
-    const sql = buildPruneSql(2, "qmark");
+  it("translates to positional ? in textual order for knex.raw", () => {
+    const sql = numberedToQmark(buildPruneSql(2), new Array(4)).sql;
     expect(sql).toContain("status IN (?, ?)");
     // 2 statuses + olderThan + limit = 4 placeholders.
     expect((sql.match(/\?/g) ?? []).length).toBe(4);

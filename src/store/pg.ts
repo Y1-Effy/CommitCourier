@@ -4,73 +4,19 @@
  * `TTx = PoolClient`: `insertOutbox` runs on the caller's client and joins the user's TX
  * (fail-closed). dispatch-path methods acquire their own connection from the pool. `pg` is an
  * optional peer dependency, so it is imported for types only and the pool is injected.
+ *
+ * The Store semantics live in {@link createSqlStore}; this adapter only supplies the node-postgres
+ * execution seam ({@link SqlExecutor}) and the multi-statement `migrate` protocol.
  */
 import type { Pool, PoolClient } from "pg";
-import type { OutboxRow, DeliveryAttempt, EndpointRow, Transition } from "../core/index";
-import type {
-  NewOutboxRow,
-  NewDeliveryAttempt,
-  NewEndpointRow,
-  EndpointPatch,
-  ReplayFilter,
-  OutboxStats,
-  OutboxListFilter,
-  EndpointListFilter,
-  Store,
-} from "./store";
+import type { Store } from "./store";
+import { createSqlStore, type SqlExecutor } from "./sql-store";
 import {
-  OUTBOX_TABLE,
-  ATTEMPTS_TABLE,
-  ENDPOINTS_TABLE,
-  OUTBOX_COLUMNS,
-  ATTEMPT_COLUMNS,
-  ENDPOINT_COLUMNS,
-  ENDPOINT_JSON_COLUMN,
-  outboxValues,
-  attemptValues,
-  endpointValues,
-  endpointPatchColumns,
-  transitionColumns,
-  completeAttemptSql,
-  insertClause,
-  insertManyClause,
-  replayWhere,
-  buildOutboxListQuery,
-  buildEndpointListQuery,
-  outboxListPage,
-  endpointListPage,
-  clampListLimit,
-  countsFromRows,
-  mapOutboxRow,
-  mapAttemptRow,
-  mapEndpointRow,
-  mapOutboxListItem,
-  diagnoseResult,
-  existingFromRow,
   applyMigrations,
   migrationScript,
   migrationsTableScript,
   SELECT_APPLIED_MIGRATIONS_SQL,
-  CANCEL_PENDING_SQL,
-  GET_OUTBOX_SQL,
-  NOTE_ENDPOINT_SUCCESS_SQL,
-  REACTIVATE_ENDPOINT_SQL,
-  buildNoteEndpointFailureSql,
-  noteEndpointFailureParams,
-  buildPruneSql,
-  pruneParams,
-  newId,
-  type RawOutboxRow,
-  type RawAttemptRow,
-  type RawEndpointRow,
-  type RawOutboxListRow,
-  type RawEndpointSummaryRow,
 } from "./_shared";
-import { postgres } from "./sql/postgres";
-
-const INSERT_OUTBOX_SQL = insertClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload");
-const INSERT_ATTEMPT_SQL = insertClause(ATTEMPTS_TABLE, ATTEMPT_COLUMNS, "request_headers");
-const INSERT_ENDPOINT_SQL = insertClause(ENDPOINTS_TABLE, ENDPOINT_COLUMNS, ENDPOINT_JSON_COLUMN);
 
 /** Run `fn` inside a BEGIN/COMMIT, rolling back on error and always releasing the client. */
 async function withTx<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -94,55 +40,6 @@ async function withTx<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Pr
   }
 }
 
-async function insertOutboxWith(client: PoolClient, row: NewOutboxRow): Promise<void> {
-  await client.query(INSERT_OUTBOX_SQL, outboxValues(row));
-}
-
-/** Registered-endpoint admin + stats methods, factored out to keep the store factory small. */
-function endpointAndStatsMethods(
-  pool: Pool,
-): Pick<Store, "insertEndpoint" | "updateEndpoint" | "findEndpoint" | "disableEndpoint" | "stats"> {
-  return {
-    async insertEndpoint(ep: NewEndpointRow) {
-      await pool.query(INSERT_ENDPOINT_SQL, endpointValues(ep));
-    },
-
-    async updateEndpoint(id, patch: EndpointPatch) {
-      const { columns, values } = endpointPatchColumns(patch);
-      if (columns.length === 0) return; // no-op patch
-      const set = columns
-        .map((c, i) => `${c} = $${String(i + 2)}${c === ENDPOINT_JSON_COLUMN ? "::jsonb" : ""}`)
-        .join(", ");
-      await pool.query(`UPDATE ${ENDPOINTS_TABLE} SET ${set} WHERE id = $1`, [id, ...values]);
-    },
-
-    async findEndpoint(id): Promise<EndpointRow | null> {
-      const res = await pool.query(`SELECT * FROM ${ENDPOINTS_TABLE} WHERE id = $1`, [id]);
-      const row = (res.rows as RawEndpointRow[])[0];
-      return row ? mapEndpointRow(row) : null;
-    },
-
-    async disableEndpoint(id, now) {
-      const sql = `UPDATE ${ENDPOINTS_TABLE} SET status = 'disabled', disabled_at = $2 WHERE id = $1`;
-      await pool.query(sql, [id, now]);
-    },
-
-    async stats(): Promise<OutboxStats> {
-      const counts = await pool.query(
-        `SELECT status, count(*) AS count FROM ${OUTBOX_TABLE} GROUP BY status`,
-      );
-      const oldest = await pool.query(
-        `SELECT min(available_at) AS oldest FROM ${OUTBOX_TABLE} WHERE status = 'pending'`,
-      );
-      const oldestPendingAt = (oldest.rows as { oldest: Date | null }[])[0]?.oldest ?? null;
-      return {
-        counts: countsFromRows(counts.rows as { status: string; count: string }[]),
-        oldestPendingAt,
-      };
-    },
-  };
-}
-
 /**
  * Build a {@link Store} backed by node-postgres (`pg`). `enqueue(trx, …)` takes a `PoolClient` so
  * the outbox write rides the caller's transaction (fail-closed); dispatch-path methods acquire
@@ -154,166 +51,39 @@ function endpointAndStatsMethods(
 export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
   const { pool } = opts;
 
-  return {
-    insertOutbox(client, row) {
-      // Ride the caller's TX: any error propagates so the user's TX rolls back (fail-closed).
-      return insertOutboxWith(client, row);
+  // node-postgres serialises JS objects to jsonb itself and returns `{ rows, rowCount }`.
+  const exec: SqlExecutor<PoolClient> = {
+    jsonAsText: false,
+    async query<R>(sql: string, params: readonly unknown[]) {
+      const res = await pool.query(sql, params as unknown[]);
+      return res.rows as R[];
     },
-
-    async insertOutboxMany(client, rows) {
-      if (rows.length === 0) return; // no-op
-      const sql = insertManyClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload", rows.length);
-      await client.query(
-        sql,
-        rows.flatMap((r) => outboxValues(r)),
-      );
-    },
-
-    async insertOutboxAutonomous(row) {
-      await pool.query(INSERT_OUTBOX_SQL, outboxValues(row));
-    },
-
-    async claimDue({ limit, lockedBy, now, ordering }) {
-      // Single atomic statement: SELECT ... FOR UPDATE SKIP LOCKED then UPDATE to in_flight.
-      // Both variants share the same `[now, limit, lockedBy]` bindings ($1 reused for every now slot).
-      const sql =
-        ordering === "per-endpoint"
-          ? postgres.claimSqlPerEndpoint.numbered
-          : postgres.claimSql.numbered;
-      const res = await pool.query(sql, [now, limit, lockedBy]);
-      return (res.rows as RawOutboxRow[]).map(mapOutboxRow);
-    },
-
-    async applyTransition(id, t: Transition) {
-      const { columns, values } = transitionColumns(t);
-      const set = columns.map((c, i) => `${c} = $${String(i + 2)}`).join(", ");
-      // Idempotency guard: only act on a row still held in_flight.
-      const sql = `UPDATE ${OUTBOX_TABLE} SET ${set} WHERE id = $1 AND status = 'in_flight'`;
-      await pool.query(sql, [id, ...values]);
-    },
-
-    async cancel(id): Promise<boolean> {
-      // Guarded on pending so an in_flight/terminal row is never cancelled from under a delivery.
-      const res = await pool.query(CANCEL_PENDING_SQL, [id]);
-      return (res.rowCount ?? 0) > 0;
-    },
-
-    async noteEndpointSuccess(id) {
-      await pool.query(NOTE_ENDPOINT_SUCCESS_SQL, [id]);
-    },
-
-    async noteEndpointFailure(id, now, threshold) {
-      await pool.query(
-        buildNoteEndpointFailureSql("numbered"),
-        noteEndpointFailureParams("numbered", id, now, threshold),
-      );
-    },
-
-    async reactivateEndpoint(id) {
-      await pool.query(REACTIVATE_ENDPOINT_SQL, [id]);
-    },
-
-    async reclaimStuck({ reclaimAfterMs, now }) {
-      const cutoff = new Date(now.getTime() - reclaimAfterMs);
-      const sql = `UPDATE ${OUTBOX_TABLE} SET status = 'pending', locked_at = NULL, locked_by = NULL WHERE status = 'in_flight' AND locked_at < $1`;
-      const res = await pool.query(sql, [cutoff]);
+    async execute(sql, params) {
+      const res = await pool.query(sql, params as unknown[]);
       return res.rowCount ?? 0;
     },
-
-    async recordAttempt(a: NewDeliveryAttempt) {
-      await pool.query(INSERT_ATTEMPT_SQL, attemptValues(newId(), a));
+    async insertOnTx(client, sql, params) {
+      await client.query(sql, params as unknown[]);
     },
-
-    async completeAttempt(a: NewDeliveryAttempt, t: Transition, expectedLockedBy) {
-      // One round trip: INSERT the ledger row and apply the transition (guarded on in_flight, and on
-      // locked_by when the claiming worker is known, so a reclaimed+re-locked row is not clobbered).
-      const { columns, values } = transitionColumns(t);
-      const guardLockedBy = expectedLockedBy != null;
-      const sql = completeAttemptSql(columns, "numbered", { guardLockedBy });
-      const params = [...attemptValues(newId(), a), ...values, a.outboxId];
-      if (guardLockedBy) params.push(expectedLockedBy);
-      // rowCount is the affected count of the CTE's top-level UPDATE: 0 when the guard matched no row
-      // (stale worker reclaimed), 1 when this worker still owned the row.
-      const res = await pool.query(sql, params);
-      return { transitionApplied: (res.rowCount ?? 0) > 0 };
-    },
-
-    async queryAttempts({ outboxId }): Promise<DeliveryAttempt[]> {
-      const sql = `SELECT * FROM ${ATTEMPTS_TABLE} WHERE outbox_id = $1 ORDER BY attempt_no`;
-      const res = await pool.query(sql, [outboxId]);
-      return (res.rows as RawAttemptRow[]).map(mapAttemptRow);
-    },
-
-    async selectForReplay(filter: ReplayFilter): Promise<OutboxRow[]> {
-      const where = replayWhere(filter);
-      const params = [...where.params];
-      let limit = "";
-      if (filter.limit !== undefined) {
-        params.push(filter.limit);
-        limit = ` LIMIT $${String(params.length)}`;
-      }
-      const sql = `SELECT * FROM ${OUTBOX_TABLE} ${where.sql} ORDER BY created_at${limit}`;
-      const res = await pool.query(sql, params);
-      return (res.rows as RawOutboxRow[]).map(mapOutboxRow);
-    },
-
-    async getOutbox(id) {
-      const res = await pool.query(GET_OUTBOX_SQL, [id]);
-      const row = (res.rows as RawOutboxListRow[])[0];
-      return row ? mapOutboxListItem(row) : null;
-    },
-
-    async prune({ olderThan, statuses, limit }) {
-      if (statuses.length === 0) return { deleted: 0 };
-      const sql = buildPruneSql(statuses.length, "numbered");
-      const res = await pool.query(sql, pruneParams(statuses, olderThan, limit));
-      return { deleted: res.rowCount ?? 0 };
-    },
-
-    async insertReplayCopies(rows): Promise<string[]> {
-      return withTx(pool, async (client) => {
-        for (const row of rows) {
-          await insertOutboxWith(client, row);
-        }
-        return rows.map((r) => r.id);
-      });
-    },
-
-    async listOutbox(filter: OutboxListFilter) {
-      const { sql, params } = buildOutboxListQuery(filter, "numbered");
-      const res = await pool.query(sql, params);
-      return outboxListPage(res.rows as RawOutboxListRow[], clampListLimit(filter.limit));
-    },
-
-    async listEndpoints(filter: EndpointListFilter) {
-      const { sql, params } = buildEndpointListQuery(filter, "numbered");
-      const res = await pool.query(sql, params);
-      return endpointListPage(res.rows as RawEndpointSummaryRow[], clampListLimit(filter.limit));
-    },
-
-    ...endpointAndStatsMethods(pool),
-
-    async diagnose() {
-      const res = await pool.query(postgres.diagnoseSql);
-      const row = (res.rows as Record<string, unknown>[])[0] ?? {};
-      return diagnoseResult(existingFromRow(row));
-    },
-
-    async migrate() {
-      await applyMigrations({
-        // One multi-statement simple query (advisory lock + DDL) is a single implicit transaction.
-        ensureTable: async () => {
-          await pool.query(migrationsTableScript());
-        },
-        appliedNames: async () => {
-          const res = await pool.query(SELECT_APPLIED_MIGRATIONS_SQL);
-          return new Set((res.rows as { name: string }[]).map((r) => r.name));
-        },
-        // One multi-statement simple query (advisory lock + DDL + record INSERT) is one implicit transaction.
-        apply: async (m) => {
-          await pool.query(migrationScript(m));
-        },
-      });
+    withTx(fn) {
+      return withTx(pool, fn);
     },
   };
+
+  return createSqlStore(exec, async () => {
+    await applyMigrations({
+      // One multi-statement simple query (advisory lock + DDL) is a single implicit transaction.
+      ensureTable: async () => {
+        await pool.query(migrationsTableScript());
+      },
+      appliedNames: async () => {
+        const res = await pool.query(SELECT_APPLIED_MIGRATIONS_SQL);
+        return new Set((res.rows as { name: string }[]).map((r) => r.name));
+      },
+      // One multi-statement simple query (advisory lock + DDL + record INSERT) is one implicit transaction.
+      apply: async (m) => {
+        await pool.query(migrationScript(m));
+      },
+    });
+  });
 }

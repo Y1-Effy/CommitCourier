@@ -25,8 +25,8 @@ interface PerEndpointClaimPlaceholders {
 
 /**
  * Claim query. One CTE: `SELECT ... FOR UPDATE SKIP LOCKED`, then `UPDATE`
- * to `in_flight`, `RETURNING` the claimed rows. Rendered per placeholder style so both driver
- * adapters share identical semantics.
+ * to `in_flight`, `RETURNING` the claimed rows. The placeholder slots are filled with numbered
+ * (`$n`) markers; `now` reuses the same slot, so callers bind `[now, limit, lockedBy]`.
  */
 function buildClaimSql(p: ClaimPlaceholders): string {
   return `WITH due AS (
@@ -95,29 +95,15 @@ const DIAGNOSE_SQL = `SELECT
 /** The Postgres dialect: the only SQL a relational adapter needs beyond the shared plumbing. */
 export const postgres: SqlDialect = {
   name: "postgres",
-  claimSql: {
-    // pg bindings are `[now, limit, lockedBy]` ($1 is reused for both `now` slots).
-    numbered: buildClaimSql({ now: "$1", limit: "$2", nowSet: "$1", lockedBy: "$3" }),
-    // knex.raw bindings are `[now, limit, now, lockedBy]` (positional `?`, `now` appears twice).
-    qmark: buildClaimSql({ now: "?", limit: "?", nowSet: "?", lockedBy: "?" }),
-  },
-  claimSqlPerEndpoint: {
-    // pg bindings are `[now, limit, lockedBy]` ($1 is reused for every `now` slot).
-    numbered: buildPerEndpointClaimSql({
-      nowHead: "$1",
-      nowInline: "$1",
-      limit: "$2",
-      nowSet: "$1",
-      lockedBy: "$3",
-    }),
-    // knex.raw bindings are `[now, now, limit, now, lockedBy]` (positional `?`, in textual order).
-    qmark: buildPerEndpointClaimSql({
-      nowHead: "?",
-      nowInline: "?",
-      limit: "?",
-      nowSet: "?",
-      lockedBy: "?",
-    }),
-  },
+  // Bindings are `[now, limit, lockedBy]` ($1 is reused for every `now` slot). The knex adapter
+  // translates the numbered SQL to positional `?` via `numberedToQmark`, which re-binds the reused $1.
+  claimSql: buildClaimSql({ now: "$1", limit: "$2", nowSet: "$1", lockedBy: "$3" }),
+  claimSqlPerEndpoint: buildPerEndpointClaimSql({
+    nowHead: "$1",
+    nowInline: "$1",
+    limit: "$2",
+    nowSet: "$1",
+    lockedBy: "$3",
+  }),
   diagnoseSql: DIAGNOSE_SQL,
 };

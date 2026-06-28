@@ -7,7 +7,16 @@
  */
 export * from "./core/index";
 export type {
+  // The composed persistence port, plus its capability roles (interface segregation): an adapter
+  // implements all of them via `Store`; a consumer can depend on just the role(s) it needs.
   Store,
+  OutboxEnqueueStore,
+  DispatchStore,
+  EndpointStore,
+  OutboxQueryStore,
+  ReplayStore,
+  MaintenanceStore,
+  SchemaStore,
   NewOutboxRow,
   NewDeliveryAttempt,
   NewEndpointRow,
