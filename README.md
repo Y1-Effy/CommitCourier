@@ -80,16 +80,20 @@ await store.migrate();
 `createRelay` is async: it validates config and fails fast if the tables are missing.
 
 ```ts
-import { createRelay } from "commitcourier";
+import { createRelay, createConsoleLogger } from "commitcourier";
 
 const relay = await createRelay({
   store,
+  // Inject a logger from the start: the default is a no-op, so without one routine delivery
+  // failures and retries are silent. See [Logging & observability](#logging--observability).
+  logger: createConsoleLogger(),
   // all of the following are optional and shown with their defaults:
   mode: "active",
   signing: { scheme: "standard-webhooks" },
   retry: { maxAttempts: 12, backoff: "exponential", baseMs: 1_000, capMs: 3_600_000, jitter: 0.2 },
   delivery: { timeoutMs: 15_000, bodySnippetBytes: 4_096 },
   ssrf: { blockPrivateRanges: true, allowlist: [], blocklist: [] },
+  // maxPayloadBytes: 1_048_576, // optional, off by default: cap the enqueued payload size
 });
 ```
 
@@ -259,6 +263,8 @@ manual cancel           ─▶ cancelled
 
 If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` exceeds the visibility timeout (`reclaimAfterMs`, default 5 min); the next tick reclaims it back to `pending`. That's how CommitCourier guarantees **at-least-once**.
 
+> **Crash-looping ("poison") rows.** `attempts` is incremented only when a delivery *attempt completes* and records its outcome — a process crash *before* that (OOM, `SIGKILL`, etc.) leaves `attempts` unchanged, so a reclaim returns the row to `pending` without consuming the retry budget. This is deliberate: a transient infrastructure failure must not burn attempts or drop the event. The trade-off is that a row which crashes the worker on *every* delivery is reclaimed and retried indefinitely (every `reclaimAfterMs`) rather than being dead-lettered. Ordinary delivery failures (HTTP errors, timeouts, exceptions inside delivery) always record an attempt and do count toward `maxAttempts`; only a hard process crash mid-delivery is exempt. If you need to stop such a row, watch for repeated reclaims (e.g. an old `created_at` still `pending`/`in_flight`) and `relay.cancel(id)` it.
+
 ### Retry & failure classification
 
 What happens to a delivery is a stable part of the contract:
@@ -295,6 +301,7 @@ All config is optional and merged over safe defaults. Invalid values are rejecte
 | `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                                             |
 | `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                                               |
 |            | `endpointCacheTtlMs` | `0` (off)             | TTL (ms) for an in-process registered-endpoint lookup cache; see Performance tuning. |
+|            | `maxPayloadBytes`    | _(off)_               | Optional cap on the enqueued payload's serialized UTF-8 byte length; over-size rejects with `ENQUEUE_INVALID_PAYLOAD`. Serializability is always validated. |
 
 Dispatcher options (`relay.createDispatcher({ … })`):
 
@@ -404,7 +411,9 @@ const relay = await createRelay({
 });
 ```
 
-Once an endpoint has been disabled for at least `cooldownMs`, the dispatcher lets a single delivery through as a half-open trial: a success re-activates it (and resets the counter), a failure re-arms the cooldown so the next trial waits another `cooldownMs`. Within the cooldown no HTTP attempt is made. It applies to any disabled registered endpoint (whether disabled by the breaker or a `410 Gone`); `cooldownMs: 0` (the default) keeps recovery manual.
+Once an endpoint has been disabled for at least `cooldownMs`, the dispatcher lets a trial delivery through as a half-open probe: a success re-activates it (and resets the counter), a failure re-arms the cooldown so the next trial waits another `cooldownMs`. Within the cooldown no HTTP attempt is made. It applies to any disabled registered endpoint (whether disabled by the breaker or a `410 Gone`); `cooldownMs: 0` (the default) keeps recovery manual.
+
+> **Trial concurrency.** The probe is a single delivery only under `ordering: "per-endpoint"` (with one dispatcher instance), which serialises to at most one in-flight delivery per endpoint. Under the default `ordering: "none"` every currently-due `pending` row for the endpoint is admitted as a trial at once, so a still-fragile endpoint can see a burst on recovery — use `"per-endpoint"` ordering if you need the recovery probe to be a single request.
 
 ### Logging & observability
 
@@ -455,6 +464,8 @@ The counter and histogram are recorded **per delivery attempt** (each retry coun
 ### Low-latency delivery (accelerator)
 
 By default the dispatcher polls, so a row enqueued onto a quiet queue waits up to `pollIntervalMs` before delivery starts. The optional **accelerator** cuts that wait: each enqueue wakes a listening dispatcher so delivery begins near-immediately. The outbox row stays the single source of truth — a missed wake only delays delivery (the poller still reclaims the row), so the accelerator never affects correctness or availability.
+
+> **Idle polling cost at scale.** With the default 1s `pollIntervalMs`, every running dispatcher issues ~1 claim query/second even when the queue is idle, so _N_ instances mean _N_ queries/second against `webhook_outbox`. Each is cheap (the partial index `ix_outbox_due WHERE status = 'pending'` keeps the scan small), but not free. When you run many always-on dispatchers, pair the accelerator below with a longer `pollIntervalMs` (e.g. `10_000`): wakes drive low-latency delivery and polling becomes a slow safety-net fallback rather than the primary path.
 
 The first implementation, `commitcourier/accelerator/pg`, uses Postgres LISTEN/NOTIFY (no extra infrastructure). The `NOTIFY` rides the enqueue transaction, so a listener never wakes before the row is visible; the LISTEN runs on its own self-healing connection.
 
@@ -553,6 +564,7 @@ Every error the library throws is a `RelayError` with a stable, machine-readable
 | `CONFIG_INVALID`     | `createRelay` (startup)         | Invalid configuration (fail-fast).                                           |
 | `MISSING_TABLES`     | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.                              |
 | `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided.                 |
+| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe` | Payload is not JSON-serializable (circular reference, `BigInt`, …) or exceeds `maxPayloadBytes`. |
 | `INVALID_ARGUMENT`   | `list` / `endpoints.list`       | A list filter was malformed (e.g. a non-numeric `cursor`, unknown `status`). |
 | `SSRF_BLOCKED`       | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                                     |
 | `ENDPOINT_NOT_FOUND` | dispatch (recorded, not thrown) | `endpointId` is not registered.                                              |
@@ -628,6 +640,7 @@ Policy:
 - **Concurrency-safe.** `migrate()` takes a Postgres transaction-scoped advisory lock (`pg_advisory_xact_lock`), so running it from several instances at deploy time serialises rather than racing.
 - **Expand-and-contract.** Schema changes avoid immediately dropping or renaming existing columns, so an old app version and a new schema can co-exist during a rolling deploy.
 - **When to run.** Run it once at deploy time (a release/CI step or app boot before the dispatcher starts) — not on every request. `commitcourier doctor` reports any pending migrations.
+- **Large existing databases.** On a fresh install the tables are empty, so the DDL is instant. If a future migration adds an index or `ALTER`s a column on an already-large `webhook_outbox`, note that `migrate()` builds indexes with a plain `CREATE INDEX` (not `CONCURRENTLY`, which cannot run inside `migrate()`'s transaction) — that takes a write lock for the duration of the build. Run it in a low-traffic window from a single instance, or apply the equivalent `CREATE INDEX CONCURRENTLY` by hand out-of-band before deploying.
 
 ## Removing CommitCourier
 

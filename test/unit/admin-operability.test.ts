@@ -6,7 +6,7 @@
  * can page on. No Docker.
  */
 import { describe, expect, it } from "vitest";
-import { cancel, getOutbox, prune, replay } from "../../src/admin/admin";
+import { cancel, enableEndpoint, getOutbox, prune, replay } from "../../src/admin/admin";
 import { RelayError } from "../../src/core/errors";
 import {
   REPLAY_DEFAULT_LIMIT,
@@ -115,6 +115,21 @@ describe("admin.prune validation + defaults", () => {
     const { store: s, seen } = store();
     await prune(s, { olderThan: NOW, statuses: ["observed"] });
     expect(seen()?.statuses).toEqual(["observed"]);
+  });
+});
+
+describe("admin.enableEndpoint", () => {
+  it("routes through reactivateEndpoint (resets the breaker counter), not a status-only update", async () => {
+    const calls = { reactivate: [] as string[], update: 0 };
+    const s = {
+      reactivateEndpoint: (id: string) => Promise.resolve(void calls.reactivate.push(id)),
+      updateEndpoint: () => Promise.resolve(void calls.update++),
+    } as unknown as Store;
+    await enableEndpoint(s, UUID);
+    // Must reset consecutive_failures (reactivateEndpoint), so a breaker-disabled endpoint gets a
+    // full failureThreshold budget again instead of a status-only flip that leaves the counter high.
+    expect(calls.reactivate).toEqual([UUID]);
+    expect(calls.update).toBe(0);
   });
 });
 

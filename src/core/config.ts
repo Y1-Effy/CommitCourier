@@ -124,6 +124,10 @@ function validate(cfg: Omit<RelayConfig, "clock" | "logger">): void {
   validateRetry(cfg.retry);
   validateDelivery(cfg.delivery);
   validateCircuitBreaker(cfg.circuitBreaker);
+  // Optional: only validate when the caller opted in (omitted = no limit).
+  if (cfg.maxPayloadBytes !== undefined) {
+    requirePositiveInt("maxPayloadBytes", cfg.maxPayloadBytes);
+  }
 }
 
 /** Emit non-fatal warnings for dangerous-but-valid settings. */
@@ -164,6 +168,8 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
         input.circuitBreaker?.failureThreshold ?? DEFAULTS.circuitBreaker.failureThreshold,
       cooldownMs: input.circuitBreaker?.cooldownMs ?? DEFAULTS.circuitBreaker.cooldownMs,
     },
+    // Optional, off by default: left undefined unless the caller sets it.
+    maxPayloadBytes: input.maxPayloadBytes,
   };
   validate(merged);
 
@@ -182,6 +188,7 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
       blocklist: Object.freeze([...merged.ssrf.blocklist]),
     }),
     circuitBreaker: Object.freeze(merged.circuitBreaker),
+    maxPayloadBytes: merged.maxPayloadBytes,
     clock: input.clock ?? (() => new Date()),
     logger,
   });

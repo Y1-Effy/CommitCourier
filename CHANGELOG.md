@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Enqueue payload validation:** `enqueue` / `enqueueMany` / `enqueueUnsafe` now reject a payload that
+  cannot be stored as `jsonb` — a circular reference, a `BigInt`, or a value that serializes to
+  `undefined` — with a stable `RelayError("ENQUEUE_INVALID_PAYLOAD")` instead of leaking a raw driver
+  error into your business transaction (symmetric to how the missing-endpoint case is already
+  `ENQUEUE_NO_TARGET`). An optional `createRelay({ maxPayloadBytes })` (off by default) additionally
+  caps the serialized payload's UTF-8 byte length. Exposed as the pure helper `validatePayload` from
+  `commitcourier/core`.
+
 ### Changed
 
 - **`Store` decomposed into capability roles (additive, non-breaking).** The single ~25-method
@@ -30,6 +40,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Postgres 12/16/17. Separately, the shared `_shared.ts` plumbing was split by concern into
   `store/sql/{constants,migrations,row-mappers,columns,query-builders,placeholders}.ts` (re-exported
   from `_shared.ts`, so every import is unchanged). No public API change.
+
+### Documentation
+
+- Quick start now injects `createConsoleLogger()` from the outset, so the default no-op logger does not
+  silently swallow routine delivery failures and retries.
+- Migrations: documented that building an index on an already-large `webhook_outbox` takes a write lock
+  (`migrate()` uses a plain `CREATE INDEX`, not `CONCURRENTLY`), with guidance for large existing databases.
+- Accelerator: documented the idle polling cost of many always-on dispatchers and pairing the accelerator
+  with a longer `pollIntervalMs`.
 
 ## [0.2.0] - 2026-06-28
 

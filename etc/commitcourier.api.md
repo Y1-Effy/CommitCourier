@@ -544,6 +544,7 @@ export interface RelayConfig {
     // (undocumented)
     delivery: DeliveryConfig;
     logger: Logger;
+    maxPayloadBytes?: number;
     // (undocumented)
     mode: Mode;
     // (undocumented)
@@ -564,7 +565,7 @@ export class RelayError extends Error {
 }
 
 // @public
-export type RelayErrorCode = "CONFIG_INVALID" | "MISSING_TABLES" | "SSRF_BLOCKED" | "ENDPOINT_NOT_FOUND" | "ENDPOINT_DISABLED" | "MISSING_SECRET" | "ENQUEUE_NO_TARGET" | "INVALID_ARGUMENT";
+export type RelayErrorCode = "CONFIG_INVALID" | "MISSING_TABLES" | "SSRF_BLOCKED" | "ENDPOINT_NOT_FOUND" | "ENDPOINT_DISABLED" | "MISSING_SECRET" | "ENQUEUE_NO_TARGET" | "ENQUEUE_INVALID_PAYLOAD" | "INVALID_ARGUMENT";
 
 // @public
 export interface RelayInit<TTx> {
@@ -580,6 +581,7 @@ export interface RelayInit<TTx> {
     instrument?: DeliveryInstrument;
     // (undocumented)
     logger?: Logger;
+    maxPayloadBytes?: number;
     // (undocumented)
     mode?: Mode;
     // (undocumented)
@@ -744,6 +746,9 @@ export interface Transition {
 
 // @public
 export function utf8ToBytes(s: string): Uint8Array<ArrayBuffer>;
+
+// @public
+export function validatePayload(payload: unknown, maxBytes?: number): void;
 
 // @public
 export function verifySignature(input: {
