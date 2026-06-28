@@ -249,9 +249,16 @@ export function finalizeRotation(store: Store, id: string): Promise<void> {
   return store.updateEndpoint(id, { secretSecondary: null });
 }
 
-/** Re-enable a disabled endpoint (clears the disabled marker). */
+/**
+ * Re-enable a disabled endpoint: clears the disabled marker AND resets the circuit-breaker
+ * `consecutive_failures` counter, so a manually re-enabled endpoint gets a full `failureThreshold`
+ * budget again (otherwise a breaker-disabled endpoint, whose counter is already at the threshold,
+ * would be auto-disabled by the very next failed delivery). Reuses `reactivateEndpoint`, the same
+ * single-UPDATE the circuit breaker's half-open recovery uses (`status='active'`,
+ * `consecutive_failures=0`, `disabled_at=NULL`), so manual and automatic recovery behave identically.
+ */
 export function enableEndpoint(store: Store, id: string): Promise<void> {
-  return store.updateEndpoint(id, { status: "active", disabledAt: null });
+  return store.reactivateEndpoint(id);
 }
 
 /** Look up a registered endpoint. */

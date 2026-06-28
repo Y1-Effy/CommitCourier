@@ -48,3 +48,5 @@ export type { SsrfDecision } from "./ssrf";
 
 export { resolveConfig } from "./config";
 export type { DeepPartial } from "./config";
+
+export { validatePayload } from "./payload";

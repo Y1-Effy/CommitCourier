@@ -171,6 +171,9 @@ function subscribe(deps: {
     }
     current = client;
     backoffMs = RECONNECT_MIN_MS; // healthy: reset backoff.
+    // A NOTIFY arriving between LISTEN completing and this handler attaching is missed, but that only
+    // costs latency (the poller still picks the row up — the outbox is the source of truth), which is
+    // the accelerator's best-effort contract.
     client.on("notification", (msg: Notification) => {
       if (msg.channel === channel) onWake();
     });

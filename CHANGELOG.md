@@ -7,6 +7,27 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Enqueue payload validation:** `enqueue` / `enqueueMany` / `enqueueUnsafe` now reject a payload that
+  cannot be stored as `jsonb` — a circular reference, a `BigInt`, or a value that serializes to
+  `undefined` — with a stable `RelayError("ENQUEUE_INVALID_PAYLOAD")` instead of leaking a raw driver
+  error into your business transaction (symmetric to how the missing-endpoint case is already
+  `ENQUEUE_NO_TARGET`). An optional `createRelay({ maxPayloadBytes })` (off by default) additionally
+  caps the serialized payload's UTF-8 byte length. Exposed as the pure helper `validatePayload` from
+  `commitcourier/core`.
+
+### Documentation
+
+- Quick start now injects `createConsoleLogger()` from the outset, so the default no-op logger does not
+  silently swallow routine delivery failures and retries.
+- Migrations: documented that building an index on an already-large `webhook_outbox` takes a write lock
+  (`migrate()` uses a plain `CREATE INDEX`, not `CONCURRENTLY`), with guidance for large existing databases.
+- Accelerator: documented the idle polling cost of many always-on dispatchers and pairing the accelerator
+  with a longer `pollIntervalMs`.
+
 ## [0.2.0] - 2026-06-28
 
 First public release to npm. (Supersedes the unpublished 0.1.0 development baseline below.)
