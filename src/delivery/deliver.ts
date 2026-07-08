@@ -135,8 +135,7 @@ function hostOf(url: string | null): string | null {
 }
 
 type Resolved =
-  | { ok: true; url: string; secrets: string[]; halfOpen: boolean }
-  | { ok: false; error: string };
+  { ok: true; url: string; secrets: string[]; halfOpen: boolean } | { ok: false; error: string };
 
 /** Prefix the http client uses for an SSRF-blocked failure summary (e.g. `"SSRF_BLOCKED:metadata"`). */
 const SSRF_BLOCKED_PREFIX = "SSRF_BLOCKED:";
