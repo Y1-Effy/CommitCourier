@@ -263,20 +263,20 @@ manual cancel           ─▶ cancelled
 
 If a worker dies mid-delivery, its row stays `in_flight` until `locked_at` exceeds the visibility timeout (`reclaimAfterMs`, default 5 min); the next tick reclaims it back to `pending`. That's how CommitCourier guarantees **at-least-once**.
 
-> **Crash-looping ("poison") rows.** `attempts` is incremented only when a delivery *attempt completes* and records its outcome — a process crash *before* that (OOM, `SIGKILL`, etc.) leaves `attempts` unchanged, so a reclaim returns the row to `pending` without consuming the retry budget. This is deliberate: a transient infrastructure failure must not burn attempts or drop the event. The trade-off is that a row which crashes the worker on *every* delivery is reclaimed and retried indefinitely (every `reclaimAfterMs`) rather than being dead-lettered. Ordinary delivery failures (HTTP errors, timeouts, exceptions inside delivery) always record an attempt and do count toward `maxAttempts`; only a hard process crash mid-delivery is exempt. If you need to stop such a row, watch for repeated reclaims (e.g. an old `created_at` still `pending`/`in_flight`) and `relay.cancel(id)` it.
+> **Crash-looping ("poison") rows.** `attempts` is incremented only when a delivery _attempt completes_ and records its outcome — a process crash _before_ that (OOM, `SIGKILL`, etc.) leaves `attempts` unchanged, so a reclaim returns the row to `pending` without consuming the retry budget. This is deliberate: a transient infrastructure failure must not burn attempts or drop the event. The trade-off is that a row which crashes the worker on _every_ delivery is reclaimed and retried indefinitely (every `reclaimAfterMs`) rather than being dead-lettered. Ordinary delivery failures (HTTP errors, timeouts, exceptions inside delivery) always record an attempt and do count toward `maxAttempts`; only a hard process crash mid-delivery is exempt. If you need to stop such a row, watch for repeated reclaims (e.g. an old `created_at` still `pending`/`in_flight`) and `relay.cancel(id)` it.
 
 ### Retry & failure classification
 
 What happens to a delivery is a stable part of the contract:
 
-| Outcome of an attempt                                   | Action                                                                                              |
-| ------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| `2xx`                                                   | `delivered` (terminal).                                                                              |
-| `410 Gone`                                              | Straight to `dead` **without** consuming the retry budget; a registered endpoint is also disabled.  |
-| Any other `4xx` / `5xx`                                 | Retry with exponential backoff until `retry.maxAttempts`, then `dead` (DLQ).                         |
-| Network error / connection reset / TLS / timeout        | Same as above — retried, then `dead`.                                                                |
-| `SSRF_BLOCKED` (destination resolved to a blocked IP)   | Retryable failure, surfaced on every attempt; ends in `dead` if it never clears.                    |
-| Missing/invalid signing secret (pre-HTTP, deterministic)| Straight to `dead` (the endpoint is not disabled — the row, not the endpoint, is the problem).      |
+| Outcome of an attempt                                    | Action                                                                                             |
+| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| `2xx`                                                    | `delivered` (terminal).                                                                            |
+| `410 Gone`                                               | Straight to `dead` **without** consuming the retry budget; a registered endpoint is also disabled. |
+| Any other `4xx` / `5xx`                                  | Retry with exponential backoff until `retry.maxAttempts`, then `dead` (DLQ).                       |
+| Network error / connection reset / TLS / timeout         | Same as above — retried, then `dead`.                                                              |
+| `SSRF_BLOCKED` (destination resolved to a blocked IP)    | Retryable failure, surfaced on every attempt; ends in `dead` if it never clears.                   |
+| Missing/invalid signing secret (pre-HTTP, deterministic) | Straight to `dead` (the endpoint is not disabled — the row, not the endpoint, is the problem).     |
 
 A server-sent `Retry-After` (delta-seconds or an HTTP-date) is honoured when it exceeds the computed backoff, clamped to `retry.capMs` so a hostile or buggy header cannot park a row indefinitely; an unparseable value falls back to the normal backoff. Only `2xx` is treated as success.
 
@@ -284,23 +284,23 @@ A server-sent `Retry-After` (delta-seconds or an HTTP-date) is honoured when it 
 
 All config is optional and merged over safe defaults. Invalid values are rejected at startup with `RelayError("CONFIG_INVALID")`; dangerous-but-valid ones (e.g. disabling the SSRF guard) are allowed but warned via the logger.
 
-| Group      | Option               | Default               | Notes                                                                                |
-| ---------- | -------------------- | --------------------- | ------------------------------------------------------------------------------------ |
-|            | `mode`               | `"active"`            | `"observe"` records rows as `observed` and never sends.                              |
-| `signing`  | `scheme`             | `"standard-webhooks"` | Only Standard Webhooks is supported.                                                 |
-| `retry`    | `maxAttempts`        | `12`                  | Integer ≥ 1.                                                                         |
-| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`, capped.                                                   |
-| `retry`    | `baseMs`             | `1000`                |                                                                                      |
-| `retry`    | `capMs`              | `3600000`             | Must be ≥ `baseMs`.                                                                  |
-| `retry`    | `jitter`             | `0.2`                 | Fraction in `0..1`, on by default to avoid thundering herds.                         |
-| `delivery` | `timeoutMs`          | `15000`               | Per-request HTTP timeout.                                                            |
-| `delivery` | `bodySnippetBytes`   | `4096`                | How much of the response body is stored in the ledger.                               |
-| `delivery` | `keepAliveTimeoutMs` | `10000`               | undici keep-alive window; longer reuses TCP/TLS across bursts to the same host.      |
-| `delivery` | `connections`        | _(undici default)_    | Optional cap on simultaneous connections per origin.                                 |
-| `ssrf`     | `blockPrivateRanges` | `true`                | Blocks private / loopback / link-local / metadata IPs.                               |
-| `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                                             |
-| `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                                               |
-|            | `endpointCacheTtlMs` | `0` (off)             | TTL (ms) for an in-process registered-endpoint lookup cache; see Performance tuning. |
+| Group      | Option               | Default               | Notes                                                                                                                                                       |
+| ---------- | -------------------- | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+|            | `mode`               | `"active"`            | `"observe"` records rows as `observed` and never sends.                                                                                                     |
+| `signing`  | `scheme`             | `"standard-webhooks"` | Only Standard Webhooks is supported.                                                                                                                        |
+| `retry`    | `maxAttempts`        | `12`                  | Integer ≥ 1.                                                                                                                                                |
+| `retry`    | `backoff`            | `"exponential"`       | `baseMs * 2^(attempts-1)`, capped.                                                                                                                          |
+| `retry`    | `baseMs`             | `1000`                |                                                                                                                                                             |
+| `retry`    | `capMs`              | `3600000`             | Must be ≥ `baseMs`.                                                                                                                                         |
+| `retry`    | `jitter`             | `0.2`                 | Fraction in `0..1`, on by default to avoid thundering herds.                                                                                                |
+| `delivery` | `timeoutMs`          | `15000`               | Per-request HTTP timeout.                                                                                                                                   |
+| `delivery` | `bodySnippetBytes`   | `4096`                | How much of the response body is stored in the ledger.                                                                                                      |
+| `delivery` | `keepAliveTimeoutMs` | `10000`               | undici keep-alive window; longer reuses TCP/TLS across bursts to the same host.                                                                             |
+| `delivery` | `connections`        | _(undici default)_    | Optional cap on simultaneous connections per origin.                                                                                                        |
+| `ssrf`     | `blockPrivateRanges` | `true`                | Blocks private / loopback / link-local / metadata IPs.                                                                                                      |
+| `ssrf`     | `allowlist`          | `[]`                  | Host patterns to permit.                                                                                                                                    |
+| `ssrf`     | `blocklist`          | `[]`                  | Host patterns to deny.                                                                                                                                      |
+|            | `endpointCacheTtlMs` | `0` (off)             | TTL (ms) for an in-process registered-endpoint lookup cache; see Performance tuning.                                                                        |
 |            | `maxPayloadBytes`    | _(off)_               | Optional cap on the enqueued payload's serialized UTF-8 byte length; over-size rejects with `ENQUEUE_INVALID_PAYLOAD`. Serializability is always validated. |
 
 Dispatcher options (`relay.createDispatcher({ … })`):
@@ -559,17 +559,17 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 
 Every error the library throws is a `RelayError` with a stable, machine-readable `code`:
 
-| Code                 | Thrown by                       | Meaning                                                                      |
-| -------------------- | ------------------------------- | ---------------------------------------------------------------------------- |
-| `CONFIG_INVALID`     | `createRelay` (startup)         | Invalid configuration (fail-fast).                                           |
-| `MISSING_TABLES`     | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.                              |
-| `ENQUEUE_NO_TARGET`  | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided.                 |
-| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe` | Payload is not JSON-serializable (circular reference, `BigInt`, …) or exceeds `maxPayloadBytes`. |
-| `INVALID_ARGUMENT`   | `list` / `endpoints.list`       | A list filter was malformed (e.g. a non-numeric `cursor`, unknown `status`). |
-| `SSRF_BLOCKED`       | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                                     |
-| `ENDPOINT_NOT_FOUND` | dispatch (recorded, not thrown) | `endpointId` is not registered.                                              |
-| `ENDPOINT_DISABLED`  | dispatch (recorded, not thrown) | The registered endpoint is disabled.                                         |
-| `MISSING_SECRET`     | dispatch (recorded, not thrown) | An inline destination has no stored secret to sign with.                     |
+| Code                      | Thrown by                       | Meaning                                                                                          |
+| ------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------ |
+| `CONFIG_INVALID`          | `createRelay` (startup)         | Invalid configuration (fail-fast).                                                               |
+| `MISSING_TABLES`          | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.                                                  |
+| `ENQUEUE_NO_TARGET`       | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided.                                     |
+| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe`     | Payload is not JSON-serializable (circular reference, `BigInt`, …) or exceeds `maxPayloadBytes`. |
+| `INVALID_ARGUMENT`        | `list` / `endpoints.list`       | A list filter was malformed (e.g. a non-numeric `cursor`, unknown `status`).                     |
+| `SSRF_BLOCKED`            | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                                                         |
+| `ENDPOINT_NOT_FOUND`      | dispatch (recorded, not thrown) | `endpointId` is not registered.                                                                  |
+| `ENDPOINT_DISABLED`       | dispatch (recorded, not thrown) | The registered endpoint is disabled.                                                             |
+| `MISSING_SECRET`          | dispatch (recorded, not thrown) | An inline destination has no stored secret to sign with.                                         |
 
 The split mirrors the architecture: **enqueue-path** errors are _thrown_ so they roll back your transaction (fail-closed), while **dispatch-path** failures are _recorded in the ledger_ and retried, never thrown into your app (fail-open). Inspect the latter with `relay.attempts({ outboxId })`.
 
@@ -627,12 +627,12 @@ It returns `false` (never throws) for a stale timestamp (default tolerance 300s,
 
 `store.migrate()` applies the schema. It creates **three business tables plus one migration-tracking table** (four total) in your existing database:
 
-| Table                       | Purpose                                                                    | Retention                                  |
-| --------------------------- | -------------------------------------------------------------------------- | ------------------------------------------ |
-| `webhook_outbox`            | The queue + source of truth; one row per enqueued event.                   | Prune terminal rows with `relay.prune`.    |
+| Table                       | Purpose                                                                    | Retention                                          |
+| --------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------- |
+| `webhook_outbox`            | The queue + source of truth; one row per enqueued event.                   | Prune terminal rows with `relay.prune`.            |
 | `webhook_delivery_attempts` | Append-only delivery ledger; one row per attempt (cascades from outbox).   | Removed with its outbox row (`ON DELETE CASCADE`). |
-| `webhook_endpoints`         | Optional registered-endpoint registry (only the registered-endpoint flow). | Long-lived config; not pruned.             |
-| `commitcourier_migrations`  | Tracks which migrations have been applied. Not your data — never pruned.    | Permanent.                                 |
+| `webhook_endpoints`         | Optional registered-endpoint registry (only the registered-endpoint flow). | Long-lived config; not pruned.                     |
+| `commitcourier_migrations`  | Tracks which migrations have been applied. Not your data — never pruned.   | Permanent.                                         |
 
 Policy:
 
@@ -648,18 +648,18 @@ CommitCourier is non-invasive and reversible. Everything lives in the four dedic
 
 ## API surface
 
-| Import                                        | Exports                                                                                                                                                                                                                                 |
-| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Import                                        | Exports                                                                                                                                                                                                                                                                     |
+| --------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `commitcourier`                               | `createRelay`, `createConsoleLogger`, the `Relay`/`RelayInit` types, the `Store` port (plus its capability roles `OutboxEnqueueStore` / `DispatchStore` / `EndpointStore` / `OutboxQueryStore` / `ReplayStore` / `MaintenanceStore` / `SchemaStore`), and all domain types. |
-| `commitcourier/core`                          | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin. |
-| `commitcourier/store/pg`                      | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                                                                        |
-| `commitcourier/store/knex`                    | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                                                                      |
-| `commitcourier/store/drizzle`                 | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                                                                 |
-| `commitcourier/store/prisma`                  | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                                                                         |
-| `commitcourier/otel`                          | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                                                                |
-| `commitcourier/accelerator/pg`                | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                                                               |
-| `commitcourier/forward` _(experimental)_      | The `Sink` port and `SinkEvent` / `SinkResult` types for the `sink` transport — see [Experimental: webhook-SaaS handoff](#experimental-webhook-saas-handoff-sink-transport). **API may change in a minor release.**                     |
-| `commitcourier/forward/svix` _(experimental)_ | `svixSink(...)` — official sample `Sink` adapter for Svix (`svix` optional peer). **API may change in a minor release.**                                                                                                                |
+| `commitcourier/core`                          | The pure, dependency-free domain layer (`sign`, `verifySignature`, `createConsoleLogger`, `backoffMs`, state transitions, SSRF helpers, `resolveConfig`, `RelayError`, types). Importing it pulls in no driver and no `node:*` builtin.                                     |
+| `commitcourier/store/pg`                      | `postgresStore({ pool })` — `Store<PoolClient>`.                                                                                                                                                                                                                            |
+| `commitcourier/store/knex`                    | `knexStore({ knex })` — `Store<Knex.Transaction>`.                                                                                                                                                                                                                          |
+| `commitcourier/store/drizzle`                 | `drizzleStore({ db })` — `Store<DrizzleTx>` (Drizzle on node-postgres).                                                                                                                                                                                                     |
+| `commitcourier/store/prisma`                  | `prismaStore({ prisma })` — `Store<PrismaTx>` (Prisma interactive transaction).                                                                                                                                                                                             |
+| `commitcourier/otel`                          | `createOtelInstrumentation({ tracer, meter })` — optional OpenTelemetry instrumentation, passed as `createRelay({ instrument, hooks })`.                                                                                                                                    |
+| `commitcourier/accelerator/pg`                | `createPgAccelerator({ pool, listen })` — optional low-latency wake via Postgres LISTEN/NOTIFY, passed as `createRelay({ accelerator })`.                                                                                                                                   |
+| `commitcourier/forward` _(experimental)_      | The `Sink` port and `SinkEvent` / `SinkResult` types for the `sink` transport — see [Experimental: webhook-SaaS handoff](#experimental-webhook-saas-handoff-sink-transport). **API may change in a minor release.**                                                         |
+| `commitcourier/forward/svix` _(experimental)_ | `svixSink(...)` — official sample `Sink` adapter for Svix (`svix` optional peer). **API may change in a minor release.**                                                                                                                                                    |
 
 Key signatures:
 
@@ -712,18 +712,18 @@ In `sink` mode, signing / SSRF / circuit breaker are delegated to the SaaS. Impl
 
 CommitCourier is pre-1.0 (`0.x`). During `0.x`, a **minor** release may contain breaking changes; the table sets expectations per surface (see [Compatibility & support](#compatibility--support) for the full policy). The full list of shipped capabilities is in [Features](#features) and the [CHANGELOG](./CHANGELOG.md).
 
-| Stability                                          | Surface                                                                                                                                                                                                          |
-| -------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Stable**                                         | Transactional `enqueue`, the HTTP dispatcher, the `pg` / Knex / Drizzle / Prisma stores, retry / backoff / jitter, the delivery-attempts ledger, the DLQ, Standard Webhooks signing, SSRF protection, and at-rest secret encryption. |
-| **Beta** — may change in a minor                   | The registered-endpoint admin API, the circuit breaker, the registered-endpoint cache, the OpenTelemetry adapter, the LISTEN/NOTIFY accelerator, replay, retention/pruning, `cancel`, and the `doctor` CLI.       |
-| **Experimental** — may change in a minor (opt-in subpath) | The generic `sink` transport (`commitcourier/forward`) and the Svix sample adapter (`commitcourier/forward/svix`).                                                                                          |
+| Stability                                                 | Surface                                                                                                                                                                                                                              |
+| --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Stable**                                                | Transactional `enqueue`, the HTTP dispatcher, the `pg` / Knex / Drizzle / Prisma stores, retry / backoff / jitter, the delivery-attempts ledger, the DLQ, Standard Webhooks signing, SSRF protection, and at-rest secret encryption. |
+| **Beta** — may change in a minor                          | The registered-endpoint admin API, the circuit breaker, the registered-endpoint cache, the OpenTelemetry adapter, the LISTEN/NOTIFY accelerator, replay, retention/pruning, `cancel`, and the `doctor` CLI.                          |
+| **Experimental** — may change in a minor (opt-in subpath) | The generic `sink` transport (`commitcourier/forward`) and the Svix sample adapter (`commitcourier/forward/svix`).                                                                                                                   |
 
 ## Compatibility & support
 
-| Dependency     | Supported                                                                                  |
-| -------------- | ------------------------------------------------------------------------------------------ |
-| **Node.js**    | 22.19.0+.                                                                                   |
-| **PostgreSQL** | 12+ (the minimum; CI integration tests run against PostgreSQL 12, 16, and 17).              |
+| Dependency     | Supported                                                                                                                                                   |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Node.js**    | 22.19.0+.                                                                                                                                                   |
+| **PostgreSQL** | 12+ (the minimum; CI integration tests run against PostgreSQL 12, 16, and 17).                                                                              |
 | **Adapters**   | `pg`, `knex`, `drizzle-orm`, and `@prisma/client` are optional peer dependencies — install only the one you use; ranges are declared in `peerDependencies`. |
 
 - **SemVer in `0.x`.** Per SemVer, a minor (`0.y`) release may include breaking changes during `0.x`. Stable surfaces above are changed conservatively with CHANGELOG notes; Beta and Experimental surfaces are where breaking changes are most likely.
