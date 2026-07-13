@@ -9,6 +9,27 @@
 
 ## [Unreleased]
 
+### Fixed（修正）
+
+- **Node 20+ の network family autoselection 下で Webhook 配信が `ERR_INVALID_IP_ADDRESS` で失敗していた問題を修正。**
+  Node 20+ は `autoSelectFamily` が既定で有効なため、SSRF ガード付き `connect.lookup` が `all: true` で
+  呼ばれ**アドレス配列**を期待する。従来は常に単一アドレスを返していたため Node が `ERR_INVALID_IP_ADDRESS`
+  を投げ、ホスト名宛の配信がすべて DLQ 入りしていた（回避策は `--no-network-family-autoselection` 起動）。
+  ガード付き lookup が両方の lookup 契約に対応し、当該フラグの有無に関わらず配信できるようになった。SSRF 防御は
+  不変で、解決結果に private / loopback / link-local / metadata アドレスが 1 つでも含まれれば従来どおり拒否する。
+
+### Changed（変更）
+
+- **配信で undici の `autoSelectFamily` を固定（true）。** Webhook 配信の IPv4/IPv6（Happy-Eyeballs）
+  フォールバックが、ホストプロセスの network-family-autoselection 設定に左右されなくなった。
+  `--no-network-family-autoselection` で起動した環境でも、DNS が到達不能な family を先頭に返すデュアル
+  スタック宛先で接続に失敗するリスクが無くなる。
+- **`createRelay` が WebCrypto 非対応ランタイムで即失敗。** 署名には WebCrypto API
+  （`globalThis.crypto.subtle`、Node 20+ の標準グローバル。本パッケージは 22.19+ を対象）が必要。これを
+  提供しないランタイムでは、`createRelay` が起動時に明確な `RelayError("CONFIG_INVALID")` を投げるように
+  なった（従来は配信ごとに cryptic な `ReferenceError` が出て、fail-open のため黙って DLQ を埋めていた）。
+  `sink` transport は署名を委譲するため対象外。
+
 ## [0.3.0] - 2026-06-28
 
 ### Added（追加）

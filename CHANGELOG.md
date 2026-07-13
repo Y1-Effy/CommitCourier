@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Webhook delivery failed with `ERR_INVALID_IP_ADDRESS` under Node 20+ network-family autoselection.**
+  Node 20+ enables `autoSelectFamily` by default, which calls the SSRF-guarded `connect.lookup` with
+  `all: true` and expects an address array; the guard previously always returned a single address, so
+  Node threw `ERR_INVALID_IP_ADDRESS` and every delivery to a hostname target went to the DLQ (the
+  workaround was to launch with `--no-network-family-autoselection`). The guarded lookup now honours
+  both lookup contracts, so delivery works with or without the flag. SSRF protection is unchanged: a
+  resolution set containing any private / loopback / link-local / metadata address is still rejected.
+
+### Changed
+
+- **Delivery pins undici's `autoSelectFamily` on.** Webhook delivery now keeps its IPv4/IPv6
+  (Happy-Eyeballs) fallback regardless of the host process's network-family-autoselection setting, so
+  a deployment launched with `--no-network-family-autoselection` no longer risks a failed connect to a
+  dual-stack host whose DNS returns an unreachable address family first.
+- **`createRelay` fails fast when the runtime lacks WebCrypto.** Signing requires the WebCrypto API
+  (`globalThis.crypto.subtle`), a standard global on Node 20+ (this package targets 22.19+). On a
+  runtime that does not expose it, `createRelay` now throws a clear `RelayError("CONFIG_INVALID")` at
+  startup instead of surfacing a cryptic per-delivery `ReferenceError` that — under fail-open delivery
+  — would silently fill the DLQ. The `sink` transport delegates signing, so it is exempt.
+
 ## [0.3.0] - 2026-06-28
 
 ### Added
