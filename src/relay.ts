@@ -276,6 +276,25 @@ function wrapStore<TTx>(
   return store;
 }
 
+/**
+ * Fail fast when the runtime does not expose the WebCrypto global (`crypto.subtle`) that webhook
+ * signing needs — a standard global on Node 20+ (this package targets 22.19+). Without this, every
+ * signed delivery would fail deep in `sign()` with a cryptic "crypto is not defined" ReferenceError
+ * and, because delivery is fail-open, silently pile into the DLQ. The `sink` transport delegates
+ * signing to the SaaS, so it is exempt.
+ */
+function assertWebCryptoAvailable(transport: DeliveryConfig["transport"]): void {
+  const webcrypto = (globalThis as { crypto?: { subtle?: unknown } }).crypto;
+  if (transport !== "sink" && webcrypto?.subtle === undefined) {
+    throw new RelayError(
+      "CONFIG_INVALID",
+      "the WebCrypto API (globalThis.crypto.subtle) is required for webhook signing but is not available " +
+        "in this runtime. CommitCourier targets Node >=22.19, where it is a standard global; upgrade the " +
+        'runtime, or set delivery.transport to "sink" to delegate signing to a SaaS.',
+    );
+  }
+}
+
 export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TTx>> {
   const {
     store: rawStore,
@@ -299,6 +318,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   }
   // Resolve config first so the store decorators (encrypted store) can use the resolved logger.
   const resolved = resolveConfig(rest);
+  assertWebCryptoAvailable(resolved.delivery.transport);
   // Signing secrets are written in plaintext without a cipher. This is a security footgun, so warn at
   // startup unless the caller acknowledges that at-rest encryption is handled elsewhere — symmetric to
   // the no-logger warning above. Non-fatal: never breaks an existing deployment. Skipped in `sink`

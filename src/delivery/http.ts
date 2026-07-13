@@ -136,10 +136,13 @@ async function readSnippet(
 }
 
 /**
- * Build the SSRF-validating `connect.lookup`: resolve all candidate IPs, reject any blocked range
- * (unless the host is allowlisted), then hand undici a single vetted address (family-matched).
+ * Build the SSRF-validating `connect.lookup`: resolve all candidate IPs, reject the whole resolution
+ * if any address is in a blocked range (unless the host is allowlisted), then hand undici the vetted
+ * result. Node's lookup contract is honoured in both shapes: `options.all === true` (the default on
+ * Node 20+ with network-family autoselection) expects an ADDRESS ARRAY, while the legacy path expects
+ * a single family-matched address.
  */
-function makeGuardedLookup(ssrf: SsrfConfig, resolveAll: ResolveAll): LookupFunction {
+export function makeGuardedLookup(ssrf: SsrfConfig, resolveAll: ResolveAll): LookupFunction {
   return (hostname, options, callback) => {
     resolveAll(hostname, (err, addresses) => {
       if (err) {
@@ -157,6 +160,20 @@ function makeGuardedLookup(ssrf: SsrfConfig, resolveAll: ResolveAll): LookupFunc
         }
       }
       const family = typeof options.family === "number" ? options.family : 0;
+      // Node 20+ enables network-family autoselection by default, which calls this lookup with
+      // `options.all === true` and expects an ARRAY of vetted {address, family} entries — the legacy
+      // single-address form makes Node throw ERR_INVALID_IP_ADDRESS. Return all vetted candidates
+      // (family-filtered when a specific family was requested) so happy-eyeballs can pick.
+      if (options.all === true) {
+        const all =
+          family === 4 || family === 6 ? addresses.filter((a) => a.family === family) : addresses;
+        if (all.length === 0) {
+          callback(new Error("ENOTFOUND"), "", 0);
+          return;
+        }
+        callback(null, all);
+        return;
+      }
       const chosen = chooseAddress(addresses, family);
       if (!chosen) {
         callback(new Error("ENOTFOUND"), "", 0);
@@ -180,7 +197,14 @@ export function createHttpClient(
   const { ssrf, delivery } = cfg;
   const resolveAll = deps.resolveAll ?? defaultResolveAll;
 
-  const connect: { lookup: LookupFunction } = { lookup: makeGuardedLookup(ssrf, resolveAll) };
+  // Pin Happy-Eyeballs ON regardless of the ambient Node default or `--no-network-family-autoselection`,
+  // so delivery reliability (v4/v6 fallback) never depends on how the host process was launched. Node
+  // 20+ defaults this to true; a deployment that disabled it would otherwise lose the fallback and could
+  // fail on a dual-stack host whose DNS returns an unreachable family first (verbatim order, Node 17+).
+  const connect: { lookup: LookupFunction; autoSelectFamily: boolean } = {
+    lookup: makeGuardedLookup(ssrf, resolveAll),
+    autoSelectFamily: true,
+  };
   // Tune connection reuse for delivery throughput: a longer keep-alive window reuses TCP/TLS across
   // bursts to the same host; `connections` (when set) caps per-origin sockets. `pipelining` stays at
   // the undici default (1) since POST is not safe to pipeline.

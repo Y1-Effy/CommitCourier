@@ -4,6 +4,7 @@
  * runs without Docker (unlike the store suite).
  */
 import http from "node:http";
+import { getDefaultAutoSelectFamily, setDefaultAutoSelectFamily } from "node:net";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
 import { resolveConfig } from "../../src/core/index";
@@ -157,6 +158,56 @@ describe("deliverOne (integration)", () => {
     expect(captured.attempts[0]?.responseStatus).toBe(200);
     expect(captured.attempts[0]?.requestHeaders["webhook-signature"]).toMatch(/^v1,/);
     expect(captured.transitions[0]?.t.status).toBe("delivered");
+  });
+
+  it("delivers to a hostname target under network-family autoselection (no ERR_INVALID_IP_ADDRESS)", async () => {
+    // Regression: on Node 20+ `autoSelectFamily` is on by default, so `net.connect` invokes the
+    // guarded lookup with `all: true` and expects an ADDRESS ARRAY. A single-address callback made
+    // Node throw ERR_INVALID_IP_ADDRESS and the whole delivery failed. This drives the real undici
+    // -> net.connect -> guarded-lookup chain via a *hostname* (an IP literal skips lookup entirely),
+    // resolving to the loopback server and bypassing the range check via the host allowlist.
+    const srv = await startServer(respond(200));
+    const config = resolveConfig({ ssrf: { allowlist: ["vetted.test"] } });
+    const resolveAll: ResolveAll = (_host, cb) => {
+      cb(null, [{ address: "127.0.0.1", family: 4 }]);
+    };
+    const { store, captured } = fakeStore();
+
+    await deliverOne(
+      outboxRow({ targetUrl: `http://vetted.test:${String(srv.port)}/` }),
+      makeDeps(store, config, resolveAll),
+    );
+
+    expect(captured.attempts[0]?.error).toBeNull();
+    expect(captured.attempts[0]?.responseStatus).toBe(200);
+    expect(captured.transitions[0]?.t.status).toBe("delivered");
+  });
+
+  it("delivers to a hostname target even when process-level autoSelectFamily is disabled", async () => {
+    // The Agent pins `autoSelectFamily: true`, so delivery keeps its v4/v6 fallback regardless of the
+    // ambient Node default. Force the process default OFF (as `--no-network-family-autoselection`
+    // would) and confirm a hostname delivery still succeeds; restore the default afterwards.
+    const original = getDefaultAutoSelectFamily();
+    setDefaultAutoSelectFamily(false);
+    try {
+      const srv = await startServer(respond(200));
+      const config = resolveConfig({ ssrf: { allowlist: ["vetted.test"] } });
+      const resolveAll: ResolveAll = (_host, cb) => {
+        cb(null, [{ address: "127.0.0.1", family: 4 }]);
+      };
+      const { store, captured } = fakeStore();
+
+      await deliverOne(
+        outboxRow({ targetUrl: `http://vetted.test:${String(srv.port)}/` }),
+        makeDeps(store, config, resolveAll),
+      );
+
+      expect(captured.attempts[0]?.error).toBeNull();
+      expect(captured.attempts[0]?.responseStatus).toBe(200);
+      expect(captured.transitions[0]?.t.status).toBe("delivered");
+    } finally {
+      setDefaultAutoSelectFamily(original);
+    }
   });
 
   it("blocks a loopback destination with SSRF and schedules a retry", async () => {
