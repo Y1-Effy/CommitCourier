@@ -224,6 +224,46 @@ describe("createEncryptedStore decryption isolation", () => {
     expect(transitions).toHaveLength(0);
   });
 
+  it("reports a claim-path quarantine through the data-loss sink (DLQ = data loss)", async () => {
+    const good = withId(outboxRow(await cipher.encrypt("whsec_a")), "good");
+    const bad = withId(outboxRow(await otherCipher.encrypt("whsec_x")), "bad");
+    const { store } = multiStore([bad, good]);
+    const dataLoss = vi.fn();
+    const enc = createEncryptedStore(store, cipher, undefined, dataLoss);
+
+    await enc.claimDue({ limit: 10, lockedBy: "w", now: new Date() });
+
+    // Exactly one event, for the quarantined row only, with secret-free meta.
+    expect(dataLoss).toHaveBeenCalledTimes(1);
+    expect(dataLoss.mock.calls[0]![1]).toMatchObject({ id: "bad", attempts: 1 });
+  });
+
+  it("does not fire the data-loss sink when the quarantine write itself fails", async () => {
+    const bad = withId(outboxRow(await otherCipher.encrypt("whsec_x")), "bad");
+    const store: Store = {
+      ...multiStore([bad]).store,
+      applyTransition: () => Promise.reject(new Error("db down")),
+    };
+    const dataLoss = vi.fn();
+    const enc = createEncryptedStore(store, cipher, undefined, dataLoss);
+
+    await enc.claimDue({ limit: 10, lockedBy: "w", now: new Date() });
+
+    // The row never reached `dead`, so no data-loss event (the failed quarantine is logged instead).
+    expect(dataLoss).not.toHaveBeenCalled();
+  });
+
+  it("does not fire the data-loss sink for a replay-path skip (no DLQ transition)", async () => {
+    const bad = withId(outboxRow(await otherCipher.encrypt("whsec_x")), "bad");
+    const { store } = multiStore([bad]);
+    const dataLoss = vi.fn();
+    const enc = createEncryptedStore(store, cipher, undefined, dataLoss);
+
+    await enc.selectForReplay({});
+
+    expect(dataLoss).not.toHaveBeenCalled();
+  });
+
   it("normalises any findEndpoint decryption failure to CONFIG_INVALID (custom-cipher safe)", async () => {
     // A custom SecretCipher that throws a plain Error (not a RelayError). The delivery path keys its
     // permanent-vs-retryable decision on RelayError CONFIG_INVALID, so the decorator must normalise.

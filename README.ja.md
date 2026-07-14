@@ -389,7 +389,7 @@ for (const sig of ["SIGTERM", "SIGINT"] as const) process.on(sig, () => void shu
 const { processed } = await relay.dispatchOnce({ concurrency: 8 }, { maxRows: 500 });
 ```
 
-`dispatchOnce` はその実行で配信した行数を返します。連続ループ（`createDispatcher().start()`）の稼働中は拒否します — どちらか一方のモデルを使ってください。
+`dispatchOnce` はその実行で配信した行数を返します。プロセスごとにどちらか一方のモデルを選んでください。稼働中ガードは Dispatcher インスタンス単位（同一 Dispatcher の `start()` ループ稼働中に `dispatcher.runOnce()` を呼ぶと拒否）で、`dispatchOnce` は毎回新しい Dispatcher を作るため、別に開始されたループは検出しません。重なっても `FOR UPDATE SKIP LOCKED` により各行の単一配信は保たれます — 単に同じ行を取り合うだけです。
 
 ### 失敗エンドポイントの自動 disable（回路遮断）
 

@@ -54,6 +54,14 @@ async function decryptOutbox(row: OutboxRow, cipher: SecretCipher): Promise<Outb
 }
 
 /**
+ * Data-loss sink for the claim-path quarantine. A quarantined row reaches the terminal `dead`
+ * state (the DLQ), which is one of the two critical categories that must stay visible even with no
+ * logger configured; `createRelay` wires its critical logger's `dataLoss` here. Optional so a
+ * directly-constructed store degrades to plain `logger` output.
+ */
+export type DataLossSink = (msg: string, meta?: Record<string, unknown>) => void;
+
+/**
  * Wrap a store so signing secrets are encrypted at rest with `cipher`. The returned store is a
  * drop-in `Store<TTx>`; secrets are plaintext at this boundary and ciphertext in the backend.
  */
@@ -61,6 +69,7 @@ export function createEncryptedStore<TTx>(
   inner: Store<TTx>,
   cipher: SecretCipher,
   logger: Logger = NO_OP_LOGGER,
+  dataLoss?: DataLossSink,
 ): Store<TTx> {
   return {
     // --- writes: encrypt secrets before they reach the backend ---
@@ -109,13 +118,30 @@ export function createEncryptedStore<TTx>(
             id: r.id,
             error: String(err),
           });
+          let quarantined = false;
           try {
             await inner.applyTransition(r.id, quarantineTransition(r));
+            quarantined = true;
           } catch (qErr) {
             logger.error("encrypted-store: failed to quarantine undecryptable row", {
               id: r.id,
               error: String(qErr),
             });
+          }
+          // The row is now terminal `dead` (the DLQ): a data-loss event, surfaced through the
+          // critical sink so it stays visible even when no logger is configured (mirrors the
+          // delivery path's dead-letter alarm).
+          if (quarantined) {
+            dataLoss?.(
+              "message moved to the DLQ and is permanently lost (secret decryption failed)",
+              {
+                id: r.id,
+                endpointId: r.endpointId,
+                eventType: r.eventType,
+                attempts: r.attempts + 1,
+                error: String(err),
+              },
+            );
           }
         }
       }

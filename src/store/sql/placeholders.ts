@@ -14,7 +14,7 @@
  * jsonb `?` operators and no `$` inside string literals (only `$n` placeholders and `::type` casts).
  *
  * @param sql - Numbered (`$1`, `$2`, …) SQL as built by the shared SQL plumbing.
- * @param params - Ordered params indexed by placeholder number (`$n` -> `params[n-1]`).
+ * @param params - Ordered params indexed by placeholder number (`$n` binds `params[n-1]`).
  * @returns The qmark SQL and the positional bindings in textual order.
  */
 export function numberedToQmark(

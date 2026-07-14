@@ -104,6 +104,53 @@ describe("dispatcher.runOnce", () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
+  it("keeps claimed-but-unfinished rows at or below batchSize across waves", async () => {
+    const total = 10;
+    const batchSize = 4;
+    const queue = Array.from({ length: total }, (_, i) => makeRow(`r${String(i)}`));
+    const claims: { limit: number; inFlight: number }[] = [];
+    let inFlight = 0;
+    const resolvers: (() => void)[] = [];
+    const store = {
+      reclaimStuck: () => Promise.resolve(0),
+      claimDue: ({ limit }: { limit: number }) => {
+        claims.push({ limit, inFlight });
+        return Promise.resolve(queue.splice(0, limit));
+      },
+    } as unknown as Store;
+    // concurrency === batchSize so every scheduled row starts delivering at once and the local
+    // inFlight counter tracks the claimed-but-unfinished buffer exactly.
+    const d = createDispatcher({
+      store,
+      deliver: () => {
+        inFlight++;
+        return new Promise<void>((resolve) => {
+          resolvers.push(() => {
+            inFlight--;
+            resolve();
+          });
+        });
+      },
+      config,
+      options: { concurrency: batchSize, batchSize },
+    });
+
+    const done = d.runOnce();
+    const settle = (): Promise<void> => new Promise((r) => setImmediate(r));
+    await settle();
+    // Release deliveries one at a time; each freed slot lets the next claim wave run.
+    while (resolvers.length > 0) {
+      const next = resolvers.shift();
+      if (next) next();
+      await settle();
+    }
+    const res = await done;
+
+    expect(res.processed).toBe(total);
+    // Every claim must fit the free capacity: outstanding + requested never exceeds batchSize.
+    for (const c of claims) expect(c.limit + c.inFlight).toBeLessThanOrEqual(batchSize);
+  });
+
   it("refuses to run while the continuous loop is active", async () => {
     const { store } = fakeStore(0);
     const d = createDispatcher({ store, deliver: () => Promise.resolve(), config });

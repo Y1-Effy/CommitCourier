@@ -42,6 +42,17 @@ describe("buildConfigReport", () => {
     expect(r.error).toMatch(/maxAttempts/);
     expect(r.loaded).toBe(false);
   });
+
+  it("validates and reports maxPayloadBytes from the loaded config", () => {
+    // An invalid value must fail the report (resolveConfig rejects it), not be silently dropped.
+    const bad = buildConfigReport({ maxPayloadBytes: -5 });
+    expect(bad.error).toMatch(/maxPayloadBytes/);
+    expect(bad.loaded).toBe(false);
+    // A valid value shows up as an override away from the default (unset).
+    const good = buildConfigReport({ maxPayloadBytes: 65_536 });
+    expect(good.error).toBeNull();
+    expect(good.overridden).toContain("maxPayloadBytes");
+  });
 });
 
 describe("formatReport", () => {

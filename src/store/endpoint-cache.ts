@@ -31,6 +31,24 @@ export function createEndpointCache<TTx>(inner: Store<TTx>, opts: { ttlMs: numbe
   // afterwards, so a value read concurrently with an update/disable is never cached (stale-read guard).
   let generation = 0;
 
+  /**
+   * Run an endpoint write with the stale-read guard on BOTH sides. The bump+evict before the write
+   * invalidates reads already in flight; the bump+evict after it covers reads that STARTED during the
+   * write — those captured the already-bumped generation, may have fetched the pre-commit row, and
+   * would otherwise cache it for the full TTL. The trailing pair runs in `finally` because a failed
+   * write may still have been applied (e.g. a timeout after commit).
+   */
+  const invalidating = async (id: string, write: () => Promise<void>): Promise<void> => {
+    generation++;
+    cache.delete(id);
+    try {
+      await write();
+    } finally {
+      generation++;
+      cache.delete(id);
+    }
+  };
+
   return {
     async findEndpoint(id) {
       const hit = cache.get(id);
@@ -42,35 +60,27 @@ export function createEndpointCache<TTx>(inner: Store<TTx>, opts: { ttlMs: numbe
       if (row && gen === generation) cache.set(id, { row, expiresAt: Date.now() + ttlMs });
       return row;
     },
-    async updateEndpoint(id, patch: EndpointPatch) {
-      generation++; // invalidate any read currently in flight
-      cache.delete(id);
-      await inner.updateEndpoint(id, patch);
+    updateEndpoint(id, patch: EndpointPatch) {
+      return invalidating(id, () => inner.updateEndpoint(id, patch));
     },
-    async disableEndpoint(id, now) {
-      generation++;
-      cache.delete(id);
-      await inner.disableEndpoint(id, now);
+    disableEndpoint(id, now) {
+      return invalidating(id, () => inner.disableEndpoint(id, now));
     },
 
-    async noteEndpointFailure(id, now, threshold) {
+    noteEndpointFailure(id, now, threshold) {
       // A failure may trip the circuit breaker and flip the endpoint to `disabled`, which the
       // per-delivery resolveTarget reads — so evict so the next findEndpoint reflects it promptly.
-      generation++;
-      cache.delete(id);
-      await inner.noteEndpointFailure(id, now, threshold);
+      return invalidating(id, () => inner.noteEndpointFailure(id, now, threshold));
     },
     // noteEndpointSuccess runs on every successful delivery and only resets the failure counter
     // (status unchanged); evicting here would defeat the cache, and the stale counter is never read
     // on the hot path, so pass it straight through without invalidating.
     noteEndpointSuccess: (id) => inner.noteEndpointSuccess(id),
 
-    async reactivateEndpoint(id) {
+    reactivateEndpoint(id) {
       // Half-open recovery flips the endpoint back to `active` and clears disabled_at, which the
       // per-delivery resolveTarget reads — evict so the next findEndpoint reflects it promptly.
-      generation++;
-      cache.delete(id);
-      await inner.reactivateEndpoint(id);
+      return invalidating(id, () => inner.reactivateEndpoint(id));
     },
 
     // --- pass-through ---

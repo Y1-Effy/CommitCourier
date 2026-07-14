@@ -137,6 +137,65 @@ describe("createEndpointCache", () => {
     expect(again?.secret).toBe("whsec_current");
   });
 
+  it("evicts a stale row cached by a read that ran entirely inside a write window", async () => {
+    const { store, findEndpoint, updateEndpoint } = fakeStore({
+      a: endpointRow("a", "whsec_current"),
+    });
+    let releaseWrite!: () => void;
+    updateEndpoint.mockImplementationOnce(
+      () =>
+        new Promise<void>((r) => {
+          releaseWrite = r;
+        }),
+    );
+    // The read that runs during the write observes the pre-commit row.
+    findEndpoint.mockImplementationOnce(() => Promise.resolve(endpointRow("a", "whsec_stale")));
+    const cached = createEndpointCache(store, { ttlMs: 10_000 });
+
+    const write = cached.updateEndpoint("a", { secret: "whsec_current" }); // bump+evict, inner held open
+    const during = await cached.findEndpoint("a"); // fetches (and may cache) the pre-commit row
+    expect(during?.secret).toBe("whsec_stale");
+    releaseWrite();
+    await write; // the trailing bump+evict must drop the stale entry
+
+    const after = await cached.findEndpoint("a");
+    expect(after?.secret).toBe("whsec_current");
+    expect(findEndpoint).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not cache a read that started during a write and resolved after it", async () => {
+    const { store, findEndpoint, updateEndpoint } = fakeStore({
+      a: endpointRow("a", "whsec_current"),
+    });
+    let releaseWrite!: () => void;
+    updateEndpoint.mockImplementationOnce(
+      () =>
+        new Promise<void>((r) => {
+          releaseWrite = r;
+        }),
+    );
+    let releaseRead!: () => void;
+    const readGate = new Promise<void>((r) => {
+      releaseRead = r;
+    });
+    findEndpoint.mockImplementationOnce(async () => {
+      await readGate;
+      return endpointRow("a", "whsec_stale"); // the pre-commit row this read observed
+    });
+    const cached = createEndpointCache(store, { ttlMs: 10_000 });
+
+    const write = cached.updateEndpoint("a", { secret: "whsec_current" });
+    const read = cached.findEndpoint("a"); // captures the already-bumped generation, held open
+    releaseWrite();
+    await write; // the trailing generation bump lands before the read settles
+    releaseRead();
+    expect((await read)?.secret).toBe("whsec_stale"); // the racing read returns what it saw...
+
+    const after = await cached.findEndpoint("a"); // ...but must not have cached it
+    expect(after?.secret).toBe("whsec_current");
+    expect(findEndpoint).toHaveBeenCalledTimes(2);
+  });
+
   it("does not cache a miss, so a later insert is visible at once", async () => {
     const rows: Record<string, EndpointRow | null> = { a: null };
     const { store, findEndpoint } = fakeStore(rows);
