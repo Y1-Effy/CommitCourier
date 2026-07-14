@@ -18,6 +18,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workaround was to launch with `--no-network-family-autoselection`). The guarded lookup now honours
   both lookup contracts, so delivery works with or without the flag. SSRF protection is unchanged: a
   resolution set containing any private / loopback / link-local / metadata address is still rejected.
+- **A jsonb payload with a top-level `null`, string, or array was rejected on the `pg` and Drizzle
+  adapters — inside the fail-closed enqueue transaction.** `validatePayload` permits any JSON value, but
+  those two adapters bound jsonb params through node-postgres' native encoding, which maps a JS `null`
+  to SQL NULL and mis-encodes a top-level JSON string/array, so such a payload hit the `NOT NULL`
+  column / `::jsonb` cast and rolled back the caller's business write. All four adapters (`pg`, Knex,
+  Drizzle, Prisma) now pre-stringify jsonb params against the `::jsonb` cast, so every JSON payload
+  round-trips identically on every adapter.
+- **The registered-endpoint cache (`endpointCacheTtlMs`) could cache a stale endpoint row.** A
+  `findEndpoint` that started concurrently with an `update` / `disable` / breaker change could observe
+  the pre-write row and cache it for the full TTL. The cache now brackets each write with a generation
+  counter and only caches a read whose generation is unchanged, so a value read during a write is never
+  cached.
+- **`dispatcher.runOnce` / `relay.dispatchOnce` could hold up to ~2× `batchSize` rows in flight.** It
+  now subtracts the still-in-flight rows before each claim so the claimed-but-unfinished buffer never
+  exceeds `batchSize` (matching the continuous loop), keeping the worst-case in-flight time within what
+  the reclaim-safety warning models.
+- **A throwing injected `logger` could stall the dispatcher.** Every library log site sits on a
+  fail-open path, but the injected logger was the one component still called unguarded, so a logger
+  whose method throws could reject a delivery promise and stop the loop. `resolveConfig` now wraps the
+  logger fail-open (a throwing method degrades to a no-op; call arity is preserved).
+- **`store.prune` now guards against deleting live rows even on a direct store call.** The admin layer
+  already validated statuses and clamped the limit, but a direct `Store.prune` caller could delete
+  `pending` / `in_flight` rows or issue an unbounded DELETE; the prune SQL now carries an always-on
+  `status NOT IN ('pending','in_flight')` guard and clamps the batch size itself (defence in depth,
+  mirroring `replay`).
 
 ### Changed
 
@@ -30,6 +55,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runtime that does not expose it, `createRelay` now throws a clear `RelayError("CONFIG_INVALID")` at
   startup instead of surfacing a cryptic per-delivery `ReferenceError` that — under fail-open delivery
   — would silently fill the DLQ. The `sink` transport delegates signing, so it is exempt.
+- **A manual `endpoints.disable()` is now sticky.** It clears `disabled_at` (the circuit-breaker
+  cooldown anchor), so a deliberately-disabled endpoint is never brought back by a half-open trial when
+  `circuitBreaker.cooldownMs > 0`; it stays disabled until `endpoints.enable()`. Circuit-breaker and
+  `410 Gone` auto-disables still stamp `disabled_at = now` and remain recoverable, so only a deliberate
+  disable changes behaviour.
+- **An undecryptable row quarantined by the encrypted store now surfaces as a data-loss event.** When a
+  row reaches the DLQ because its at-rest secret cannot be decrypted (key misconfiguration / corruption),
+  it is reported through the critical logger — which falls back to the console when no logger is
+  configured — like the delivery path's dead-letter alarm, instead of only a plain `logger.warn`.
 
 ### Performance
 

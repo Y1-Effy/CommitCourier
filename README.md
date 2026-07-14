@@ -200,7 +200,7 @@ It isn't the only embedded library in this space — [Postel](https://postel.sh)
 - **Replay** — re-enqueue by id or by filter (e.g. all `dead` rows since a time), with a built-in safety cap so a broad replay never fans out into an unbounded mass re-send.
 - **Cancel** — stop a not-yet-sent row before it leaves (`relay.cancel(id)`); already-sent / in-flight rows are untouched.
 - **Serverless / cron friendly** — `relay.dispatchOnce()` drains the queue once and returns, so you can deliver from a Lambda or cron tick without a long-lived process.
-- **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops filling the DLQ.
+- **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops being hammered with HTTP retries (and, with `cooldownMs`, recovers on its own via a half-open probe).
 - **Built-in retention** — `relay.prune({ olderThan })` deletes old terminal rows in bounded batches (active rows are never touched), so tables don't grow forever.
 - **SSRF protection on by default** — common private, loopback, link-local, cloud-metadata, and other non-public network targets (shared/CGNAT, multicast, broadcast, reserved/documentation ranges) are blocked, against both the parsed URL host and every DNS-resolved IP, with the vetted IP pinned at connect time.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
@@ -402,6 +402,8 @@ const relay = await createRelay({ store, circuitBreaker: { failureThreshold: 20 
 
 Default `failureThreshold: 0` keeps it off. It only applies to the registered-endpoint workflow (inline `{ url, secret }` deliveries have no endpoint to disable), is fail-open, and re-enabling is a normal `relay.endpoints.enable(endpointId)`.
 
+> **What it does — and doesn't do — to the DLQ.** Auto-disabling stops the endpoint from being _hammered with HTTP retries_: once disabled, its due rows fail fast with `ENDPOINT_DISABLED` (no HTTP call, no timeout) instead of a slow request each attempt. Those rows still consume their retry budget, so if the endpoint is never re-enabled or recovered they **still end up in the DLQ** — the breaker cuts load and surfaces the outage, it does not by itself keep rows out of the DLQ. Add `cooldownMs` (below) so a recovered endpoint's rows can deliver before they exhaust their budget.
+
 For hands-off recovery, add `cooldownMs` so a disabled endpoint heals on its own instead of waiting for an admin:
 
 ```ts
@@ -559,17 +561,17 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 
 Every error the library throws is a `RelayError` with a stable, machine-readable `code`:
 
-| Code                      | Thrown by                       | Meaning                                                                                          |
-| ------------------------- | ------------------------------- | ------------------------------------------------------------------------------------------------ |
-| `CONFIG_INVALID`          | `createRelay` (startup)         | Invalid configuration (fail-fast).                                                               |
-| `MISSING_TABLES`          | `createRelay` (startup)         | Core tables are absent — run `store.migrate()`.                                                  |
-| `ENQUEUE_NO_TARGET`       | `enqueue` / `enqueueUnsafe`     | Neither `{ url, secret }` nor `{ endpointId }` was provided.                                     |
-| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe`     | Payload is not JSON-serializable (circular reference, `BigInt`, …) or exceeds `maxPayloadBytes`. |
-| `INVALID_ARGUMENT`        | `list` / `endpoints.list`       | A list filter was malformed (e.g. a non-numeric `cursor`, unknown `status`).                     |
-| `SSRF_BLOCKED`            | dispatch (recorded, not thrown) | Destination resolved to a blocked range.                                                         |
-| `ENDPOINT_NOT_FOUND`      | dispatch (recorded, not thrown) | `endpointId` is not registered.                                                                  |
-| `ENDPOINT_DISABLED`       | dispatch (recorded, not thrown) | The registered endpoint is disabled.                                                             |
-| `MISSING_SECRET`          | dispatch (recorded, not thrown) | An inline destination has no stored secret to sign with.                                         |
+| Code                      | Thrown by                                                         | Meaning                                                                                                      |
+| ------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `CONFIG_INVALID`          | `createRelay` (startup)                                           | Invalid configuration (fail-fast).                                                                           |
+| `MISSING_TABLES`          | `createRelay` (startup)                                           | Core tables are absent — run `store.migrate()`.                                                              |
+| `ENQUEUE_NO_TARGET`       | `enqueue` / `enqueueUnsafe`                                       | Neither `{ url, secret }` nor `{ endpointId }` was provided.                                                 |
+| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe`                                       | Payload is not JSON-serializable (circular reference, `BigInt`, …) or exceeds `maxPayloadBytes`.             |
+| `INVALID_ARGUMENT`        | `list` / `get` / `cancel` / `replay` / `prune` / `endpoints.list` | An argument was malformed (e.g. a non-numeric `cursor`, unknown `status`, a non-uuid id, a bad `olderThan`). |
+| `SSRF_BLOCKED`            | dispatch (recorded, not thrown)                                   | Destination resolved to a blocked range.                                                                     |
+| `ENDPOINT_NOT_FOUND`      | dispatch (recorded, not thrown)                                   | `endpointId` is not registered.                                                                              |
+| `ENDPOINT_DISABLED`       | dispatch (recorded, not thrown)                                   | The registered endpoint is disabled.                                                                         |
+| `MISSING_SECRET`          | dispatch (recorded, not thrown)                                   | An inline destination has no stored secret to sign with.                                                     |
 
 The split mirrors the architecture: **enqueue-path** errors are _thrown_ so they roll back your transaction (fail-closed), while **dispatch-path** failures are _recorded in the ledger_ and retried, never thrown into your app (fail-open). Inspect the latter with `relay.attempts({ outboxId })`.
 
