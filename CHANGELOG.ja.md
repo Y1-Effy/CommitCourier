@@ -9,6 +9,8 @@
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-14
+
 ### Fixed（修正）
 
 - **Node 20+ の network family autoselection 下で Webhook 配信が `ERR_INVALID_IP_ADDRESS` で失敗していた問題を修正。**
@@ -248,6 +250,7 @@ npm への初の公開リリース。（下記の未公開 0.1.0 開発ベース
 
 > ⚠️ `1.0.0` 以前: API およびパッケージ名は今後変更される可能性があります。
 
-[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Y1-Effy/CommitCourier/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/Y1-Effy/CommitCourier/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/Y1-Effy/CommitCourier/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Y1-Effy/CommitCourier/releases/tag/v0.2.0
