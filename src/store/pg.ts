@@ -51,9 +51,11 @@ async function withTx<T>(pool: Pool, fn: (client: PoolClient) => Promise<T>): Pr
 export function postgresStore(opts: { pool: Pool }): Store<PoolClient> {
   const { pool } = opts;
 
-  // node-postgres serialises JS objects to jsonb itself and returns `{ rows, rowCount }`.
+  // Pre-stringify jsonb params (jsonAsText): node-postgres' native param encoding maps a JS `null` to
+  // SQL NULL and mis-encodes a top-level JSON string/array, which the NOT NULL `payload` column and the
+  // `::jsonb` cast then reject; stringifying stores every JSON value uniformly. Returns `{ rows, rowCount }`.
   const exec: SqlExecutor<PoolClient> = {
-    jsonAsText: false,
+    jsonAsText: true,
     async query<R>(sql: string, params: readonly unknown[]) {
       const res = await pool.query(sql, params as unknown[]);
       return res.rows as R[];

@@ -26,6 +26,31 @@ const NOOP_LOGGER: Logger = {
   error() {},
 };
 
+/**
+ * Wrap a {@link Logger} so a throwing method can never escape into a caller. Every log site in the
+ * library sits on a fail-open path — delivery, the dispatcher loop, and the critical safety net all
+ * call `logger.error`/`logger.warn` from inside the catch blocks that ARE the fail-open guarantee — so
+ * a misbehaving logger (one whose method throws, e.g. a transport that fails under backpressure) must
+ * degrade to a no-op rather than reject a delivery promise and stop the dispatcher. Unlike hooks /
+ * instrument / sink (each already wrapped fail-open), the logger was the one injected component still
+ * called unguarded. core forbids `console`, so a thrown error is simply swallowed here.
+ */
+function safeLogger(inner: Logger): Logger {
+  const wrap =
+    (level: keyof Logger) =>
+    (msg: string, meta?: Record<string, unknown>): void => {
+      try {
+        // Preserve the call arity (pass meta only when present), so a wrapped logger is indistinguishable
+        // from the raw one to a caller/spy — mirrors createConsoleLogger.
+        if (meta === undefined) inner[level](msg);
+        else inner[level](msg, meta);
+      } catch {
+        // fail-open: a throwing logger must never propagate into the delivery/dispatch path.
+      }
+    };
+  return { debug: wrap("debug"), info: wrap("info"), warn: wrap("warn"), error: wrap("error") };
+}
+
 /** Default configuration values (the single source of truth for defaults). */
 const DEFAULTS = {
   mode: "active",
@@ -173,8 +198,9 @@ export function resolveConfig(input: DeepPartial<RelayConfig>): RelayConfig {
   };
   validate(merged);
 
-  // Merge over the no-op so any methods the caller omits still exist.
-  const logger: Logger = { ...NOOP_LOGGER, ...input.logger };
+  // Merge over the no-op so any methods the caller omits still exist, then wrap fail-open so a
+  // throwing logger can never escape into the delivery/dispatch path (see safeLogger).
+  const logger: Logger = safeLogger({ ...NOOP_LOGGER, ...input.logger });
   warnIfRisky(merged, logger);
 
   return Object.freeze({

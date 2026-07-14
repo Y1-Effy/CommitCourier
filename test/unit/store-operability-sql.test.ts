@@ -84,6 +84,8 @@ describe("prune SQL", () => {
     expect(sql).toContain("status IN ($1, $2, $3)");
     expect(sql).toContain("created_at < $4");
     expect(sql).toContain("ORDER BY created_at LIMIT $5");
+    // Always-on defence-in-depth guard: a live row can never be pruned even if an active status is passed.
+    expect(sql).toContain("status NOT IN ('pending', 'in_flight')");
     // Outer DELETE over the bounded id set (so one call cannot delete an unbounded set).
     expect(sql).toMatch(/^DELETE FROM webhook_outbox WHERE id IN \(SELECT id FROM webhook_outbox/);
   });

@@ -23,6 +23,13 @@ export interface OutboxRow {
    */
   secretSnapshot: string | null;
   status: Status;
+  /**
+   * Count of FAILED delivery attempts. Incremented on each failure (`onFailure`/`onPermanentFailure`),
+   * not on the delivering success — so a `delivered` row shows the number of prior failures (`0` when it
+   * succeeded on the first try), while a `dead` row shows the total attempts (all of which failed). The
+   * per-attempt ledger (`webhook_delivery_attempts.attempt_no`) counts every attempt including the
+   * successful one, so for a `delivered` row it is `attempts + 1`.
+   */
   attempts: number;
   availableAt: Date;
   lockedAt: Date | null;
@@ -146,8 +153,10 @@ export interface CircuitBreakerConfig {
    * least this long (measured from `disabled_at`), the dispatcher lets a trial delivery through:
    * success re-activates the endpoint and resets the counter; failure re-arms the cooldown so the next
    * trial waits another `cooldownMs`. `0` (the default) disables auto-recovery, so a disabled endpoint
-   * stays down until an admin calls `endpoints.enable`. Applies to any disabled registered endpoint
-   * (whether disabled by the breaker or a `410 Gone`).
+   * stays down until an admin calls `endpoints.enable`. Applies only to endpoints disabled
+   * AUTOMATICALLY — the circuit breaker or a `410 Gone`, which stamp `disabled_at = now` (the cooldown
+   * anchor). A deliberate `endpoints.disable()` is sticky (it clears `disabled_at`) and is never
+   * auto-recovered; use `endpoints.enable()` to bring it back.
    *
    * Trial concurrency depends on the dispatcher's `ordering`: with `"per-endpoint"` (and a single
    * dispatcher instance) exactly one trial is admitted per endpoint, strictly serialised. With the

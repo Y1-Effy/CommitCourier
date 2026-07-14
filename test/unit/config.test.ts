@@ -48,6 +48,20 @@ describe("config.resolveConfig defaults", () => {
     expect(() => cfg.logger.info("x")).not.toThrow();
   });
 
+  it("wraps the injected logger fail-open: a throwing method never propagates", () => {
+    // Every log site is on a fail-open path (delivery / the dispatcher loop / the critical safety net),
+    // so a logger whose method throws must degrade to a no-op rather than reject a delivery promise and
+    // stop the dispatcher. resolveConfig wraps the logger so every call is caught.
+    const boom = (): never => {
+      throw new Error("logger transport down");
+    };
+    const cfg = resolveConfig({ logger: { debug: boom, info: boom, warn: boom, error: boom } });
+    expect(() => cfg.logger.error("x", { a: 1 })).not.toThrow();
+    expect(() => cfg.logger.warn("y")).not.toThrow();
+    expect(() => cfg.logger.info("z")).not.toThrow();
+    expect(() => cfg.logger.debug("w")).not.toThrow();
+  });
+
   it("returns a deeply frozen config", () => {
     const cfg = resolveConfig({});
     expect(Object.isFrozen(cfg)).toBe(true);

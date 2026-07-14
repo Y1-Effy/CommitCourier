@@ -83,7 +83,11 @@ export interface EndpointAdmin {
    * gets a full `failureThreshold` budget again rather than being re-disabled by the next failure.
    */
   enable(endpointId: string): Promise<void>;
-  /** Disable an endpoint so no further deliveries target it. */
+  /**
+   * Disable an endpoint so no further deliveries target it. Sticky: unlike a circuit-breaker / `410`
+   * auto-disable, a deliberate manual disable is never auto-recovered by the half-open cooldown — it
+   * stays disabled until {@link EndpointAdmin.enable}.
+   */
   disable(endpointId: string): Promise<void>;
   /** Look up a registered endpoint, or null when absent. */
   get(endpointId: string): Promise<EndpointRow | null>;
@@ -506,7 +510,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     list(filter) {
       return adminListOutbox(store, filter);
     },
-    endpoints: endpointAdmin(store, resolved.clock),
+    endpoints: endpointAdmin(store),
     stats() {
       return store.stats();
     },
@@ -514,12 +518,12 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
 }
 
 /** Compose the registered-endpoint admin surface over the store. */
-function endpointAdmin(store: Store, clock: Clock): EndpointAdmin {
+function endpointAdmin(store: Store): EndpointAdmin {
   return {
     register: (input) => adminRegister(store, input),
     update: (id, patch) => adminUpdate(store, id, patch),
     enable: (id) => adminEnable(store, id),
-    disable: (id) => adminDisable(store, id, clock()),
+    disable: (id) => adminDisable(store, id),
     get: (id) => adminGet(store, id),
     list: (filter) => adminListEndpoints(store, filter),
     rotateSecret: (id, newSecret) => adminRotate(store, id, newSecret),

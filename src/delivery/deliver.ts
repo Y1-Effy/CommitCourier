@@ -659,7 +659,12 @@ async function deliverSink(ctx: Ctx, sink: Sink | undefined): Promise<void> {
  * delivery-side failure is logged and persisted as a retryable failure (fail-open).
  *
  * The ledger write and the transition are a single atomic `completeAttempt`, so a failure leaves
- * neither written — exactly one ledger row is produced per invocation with no partial state.
+ * neither written — normally exactly one ledger row is produced per invocation with no partial state.
+ * The one exception is a post-commit driver error: if `completeAttempt` COMMITS but the driver then
+ * throws while returning the affected-row count (a connection blip after commit), the outer catch's
+ * failover write records a second ledger row for the same `attempt_no` (the transition is a no-op by
+ * then, since the row already left `in_flight`). That is harmless and consistent with at-least-once,
+ * but the ledger can hold a duplicate attempt row in that rare window.
  */
 export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<void> {
   const host = hostOf(row.targetUrl);
