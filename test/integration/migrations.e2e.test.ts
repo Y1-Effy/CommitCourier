@@ -35,6 +35,7 @@ describe.skipIf(!dockerAvailable())("concurrent migrate (integration)", () => {
       expect(migs.rows.map((r: { name: string }) => r.name).sort()).toEqual([
         "001_init",
         "002_sink_targetless",
+        "003_list_prune_indexes",
       ]);
       const diag = await postgresStore({ pool: probe }).diagnose();
       expect(diag.ok).toBe(true);
@@ -43,7 +44,7 @@ describe.skipIf(!dockerAvailable())("concurrent migrate (integration)", () => {
       // A second concurrent wave (now an all-applied no-op) must also be clean.
       await Promise.all(pools.map((pool) => postgresStore({ pool }).migrate()));
       const after = await probe.query("SELECT count(*)::int AS n FROM commitcourier_migrations");
-      expect((after.rows[0] as { n: number }).n).toBe(2);
+      expect((after.rows[0] as { n: number }).n).toBe(3);
     } finally {
       await Promise.all(pools.map((pool) => pool.end()));
     }

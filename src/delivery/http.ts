@@ -10,7 +10,7 @@
 import { Agent, request } from "undici";
 import { lookup as dnsLookup } from "node:dns";
 import type { LookupFunction } from "node:net";
-import { evaluateIp, matchHostList } from "../core/index";
+import { evaluateIp, matchHostList, bytesToUtf8 } from "../core/index";
 import type { SsrfConfig, DeliveryConfig } from "../core/index";
 import { errorCode, secretFreeSummary } from "./_error";
 
@@ -63,14 +63,16 @@ function stripBrackets(host: string): string {
  * sequence is never split. Trailing continuation bytes (0x80-0xBF) at the cut are rewound.
  */
 export function truncateUtf8(bytes: Uint8Array, maxBytes: number): string {
+  // bytesToUtf8 reuses the shared module-level TextDecoder (see core/encoding) rather than
+  // allocating one per response snippet read.
   if (bytes.length <= maxBytes) {
-    return new TextDecoder().decode(bytes);
+    return bytesToUtf8(bytes);
   }
   let end = maxBytes;
   while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) {
     end--;
   }
-  return new TextDecoder().decode(bytes.subarray(0, end));
+  return bytesToUtf8(bytes.subarray(0, end));
 }
 
 /** Pick the address matching the requested family, else the first candidate. */

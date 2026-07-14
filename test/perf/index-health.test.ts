@@ -15,6 +15,12 @@ const DUE_QUERY =
 // The reclaim sweep filter (02-store section 6): in_flight rows whose lock has expired.
 const RECLAIM_QUERY =
   "SELECT id FROM webhook_outbox WHERE status = 'in_flight' AND locked_at < now()";
+// The admin DLQ list (listOutbox): status-filtered, newest-first on the seq keyset.
+const DLQ_LIST_QUERY =
+  "SELECT id FROM webhook_outbox WHERE status = 'dead' ORDER BY seq DESC LIMIT 50";
+// The retention prune inner select: oldest terminal rows, created_at-ordered, bounded LIMIT.
+const PRUNE_INNER_QUERY =
+  "SELECT id FROM webhook_outbox WHERE status IN ('delivered', 'dead', 'cancelled') AND created_at < now() ORDER BY created_at LIMIT 100";
 
 describe.skipIf(!dockerAvailable())("index health (integration)", () => {
   let conn: PgConn;
@@ -40,6 +46,15 @@ describe.skipIf(!dockerAvailable())("index health (integration)", () => {
       await pool.query(
         "INSERT INTO webhook_outbox (id, event_type, payload, target_url, status, locked_at, locked_by) VALUES ($1, 'e', '{}'::jsonb, 'https://x.test/hook', 'in_flight', now() - interval '1 hour', 'w')",
         [randomUUID()],
+      );
+    }
+    // Terminal rows (dead/delivered) with staggered created_at so the admin-path partial indexes
+    // (ix_outbox_terminal_seq, ix_outbox_prune from migration 003) have live entries to plan against.
+    for (let i = 0; i < 40; i++) {
+      const status = i % 2 === 0 ? "dead" : "delivered";
+      await pool.query(
+        "INSERT INTO webhook_outbox (id, event_type, payload, target_url, status, created_at) VALUES ($1, 'e', '{}'::jsonb, 'https://x.test/hook', $2, now() - ($3 || ' minutes')::interval)",
+        [randomUUID(), status, String(i)],
       );
     }
     await pool.query("ANALYZE webhook_outbox");
@@ -69,5 +84,13 @@ describe.skipIf(!dockerAvailable())("index health (integration)", () => {
 
   it("serves the reclaim sweep from the partial ix_outbox_inflight, not a sequential scan", async () => {
     expect(await explain(RECLAIM_QUERY)).toContain("ix_outbox_inflight");
+  });
+
+  it("serves the DLQ list (status + seq keyset) from the partial ix_outbox_terminal_seq", async () => {
+    expect(await explain(DLQ_LIST_QUERY)).toContain("ix_outbox_terminal_seq");
+  });
+
+  it("serves the prune oldest-first select from the partial ix_outbox_prune", async () => {
+    expect(await explain(PRUNE_INNER_QUERY)).toContain("ix_outbox_prune");
   });
 });

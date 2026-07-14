@@ -7,6 +7,7 @@
  * it in a stable `ENQUEUE_INVALID_PAYLOAD`, symmetric to how the endpoint shape is validated into
  * `ENQUEUE_NO_TARGET`. Uses only Web-standard globals (`JSON`, `TextEncoder`).
  */
+import { utf8ToBytes } from "./encoding";
 import { RelayError } from "./errors";
 
 /**
@@ -41,7 +42,9 @@ export function validatePayload(payload: unknown, maxBytes?: number): void {
     );
   }
   if (maxBytes !== undefined) {
-    const bytes = new TextEncoder().encode(json).length;
+    // Reuse the shared module-level encoder (see ./encoding) instead of allocating a TextEncoder
+    // per enqueue; the full byte array is still materialized because an exact UTF-8 byte count needs it.
+    const bytes = utf8ToBytes(json).length;
     if (bytes > maxBytes) {
       throw new RelayError(
         "ENQUEUE_INVALID_PAYLOAD",

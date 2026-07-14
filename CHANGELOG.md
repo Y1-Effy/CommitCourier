@@ -31,6 +31,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   startup instead of surfacing a cryptic per-delivery `ReferenceError` that — under fail-open delivery
   — would silently fill the DLQ. The `sink` transport delegates signing, so it is exempt.
 
+### Performance
+
+- **SSRF checks and hot-path encoding do less work per delivery.** The blocked-range table used by the
+  SSRF guard is now parsed once at module load instead of on every check (it previously ran up to ~26 IP
+  re-parses per resolved address, per delivery), and enqueue payload sizing / response-snippet decoding
+  reuse the shared `TextEncoder` / `TextDecoder` instead of allocating one per call. Behaviour is unchanged.
+- **New partial indexes speed up the admin list and retention prune on large tables (migration `003`).**
+  `relay.list(...)` (DLQ / status-filtered, seq-keyset paging) and `relay.prune(...)` (oldest terminal
+  rows, `created_at`-ordered) previously degraded to a full scan + sort on a large, aged outbox. `003`
+  adds `ix_outbox_terminal_seq (status, seq)` and `ix_outbox_prune (created_at)`, both PARTIAL on the
+  terminal status set so the fail-closed enqueue INSERT path does not maintain them. `migrate()` applies
+  it automatically; on a very large existing table it runs a plain (table-locking) `CREATE INDEX`, so an
+  operator may instead pre-build the same-named index with `CREATE INDEX CONCURRENTLY` before migrating,
+  after which the migration no-ops.
+
 ## [0.3.0] - 2026-06-28
 
 ### Added
