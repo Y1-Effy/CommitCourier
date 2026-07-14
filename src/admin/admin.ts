@@ -282,11 +282,12 @@ export function getEndpoint(store: EndpointStore, id: string): Promise<EndpointR
   return store.findEndpoint(id);
 }
 
-/** Disable a registered endpoint so no further deliveries target it. */
-export function disableEndpoint(
-  store: EndpointStore,
-  endpointId: string,
-  now: Date,
-): Promise<void> {
-  return store.disableEndpoint(endpointId, now);
+/**
+ * Disable a registered endpoint so no further deliveries target it. A deliberate admin disable is
+ * sticky: it marks the endpoint `disabled` and clears `disabled_at` (the circuit-breaker auto-recovery
+ * cooldown anchor), so — unlike a breaker / `410 Gone` auto-disable, which stamps `disabled_at = now` —
+ * it is never re-tried by half-open recovery. It stays disabled until {@link enableEndpoint}.
+ */
+export function disableEndpoint(store: EndpointStore, endpointId: string): Promise<void> {
+  return store.updateEndpoint(endpointId, { status: "disabled", disabledAt: null });
 }

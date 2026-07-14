@@ -382,6 +382,11 @@ export function createDispatcher(deps: {
     },
 
     async runOnce(runOptions) {
+      // This guard is per-INSTANCE only: it catches the common mistake of driving one dispatcher with
+      // both start() and runOnce(). It cannot see a resident loop on another dispatcher instance or
+      // process (e.g. relay.dispatchOnce() builds a fresh dispatcher per call, and two of them can
+      // overlap), and it need not — overlapping drains stay safe because claimDue's FOR UPDATE SKIP
+      // LOCKED guarantees single-claim. So the throw prevents a self-inflicted footgun, not all overlap.
       if (state.running) {
         throw new RelayError(
           "CONFIG_INVALID",

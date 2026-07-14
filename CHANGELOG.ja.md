@@ -17,6 +17,28 @@
   を投げ、ホスト名宛の配信がすべて DLQ 入りしていた（回避策は `--no-network-family-autoselection` 起動）。
   ガード付き lookup が両方の lookup 契約に対応し、当該フラグの有無に関わらず配信できるようになった。SSRF 防御は
   不変で、解決結果に private / loopback / link-local / metadata アドレスが 1 つでも含まれれば従来どおり拒否する。
+- **トップレベルが `null`・文字列・配列の jsonb ペイロードが `pg`／Drizzle アダプタで拒否されていた問題を修正
+  （しかも fail-closed な enqueue トランザクション内で）。** `validatePayload` は任意の JSON 値を許可するが、
+  この 2 アダプタは jsonb パラメータを node-postgres のネイティブエンコードで束縛しており、JS の `null` を SQL
+  NULL に写像し、トップレベルの JSON 文字列／配列を誤エンコードするため、`NOT NULL` カラムと `::jsonb` キャストで
+  弾かれて呼び出し側の業務書き込みごとロールバックしていた。4 アダプタ（`pg`・Knex・Drizzle・Prisma）すべてが
+  jsonb パラメータを `::jsonb` キャストに対して事前 stringify するようになり、あらゆる JSON ペイロードが全
+  アダプタで同一に round-trip する。
+- **登録エンドポイントキャッシュ（`endpointCacheTtlMs`）が古い行をキャッシュし得た問題を修正。** `update` /
+  `disable` / breaker 変更と並行して開始した `findEndpoint` が書き込み前の行を観測し、TTL いっぱいキャッシュし得た。
+  キャッシュは各書き込みを generation カウンタで挟み、generation が変化していない読み取りのみをキャッシュする
+  ため、書き込みと並行して読まれた値はキャッシュされない。
+- **`dispatcher.runOnce` / `relay.dispatchOnce` が in-flight を最大 ~2×`batchSize` まで抱え得た問題を修正。**
+  各 claim の前に in-flight 行数を差し引くようにし、claim 済み未完了バッファが `batchSize` を超えないようにした
+  （常駐ループと同じ）。これにより最悪 in-flight 時間が reclaim 安全性の警告が想定する範囲に収まる。
+- **注入 `logger` が例外を投げるとディスパッチャが停止し得た問題を修正。** ライブラリの全ログ地点は fail-open
+  経路上にあるが、注入 logger だけがガードなしで呼ばれており、メソッドが例外を投げる logger が配信 Promise を
+  reject してループを止め得た。`resolveConfig` が logger を fail-open にラップするようになった（例外は no-op に
+  縮退。呼び出しアリティは保持）。
+- **`store.prune` が直接ストア呼び出しでもライブ行の削除を防ぐガードを追加。** admin 層は既に status 検証と
+  limit クランプを行っていたが、`Store.prune` の直接呼び出しでは `pending` / `in_flight` 行の削除や無制限
+  DELETE が可能だった。prune の SQL 自身が常時 `status NOT IN ('pending','in_flight')` ガードを持ち、バッチ
+  サイズもクランプする（`replay` と同様の多層防御）。
 
 ### Changed（変更）
 
@@ -29,6 +51,13 @@
   提供しないランタイムでは、`createRelay` が起動時に明確な `RelayError("CONFIG_INVALID")` を投げるように
   なった（従来は配信ごとに cryptic な `ReferenceError` が出て、fail-open のため黙って DLQ を埋めていた）。
   `sink` transport は署名を委譲するため対象外。
+- **手動の `endpoints.disable()` が sticky になった。** `disabled_at`（回路遮断のクールダウン基点）をクリア
+  するため、`circuitBreaker.cooldownMs > 0` でも half-open 試行で自動復帰しなくなり、`endpoints.enable()` を
+  呼ぶまで disabled のままになる。回路遮断／`410 Gone` による自動 disable は従来どおり `disabled_at = now` を
+  刻んで復帰可能なままなので、挙動が変わるのは意図的な手動 disable のみ。
+- **暗号化ストアが隔離した復号不能行が data-loss イベントとして顕在化するようになった。** 保管時 secret を復号
+  できず（鍵の誤設定／破損）行が DLQ に到達した場合、配信経路の dead-letter アラームと同様に critical logger
+  経由で報告される（logger 未設定時は console にフォールバック）。従来の単なる `logger.warn` のみではない。
 
 ### Performance（性能）
 

@@ -165,8 +165,11 @@ export function noteEndpointFailureParams(id: string, now: Date, threshold: numb
  * so one call never deletes an unbounded set or holds a table-wide lock; the outer DELETE removes
  * them (ledger attempts cascade). The `statusCount` statuses are expanded into individual `IN (...)`
  * placeholders (rather than a bound array) so every driver — including Prisma and knex.raw — binds
- * plain scalars uniformly. Emits numbered (`$n`) SQL with bindings in textual order: the statuses,
- * then `olderThan`, then `limit` (the knex adapter translates to positional `?` via `numberedToQmark`).
+ * plain scalars uniformly. An always-on `status NOT IN ('pending','in_flight')` literal guard (mirroring
+ * {@link replayWhere}) makes a live row impossible to delete even on a direct store call that passes an
+ * active status, so the admin layer's status validation is defence in depth, not the only safeguard.
+ * Emits numbered (`$n`) SQL with bindings in textual order: the statuses, then `olderThan`, then `limit`
+ * (the knex adapter translates to positional `?` via `numberedToQmark`).
  */
 export function buildPruneSql(statusCount: number): string {
   let n = 0;
@@ -174,7 +177,7 @@ export function buildPruneSql(statusCount: number): string {
   const inList = Array.from({ length: statusCount }, () => ph()).join(", ");
   const olderThan = ph();
   const limit = ph();
-  return `DELETE FROM ${OUTBOX_TABLE} WHERE id IN (SELECT id FROM ${OUTBOX_TABLE} WHERE status IN (${inList}) AND created_at < ${olderThan} ORDER BY created_at LIMIT ${limit})`;
+  return `DELETE FROM ${OUTBOX_TABLE} WHERE id IN (SELECT id FROM ${OUTBOX_TABLE} WHERE status IN (${inList}) AND status NOT IN ('pending', 'in_flight') AND created_at < ${olderThan} ORDER BY created_at LIMIT ${limit})`;
 }
 
 /** Ordered bindings for {@link buildPruneSql}: the statuses, then `olderThan`, then `limit`. */

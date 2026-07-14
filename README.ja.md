@@ -200,7 +200,7 @@ CommitCourier は両方を兼ねます：Outbox 行を**あなたのトランザ
 - **リプレイ** — ID 指定、またはフィルタ指定（例：特定時刻以降の `dead` 全件）で再 enqueue。安全上限を内蔵し、広いリプレイが無制限な大量再送に膨らみません。
 - **キャンセル** — 未送信の行を送信前に止める（`relay.cancel(id)`）。送信済み／配信中の行は変更しません。
 - **サーバーレス／cron 対応** — `relay.dispatchOnce()` がキューを 1 回ドレインして返すので、常駐プロセス無しに Lambda や cron tick から配信できます。
-- **エンドポイント回路遮断** — 連続失敗が N 回に達した登録エンドポイントを任意で自動 disable し、恒久ダウン宛先が DLQ を埋め続けるのを防止。
+- **エンドポイント回路遮断** — 連続失敗が N 回に達した登録エンドポイントを任意で自動 disable し、恒久ダウン宛先への HTTP リトライ連打を止める（`cooldownMs` 併用で half-open プローブにより自力回復も可能）。
 - **組込みの保持/削除** — `relay.prune({ olderThan })` が古い終端行をバッチ削除（アクティブ行は対象外）。テーブルの無限肥大を防止。
 - **SSRF 防御は既定 ON** — プライベート／ループバック／リンクローカル／クラウドメタデータに加え、その他の非パブリックなネットワーク宛先（shared/CGNAT・マルチキャスト・ブロードキャスト・予約/ドキュメント用レンジ）を、パース後の URL ホストと DNS 解決後の全 IP の両方に対して遮断し、検査済み IP を接続時にピン留めします。
 - **複数インスタンスでの単一配信**を `FOR UPDATE SKIP LOCKED` で担保。可視性タイムアウト回収で at-least-once。
@@ -401,6 +401,8 @@ const relay = await createRelay({ store, circuitBreaker: { failureThreshold: 20 
 
 既定の `failureThreshold: 0` は無効。登録エンドポイント経路のみに適用（インライン `{ url, secret }` には disable 対象が無い）、fail-open で、再有効化は通常の `relay.endpoints.enable(endpointId)` です。
 
+> **DLQ に対して何をする／しないか。** 自動 disable が止めるのは _HTTP リトライの連打_ です。disable 後、そのエンドポイント宛の到来行は毎試行の遅いリクエストではなく `ENDPOINT_DISABLED` で即失敗します（HTTP 呼び出しもタイムアウトも無し）。ただしそれらの行は依然として retry budget を消費するので、エンドポイントが再有効化・回復されないままなら**最終的に DLQ に落ちます** — 回路遮断は負荷を下げて障害を可視化するものであって、それ自体が行を DLQ から守るわけではありません。回復したエンドポイントの行が budget を使い切る前に配信できるよう、下記の `cooldownMs` を足してください。
+
 手放しでの回復が欲しい場合は `cooldownMs` を足すと、disable されたエンドポイントが管理者を待たずに自力で回復します：
 
 ```ts
@@ -558,17 +560,17 @@ if (nextCursor) await relay.list({ status: "dead", limit: 100, cursor: nextCurso
 
 ライブラリが throw するエラーはすべて `RelayError` で、安定した機械可読の `code` を持ちます。
 
-| code                      | 発生元                         | 意味                                                                                       |
-| ------------------------- | ------------------------------ | ------------------------------------------------------------------------------------------ |
-| `CONFIG_INVALID`          | `createRelay`（起動時）        | 設定が不正（fail-fast）。                                                                  |
-| `MISSING_TABLES`          | `createRelay`（起動時）        | コアテーブルが存在しない。`store.migrate()` を実行。                                       |
-| `ENQUEUE_NO_TARGET`       | `enqueue` / `enqueueUnsafe`    | `{ url, secret }` も `{ endpointId }` も指定されていない。                                 |
-| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe`    | payload が JSON シリアライズ不可（循環参照・`BigInt` 等）、または `maxPayloadBytes` 超過。 |
-| `INVALID_ARGUMENT`        | `list` / `endpoints.list`      | 一覧フィルタが不正（例：数値でない `cursor`、未知の `status`）。                           |
-| `SSRF_BLOCKED`            | dispatch（throw せず台帳記録） | 宛先が遮断レンジに解決された。                                                             |
-| `ENDPOINT_NOT_FOUND`      | dispatch（throw せず台帳記録） | `endpointId` が未登録。                                                                    |
-| `ENDPOINT_DISABLED`       | dispatch（throw せず台帳記録） | 登録済みエンドポイントが無効化されている。                                                 |
-| `MISSING_SECRET`          | dispatch（throw せず台帳記録） | inline 宛先に署名用の secret スナップショットが無い。                                      |
+| code                      | 発生元                                                            | 意味                                                                                         |
+| ------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `CONFIG_INVALID`          | `createRelay`（起動時）                                           | 設定が不正（fail-fast）。                                                                    |
+| `MISSING_TABLES`          | `createRelay`（起動時）                                           | コアテーブルが存在しない。`store.migrate()` を実行。                                         |
+| `ENQUEUE_NO_TARGET`       | `enqueue` / `enqueueUnsafe`                                       | `{ url, secret }` も `{ endpointId }` も指定されていない。                                   |
+| `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe`                                       | payload が JSON シリアライズ不可（循環参照・`BigInt` 等）、または `maxPayloadBytes` 超過。   |
+| `INVALID_ARGUMENT`        | `list` / `get` / `cancel` / `replay` / `prune` / `endpoints.list` | 引数が不正（例：数値でない `cursor`、未知の `status`、uuid でない id、不正な `olderThan`）。 |
+| `SSRF_BLOCKED`            | dispatch（throw せず台帳記録）                                    | 宛先が遮断レンジに解決された。                                                               |
+| `ENDPOINT_NOT_FOUND`      | dispatch（throw せず台帳記録）                                    | `endpointId` が未登録。                                                                      |
+| `ENDPOINT_DISABLED`       | dispatch（throw せず台帳記録）                                    | 登録済みエンドポイントが無効化されている。                                                   |
+| `MISSING_SECRET`          | dispatch（throw せず台帳記録）                                    | inline 宛先に署名用の secret スナップショットが無い。                                        |
 
 この区別はアーキテクチャを反映しています。**enqueue 経路**のエラーは _throw_ され、トランザクションを rollback させます（fail-closed）。一方 **dispatch 経路**の失敗は *配信台帳に記録*されてリトライされ、アプリには throw されません（fail-open）。後者は `relay.attempts({ outboxId })` で確認します。
 

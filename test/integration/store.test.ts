@@ -65,6 +65,27 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(await h().getOutbox(rolledBack.id)).toBeUndefined();
     });
 
+    it("stores top-level JSON scalar / null / array payloads as jsonb (round-trips on every adapter)", async () => {
+      // validatePayload permits these (see unit payload.test.ts), so every adapter must store them as a
+      // jsonb value rather than throw. Guards the node-postgres native-encoding divergence: a JS `null`
+      // maps to SQL NULL (NOT NULL violation) and a bare string/array fails the `::jsonb` cast on
+      // pg/drizzle, while knex/prisma stringify and succeed. All four must now agree.
+      const cases: { label: string; payload: unknown }[] = [
+        { label: "null", payload: null },
+        { label: "string", payload: "hello" },
+        { label: "number", payload: 42 },
+        { label: "boolean", payload: false },
+        { label: "array", payload: [1, "two", { three: 3 }] },
+      ];
+      for (const c of cases) {
+        const row = sampleRow({ payload: c.payload });
+        await h().enqueue(row);
+        const stored = await h().getOutbox(row.id);
+        expect(stored, c.label).toBeDefined();
+        expect(stored?.payload, c.label).toEqual(c.payload);
+      }
+    });
+
     it("claimDue moves pending -> in_flight and is not reclaimed twice", async () => {
       const row = sampleRow();
       await h().enqueue(row);

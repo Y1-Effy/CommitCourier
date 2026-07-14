@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { createRelay } from "../../src/relay";
 import type { EnqueueInput, DeliveryAttempt, OutboxRow } from "../../src/core/index";
-import type { Store, NewOutboxRow } from "../../src/store/store";
+import type { Store, NewOutboxRow, EndpointPatch } from "../../src/store/store";
 
 const NOW = new Date("2026-06-25T00:00:00.000Z");
 
@@ -15,10 +15,17 @@ interface Captured {
   autonomous: NewOutboxRow[];
   replayCopies: NewOutboxRow[];
   disabled: { id: string; now: Date }[];
+  updated: { id: string; patch: EndpointPatch }[];
 }
 
 function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Captured } {
-  const captured: Captured = { inserted: [], autonomous: [], replayCopies: [], disabled: [] };
+  const captured: Captured = {
+    inserted: [],
+    autonomous: [],
+    replayCopies: [],
+    disabled: [],
+    updated: [],
+  };
   const store: Store = {
     insertOutbox: (trx, row) => {
       captured.inserted.push({ trx, row });
@@ -52,7 +59,10 @@ function fakeStore(over: Partial<Store> = {}): { store: Store; captured: Capture
     listOutbox: () => Promise.resolve({ items: [], nextCursor: null }),
     listEndpoints: () => Promise.resolve({ items: [], nextCursor: null }),
     insertEndpoint: () => Promise.resolve(),
-    updateEndpoint: () => Promise.resolve(),
+    updateEndpoint: (id, patch) => {
+      captured.updated.push({ id, patch });
+      return Promise.resolve();
+    },
     findEndpoint: () => Promise.resolve(null),
     disableEndpoint: (id, now) => {
       captured.disabled.push({ id, now });
@@ -225,12 +235,17 @@ describe("Relay admin operations", () => {
     expect(await relay.attempts({ outboxId: "o-1" })).toEqual(ledger);
   });
 
-  it("endpoints.disable delegates to the store with the current time", async () => {
+  it("endpoints.disable is sticky: marks disabled and clears disabled_at (opts out of auto-recovery)", async () => {
     const { store, captured } = fakeStore();
     const relay = await createRelay({ store, clock: () => NOW });
 
     await relay.endpoints.disable("ep-1");
 
-    expect(captured.disabled).toEqual([{ id: "ep-1", now: NOW }]);
+    // A deliberate admin disable must not be auto-recovered by the circuit-breaker cooldown, so it
+    // routes through updateEndpoint clearing disabled_at (the cooldown anchor) rather than stamping it.
+    expect(captured.updated).toEqual([
+      { id: "ep-1", patch: { status: "disabled", disabledAt: null } },
+    ]);
+    expect(captured.disabled).toEqual([]);
   });
 });

@@ -71,9 +71,11 @@ export function drizzleStore(opts: { db: DrizzleDb }): Store<DrizzleTx> {
   const client = db.$client;
 
   // Reads/writes go through `$client` (node-postgres' parsers → Date); only the enqueue-path INSERT
-  // rides the caller's drizzle transaction via `tx.execute(toSql(...))`.
+  // rides the caller's drizzle transaction via `tx.execute(toSql(...))`. jsonAsText: pre-stringify jsonb
+  // params (like pg) so top-level JSON scalars/null/arrays round-trip — node-postgres' native param
+  // encoding maps null → SQL NULL and mis-encodes a bare string/array, which `::jsonb` then rejects.
   const exec: SqlExecutor<DrizzleTx> = {
-    jsonAsText: false,
+    jsonAsText: true,
     async query<R>(text: string, params: readonly unknown[]) {
       const res = await client.query(text, params as unknown[]);
       return (res.rows ?? []) as R[];

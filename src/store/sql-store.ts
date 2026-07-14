@@ -53,6 +53,7 @@ import {
   outboxListPage,
   endpointListPage,
   clampListLimit,
+  clampPruneLimit,
   countsFromRows,
   buildPruneSql,
   pruneParams,
@@ -84,9 +85,13 @@ import { postgres } from "./sql/postgres";
  */
 export interface SqlExecutor<TTx> {
   /**
-   * Whether jsonb params must be pre-stringified before binding. node-postgres (pg, drizzle's
-   * `$client`) serialises JS objects itself (`false`); Prisma binds them as text against the SQL's
-   * `::jsonb` cast (`true`). Selects the ordered-value builder used for inserts/patches.
+   * Whether jsonb params are pre-stringified before binding. All bundled adapters set this `true`:
+   * `JSON.stringify`-ing the value and binding it against the SQL's `::jsonb` cast is the only encoding
+   * that round-trips every JSON payload — node-postgres' native param encoding (`false`) maps a JS `null`
+   * to SQL NULL and mis-encodes a top-level JSON string/array, which the `NOT NULL` column and `::jsonb`
+   * cast then reject. `false` relies on the driver serialising objects natively and does not support
+   * non-object top-level payloads; it is retained only as a seam for a future non-Postgres binding.
+   * Selects the ordered-value builder used for inserts/patches.
    */
   jsonAsText: boolean;
   /** Run a row-returning statement (SELECT, or a CTE/RETURNING that yields rows) and return the rows. */
@@ -247,8 +252,14 @@ export function createSqlStore<TTx>(
 
     async prune({ olderThan, statuses, limit }) {
       if (statuses.length === 0) return { deleted: 0 };
+      // Defence in depth (the admin layer already validates statuses and clamps): the SQL itself never
+      // deletes an active row (an always-on `status NOT IN ('pending','in_flight')` guard), and the batch
+      // size is clamped here too, so a direct store caller cannot issue an unbounded DELETE.
       const sql = buildPruneSql(statuses.length);
-      const deleted = await exec.execute(sql, pruneParams(statuses, olderThan, limit));
+      const deleted = await exec.execute(
+        sql,
+        pruneParams(statuses, olderThan, clampPruneLimit(limit)),
+      );
       return { deleted };
     },
 

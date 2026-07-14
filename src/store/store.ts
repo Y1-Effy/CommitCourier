@@ -28,6 +28,7 @@ export interface OutboxListItem {
   endpointId: string | null;
   targetUrl: string | null;
   status: Status;
+  /** Count of FAILED delivery attempts (see {@link OutboxRow.attempts}); a delivered row is one below its ledger `attempt_no`. */
   attempts: number;
   availableAt: Date;
   lockedAt: Date | null;
