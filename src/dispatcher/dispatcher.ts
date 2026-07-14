@@ -404,7 +404,12 @@ export function createDispatcher(deps: {
       };
       let processed = 0;
       while (processed < cap) {
-        const want = Math.min(opts.batchSize, cap - processed);
+        // Subtract the rows still in flight so claimed-but-unfinished never exceeds batchSize —
+        // matching the continuous loop's freeCapacity bound. Claiming a full batchSize regardless
+        // would let the buffer reach ~2x batchSize, stretching the worst-case in-flight time past
+        // what warnIfReclaimTooTight models (reclaim + double-delivery risk under a tight
+        // reclaimAfterMs). The wait loop below guarantees at least one free slot here.
+        const want = Math.min(opts.batchSize - inFlightRun.size, cap - processed);
         let rows: OutboxRow[];
         try {
           rows = await store.claimDue({

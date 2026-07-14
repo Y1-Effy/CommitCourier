@@ -390,7 +390,7 @@ When you can't host a long-lived dispatcher (AWS Lambda, a cron job, a scheduled
 const { processed } = await relay.dispatchOnce({ concurrency: 8 }, { maxRows: 500 });
 ```
 
-`dispatchOnce` returns the number of rows dispatched this run. It refuses to run while a continuous `createDispatcher().start()` loop is active — use one model or the other.
+`dispatchOnce` returns the number of rows dispatched this run. Pick one model per process: the running-loop guard is per dispatcher instance (`dispatcher.runOnce()` rejects while that same dispatcher's `start()` loop is active), and `dispatchOnce` creates a fresh dispatcher each call, so it does not detect a loop started elsewhere. Overlap is still safe — `FOR UPDATE SKIP LOCKED` keeps every row single-claim — it just means both compete for the same rows.
 
 ### Auto-disabling failing endpoints (circuit breaker)
 

@@ -41,6 +41,7 @@ import { createHttpClient } from "./delivery/http";
 import { deliverOne } from "./delivery/deliver";
 import type { DeliveryHooks, DeliveryInstrument } from "./delivery/deliver";
 import { createCriticalLogger } from "./delivery/critical";
+import type { CriticalLogger } from "./delivery/critical";
 import { createDispatcher as makeDispatcher } from "./dispatcher/dispatcher";
 import type { Dispatcher, DispatcherOptions, RunOnceOptions } from "./dispatcher/dispatcher";
 import type { Accelerator } from "./accelerator/accelerator";
@@ -186,6 +187,11 @@ export interface Relay<TTx> {
    * one-shot convenience over `createDispatcher(options).runOnce(runOptions)`; it never subscribes
    * the accelerator (the loop's wake seam is irrelevant to a single drain). Returns the number of
    * rows dispatched this run.
+   *
+   * Pick one delivery model per process: the running-loop guard is per dispatcher instance, and
+   * this creates a fresh dispatcher each call, so a loop started via `createDispatcher().start()`
+   * is not detected. Overlap stays safe (`SKIP LOCKED` keeps rows single-claim); it just competes
+   * for the same rows.
    */
   dispatchOnce(
     options?: DispatcherOptions,
@@ -255,10 +261,14 @@ function asRegistered(ep: unknown): { endpointId: string } | null {
  */
 function wrapStore<TTx>(
   rawStore: Store<TTx>,
-  cipher: SecretCipher | undefined,
-  endpointCacheTtlMs: number | undefined,
-  logger: Logger,
+  opts: {
+    cipher: SecretCipher | undefined;
+    endpointCacheTtlMs: number | undefined;
+    logger: Logger;
+    critical: CriticalLogger;
+  },
 ): Store<TTx> {
+  const { cipher, endpointCacheTtlMs, logger, critical } = opts;
   if (
     endpointCacheTtlMs !== undefined &&
     !(Number.isFinite(endpointCacheTtlMs) && endpointCacheTtlMs >= 0)
@@ -268,8 +278,14 @@ function wrapStore<TTx>(
       `endpointCacheTtlMs must be a number >= 0, got ${String(endpointCacheTtlMs)}`,
     );
   }
-  // The encrypted store logs (and quarantines) undecryptable rows, so it needs the relay's logger.
-  let store = cipher ? createEncryptedStore(rawStore, cipher, logger) : rawStore;
+  // The encrypted store logs (and quarantines) undecryptable rows, so it needs the relay's logger;
+  // a quarantine is a DLQ transition (data loss), so it also gets the critical sink — visible even
+  // with no logger configured, like the delivery path's dead-letter alarm.
+  let store = cipher
+    ? createEncryptedStore(rawStore, cipher, logger, (msg, meta) => {
+        critical.dataLoss(msg, meta);
+      })
+    : rawStore;
   if (endpointCacheTtlMs && endpointCacheTtlMs > 0) {
     store = createEndpointCache(store, { ttlMs: endpointCacheTtlMs });
   }
@@ -350,7 +366,16 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     if (loggerConfigured) resolved.logger.warn(msg);
     else console.warn(`[commitcourier] ${msg}`);
   }
-  const store = wrapStore(rawStore, cipher, endpointCacheTtlMs, resolved.logger);
+  // Surfaces security/data-loss events to the console when no logger was configured; otherwise routes
+  // to the configured logger only (see createCriticalLogger). Built before the store decorators so the
+  // encrypted store's quarantine (a DLQ transition = data loss) reports through the same instance.
+  const critical = createCriticalLogger(resolved.logger, loggerConfigured);
+  const store = wrapStore(rawStore, {
+    cipher,
+    endpointCacheTtlMs,
+    logger: resolved.logger,
+    critical,
+  });
 
   const diag = await store.diagnose();
   if (!diag.ok) {
@@ -364,9 +389,6 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
   const hooks = config.hooks;
   const instrument = config.instrument;
   const accelerator = config.accelerator;
-  // Surfaces security/data-loss events to the console when no logger was configured; otherwise routes
-  // to the configured logger only (see createCriticalLogger).
-  const critical = createCriticalLogger(resolved.logger, loggerConfigured);
   const deliver = (row: OutboxRow): Promise<void> =>
     deliverOne(row, {
       store,

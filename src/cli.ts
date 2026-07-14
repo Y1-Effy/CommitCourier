@@ -94,9 +94,9 @@ function capturingLogger(sink: string[]): Logger {
 
 /** Pick the config keys resolveConfig understands from a loosely-typed loaded object. */
 function pickConfigKeys(loaded: Record<string, unknown>): Record<string, unknown> {
-  const keys = ["mode", "signing", "retry", "delivery", "ssrf", "circuitBreaker", "clock"] as const;
+  const keys = ["mode", "signing", "retry", "delivery", "ssrf", "circuitBreaker", "clock"];
   const out: Record<string, unknown> = {};
-  for (const k of keys) if (loaded[k] !== undefined) out[k] = loaded[k];
+  for (const k of [...keys, "maxPayloadBytes"]) if (loaded[k] !== undefined) out[k] = loaded[k];
   return out;
 }
 
@@ -180,6 +180,7 @@ function overriddenFields(effective: RelayConfig, defaults: RelayConfig): string
   cmp("delivery", effective.delivery, defaults.delivery);
   cmp("ssrf", effective.ssrf, defaults.ssrf);
   cmp("circuitBreaker", effective.circuitBreaker, defaults.circuitBreaker);
+  cmp("maxPayloadBytes", effective.maxPayloadBytes, defaults.maxPayloadBytes);
   return out;
 }
 

@@ -9,7 +9,7 @@
  * - `./sql/row-mappers`    — snake_case driver rows ↔ camelCase domain objects
  * - `./sql/columns`        — column lists and INSERT/patch/transition value flattening
  * - `./sql/query-builders` — SQL string builders/constants, list queries, and result folders
- * - `./sql/placeholders`   — numbered (`$n`) -> positional (`?`) translation for the knex adapter
+ * - `./sql/placeholders`   — numbered (`$n`) to positional (`?`) translation for the knex adapter
  *
  * Adapters and the admin/cli/test layers import from here so they keep a single store-local entry
  * point; new code may import the focused module directly.
