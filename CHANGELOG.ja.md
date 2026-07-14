@@ -30,6 +30,20 @@
   なった（従来は配信ごとに cryptic な `ReferenceError` が出て、fail-open のため黙って DLQ を埋めていた）。
   `sink` transport は署名を委譲するため対象外。
 
+### Performance（性能）
+
+- **SSRF 判定とホットパスのエンコード処理が配信ごとに行う無駄を削減。** SSRF ガードのブロック範囲テーブルを、
+  呼び出しごと（解決アドレスごと・配信ごとに最大 ~26 回の IP 再パース）ではなくモジュール初期化時に一度だけ
+  パースするようにし、enqueue の payload サイズ算出とレスポンス断片のデコードは共有 `TextEncoder` /
+  `TextDecoder` を再利用する（呼び出しごとの生成を廃止）。挙動は不変。
+- **大規模テーブルでの admin 一覧・保持 prune を新しい部分インデックスで高速化（マイグレーション `003`）。**
+  `relay.list(...)`（DLQ／status 絞り込み・seq キーセットページング）と `relay.prune(...)`（古い終端行を
+  `created_at` 順）は、大きく古くなった outbox で全走査＋ソートに劣化していた。`003` は
+  `ix_outbox_terminal_seq (status, seq)` と `ix_outbox_prune (created_at)` を追加。いずれも終端 status のみの
+  部分インデックスで、fail-closed な enqueue INSERT パスは保守コストを負担しない。`migrate()` が自動適用する。
+  非常に大きな既存テーブルでは plain（テーブルロックを取る）`CREATE INDEX` になるため、運用者は事前に同名の
+  インデックスを `CREATE INDEX CONCURRENTLY` で作成してから migrate すると、当該マイグレーションは no-op になる。
+
 ## [0.3.0] - 2026-06-28
 
 ### Added（追加）

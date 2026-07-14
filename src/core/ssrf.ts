@@ -174,6 +174,44 @@ const V6_EMBEDDED_V4: ReadonlyArray<string> = [
 ];
 
 /**
+ * A CIDR range folded into its masked base value and mask, so membership is a single BigInt
+ * AND + compare with no per-call string parsing. {@link BLOCKED} and {@link V6_EMBEDDED_V4} are
+ * module constants that were previously re-split/re-parsed on every {@link evaluateIp} call
+ * (once per entry, per resolved IP, per delivery); precomputing them once at load removes that.
+ */
+interface CidrRange {
+  version: 4 | 6;
+  value: bigint; // base address already masked to the prefix
+  mask: bigint;
+}
+
+/** Fold a constant CIDR string into a {@link CidrRange}. Only called on the trusted tables below. */
+function parseCidr(cidr: string): CidrRange {
+  const [addr, prefixStr] = cidr.split("/");
+  const base = parseIp(addr ?? "");
+  if (!base) {
+    throw new Error(`invalid CIDR literal in SSRF table: "${cidr}"`);
+  }
+  const prefix = prefixStr === undefined ? base.bits : Number(prefixStr);
+  const full = base.bits === 32 ? V4_MAX : V6_MAX;
+  const mask = prefix === 0 ? 0n : (full << BigInt(base.bits - prefix)) & full;
+  return { version: base.version, value: base.value & mask, mask };
+}
+
+/** Membership test against a precomputed {@link CidrRange} (fast path for the constant tables). */
+function rangeContains(ip: ParsedIp, range: CidrRange): boolean {
+  return ip.version === range.version && (ip.value & range.mask) === range.value;
+}
+
+/** {@link BLOCKED} folded once at module load (paired with its reason), removing per-call reparse. */
+const BLOCKED_PARSED: ReadonlyArray<
+  readonly [CidrRange, Exclude<SsrfDecision, { allowed: true }>["reason"]]
+> = BLOCKED.map(([cidr, reason]) => [parseCidr(cidr), reason] as const);
+
+/** {@link V6_EMBEDDED_V4} folded once at module load. */
+const V6_EMBEDDED_V4_PARSED: ReadonlyArray<CidrRange> = V6_EMBEDDED_V4.map(parseCidr);
+
+/**
  * If `parsed` is an IPv4-mapped or NAT64-translated IPv6 address, return the embedded
  * IPv4 so the SSRF range rules apply to the real destination; otherwise return `parsed`
  * unchanged. Without this, `::ffff:127.0.0.1` / `64:ff9b::a9fe:a9fe` would slip past the
@@ -183,8 +221,8 @@ function unwrapEmbeddedV4(parsed: ParsedIp): ParsedIp {
   if (parsed.version !== 6) {
     return parsed;
   }
-  for (const cidr of V6_EMBEDDED_V4) {
-    if (cidrContains(parsed, cidr)) {
+  for (const range of V6_EMBEDDED_V4_PARSED) {
+    if (rangeContains(parsed, range)) {
       return { version: 4, value: parsed.value & V4_MAX, bits: 32 };
     }
   }
@@ -248,8 +286,8 @@ export function evaluateIp(ip: string, cfg: SsrfConfig): SsrfDecision {
     const parsed = parseIp(ip);
     if (parsed) {
       const effective = unwrapEmbeddedV4(parsed);
-      for (const [cidr, reason] of BLOCKED) {
-        if (cidrContains(effective, cidr)) {
+      for (const [range, reason] of BLOCKED_PARSED) {
+        if (rangeContains(effective, range)) {
           return { allowed: false, reason };
         }
       }

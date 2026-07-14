@@ -79,7 +79,10 @@ interface DoctorReport {
   ok: boolean;
 }
 
-/** Partial dispatch-index set we expect the migration to create; checked for presence. */
+/**
+ * Partial dispatch-index set we expect the migration to create; checked for presence. The admin-path
+ * indexes (migration 003) are covered by the pendingMigrations check, so they are not repeated here.
+ */
 const EXPECTED_INDEXES = ["ix_outbox_due", "ix_outbox_inflight", "ix_outbox_ep_head"] as const;
 
 // --- Config readiness ----------------------------------------------------------------------------

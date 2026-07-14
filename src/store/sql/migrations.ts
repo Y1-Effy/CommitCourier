@@ -8,6 +8,7 @@
  */
 import initSql from "./001_init.sql";
 import sinkTargetlessSql from "./002_sink_targetless.sql";
+import listPruneIndexesSql from "./003_list_prune_indexes.sql";
 
 export const MIGRATIONS_TABLE = "commitcourier_migrations";
 
@@ -50,6 +51,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { name: "001_init", sql: initSql },
   // 002: drop the target CHECK so the `sink` transport can enqueue target-less rows.
   { name: "002_sink_targetless", sql: sinkTargetlessSql },
+  // 003: partial indexes over terminal rows for the admin list (listOutbox) and retention prune.
+  { name: "003_list_prune_indexes", sql: listPruneIndexesSql },
 ];
 
 /**
