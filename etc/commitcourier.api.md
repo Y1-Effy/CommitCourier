@@ -391,7 +391,6 @@ export interface OutboxListFilter {
 
 // @public
 export interface OutboxListItem {
-    // (undocumented)
     attempts: number;
     // (undocumented)
     availableAt: Date;
@@ -435,7 +434,6 @@ export interface OutboxQueryStore {
 
 // @public
 export interface OutboxRow {
-    // (undocumented)
     attempts: number;
     // (undocumented)
     availableAt: Date;
