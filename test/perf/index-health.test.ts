@@ -65,15 +65,23 @@ describe.skipIf(!dockerAvailable())("index health (integration)", () => {
     await stop();
   });
 
-  async function explain(query: string): Promise<string> {
+  async function explain(query: string, disable: readonly string[] = []): Promise<string> {
     const client: PoolClient = await pool.connect();
     try {
       // With seq scans disabled the planner must use an applicable index; the index name then
-      // appears in the plan, proving the query shape does not degrade to a sequential scan.
-      await client.query("SET enable_seqscan = off");
+      // appears in the plan, proving the query shape does not degrade to a sequential scan. `disable`
+      // lists further planner GUCs to turn off (e.g. enable_sort) to make a specific index the only
+      // no-sort way to satisfy an ORDER BY. SET LOCAL inside a transaction scopes the overrides to this
+      // EXPLAIN, so they never leak onto a reused pooled connection.
+      await client.query("BEGIN");
+      await client.query("SET LOCAL enable_seqscan = off");
+      for (const guc of disable) {
+        await client.query(`SET LOCAL ${guc} = off`);
+      }
       const res = await client.query(`EXPLAIN ${query}`);
       return (res.rows as { "QUERY PLAN": string }[]).map((r) => r["QUERY PLAN"]).join("\n");
     } finally {
+      await client.query("ROLLBACK");
       client.release();
     }
   }
@@ -87,10 +95,16 @@ describe.skipIf(!dockerAvailable())("index health (integration)", () => {
   });
 
   it("serves the DLQ list (status + seq keyset) from the partial ix_outbox_terminal_seq", async () => {
-    expect(await explain(DLQ_LIST_QUERY)).toContain("ix_outbox_terminal_seq");
+    // Disable sort so ORDER BY seq can only be satisfied by an ordered scan of the (status, seq) index,
+    // making the plan deterministic (on a tiny table the planner could otherwise bitmap-scan + sort).
+    expect(await explain(DLQ_LIST_QUERY, ["enable_sort"])).toContain("ix_outbox_terminal_seq");
   });
 
   it("serves the prune oldest-first select from the partial ix_outbox_prune", async () => {
-    expect(await explain(PRUNE_INNER_QUERY)).toContain("ix_outbox_prune");
+    // Disable sort so ORDER BY created_at can only be satisfied without a sort by an ordered scan of the
+    // created_at btree, i.e. ix_outbox_prune. At scale the planner picks it anyway (sorting the matched
+    // set is expensive); on the small test table it may instead bitmap-scan the status index + cheap
+    // sort (this varies by Postgres version -- it is what made this assertion flaky on PG 17).
+    expect(await explain(PRUNE_INNER_QUERY, ["enable_sort"])).toContain("ix_outbox_prune");
   });
 });
