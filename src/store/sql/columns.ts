@@ -1,8 +1,13 @@
 /**
- * Column lists and the value/object builders that flatten a domain object into ordered INSERT
- * values (pg/drizzle bind objects directly; knex/prisma stringify the jsonb columns). Also the
- * sparse-delta flattening for endpoint patches and state transitions. Shared so the adapters cannot
- * drift on column order or jsonb handling.
+ * Column lists and the value/object builders that flatten a domain object into ordered INSERT values.
+ * Also the sparse-delta flattening for endpoint patches and state transitions. Shared so the adapters
+ * cannot drift on column order or jsonb handling.
+ *
+ * Each builder comes in a raw and a stringified form; the executor's `jsonAsText` seam picks between
+ * them (see `../sql-store`). Every bundled adapter sets `jsonAsText: true`, so jsonb params are
+ * pre-stringified against the `::jsonb` cast — binding them as raw objects is what broke top-level
+ * `null`/string/array payloads on pg and Drizzle before 0.4.0. The raw form is kept only for a future
+ * non-Postgres binding.
  */
 import type { Transition } from "../../core/index";
 import type { NewOutboxRow, NewDeliveryAttempt, NewEndpointRow, EndpointPatch } from "../store";
@@ -115,7 +120,7 @@ export function endpointValues(ep: NewEndpointRow): unknown[] {
   ];
 }
 
-/** Object form for a knex INSERT; the jsonb columns are stringified. */
+/** Object form for an endpoint INSERT under `jsonAsText`; the jsonb columns are stringified. */
 export function endpointObject(ep: NewEndpointRow): Record<string, unknown> {
   return {
     id: ep.id,
@@ -162,7 +167,7 @@ export function endpointPatchColumns(patch: EndpointPatch): {
   return { columns, values };
 }
 
-/** Object form of an {@link EndpointPatch} for a knex UPDATE; the jsonb columns are stringified. */
+/** Object form of an {@link EndpointPatch} for an UPDATE under `jsonAsText`; jsonb columns stringified. */
 export function endpointPatchObject(patch: EndpointPatch): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(ENDPOINT_PATCH_COLUMN) as (keyof EndpointPatch)[]) {
@@ -210,7 +215,7 @@ export function outboxValuesStringified(row: NewOutboxRow): unknown[] {
   return OUTBOX_COLUMNS.map((c) => obj[c]);
 }
 
-/** Ordered endpoint values with the jsonb `metadata` stringified, matching {@link ENDPOINT_COLUMNS}. */
+/** Ordered endpoint values with the jsonb columns stringified, matching {@link ENDPOINT_COLUMNS}. */
 export function endpointValuesStringified(ep: NewEndpointRow): unknown[] {
   const obj = endpointObject(ep);
   return ENDPOINT_COLUMNS.map((c) => obj[c]);
