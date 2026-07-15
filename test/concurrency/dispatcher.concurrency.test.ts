@@ -3,14 +3,20 @@
  * testcontainers; self-skips without Docker. Proves the two core guarantees end to end:
  * single delivery across N dispatchers (SKIP LOCKED) and reclaim of a crashed worker's row.
  */
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import type { Pool } from "pg";
 import { onSuccess, resolveConfig } from "../../src/core/index";
 import { postgresStore } from "../../src/store/pg";
 import type { Store } from "../../src/store/store";
 import { createDispatcher } from "../../src/dispatcher/dispatcher";
-import { dockerAvailable, newPgPool, startPostgres, type PgConn } from "../integration/_helpers";
+import {
+  TRUNCATE_SQL,
+  dockerAvailable,
+  newPgPool,
+  startPostgres,
+  type PgConn,
+} from "../integration/_helpers";
 
 async function waitFor(cond: () => boolean, timeoutMs = 20_000): Promise<void> {
   const start = Date.now();
@@ -38,6 +44,7 @@ async function seedPending(store: Store, id: string): Promise<void> {
 describe.skipIf(!dockerAvailable())("dispatcher concurrency (integration)", () => {
   let conn: PgConn;
   let stop: () => Promise<void>;
+  let admin: Pool;
   const pools: Pool[] = [];
 
   function newStore(): Store {
@@ -51,6 +58,15 @@ describe.skipIf(!dockerAvailable())("dispatcher concurrency (integration)", () =
     conn = started.conn;
     stop = started.stop;
     await newStore().migrate();
+    admin = newPgPool(conn);
+    pools.push(admin);
+  });
+
+  // Reset between tests as every other DB suite does. The reclaim test below asserts an exact
+  // delivery count, so a row left behind by an earlier failure would fail it too and bury the
+  // original cause.
+  beforeEach(async () => {
+    await admin.query(TRUNCATE_SQL);
   });
 
   afterAll(async () => {

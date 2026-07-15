@@ -42,7 +42,9 @@ describe("createRelay unset-logger warning", () => {
 
   it("warns once when no logger is configured", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await expect(createRelay({ store: stubStore })).rejects.toThrow();
+    // Match the stub's own rejection: proves createRelay reached diagnose rather than bailing out
+    // earlier for an unrelated reason, which would change what the warning below means.
+    await expect(createRelay({ store: stubStore })).rejects.toThrow("stub");
     const relayWarnings = warn.mock.calls.filter((c) =>
       String(c[0]).includes("no logger configured"),
     );
@@ -51,9 +53,9 @@ describe("createRelay unset-logger warning", () => {
 
   it("does not warn when a logger is provided", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    await expect(
-      createRelay({ store: stubStore, logger: createConsoleLogger() }),
-    ).rejects.toThrow();
+    await expect(createRelay({ store: stubStore, logger: createConsoleLogger() })).rejects.toThrow(
+      "stub",
+    );
     const relayWarnings = warn.mock.calls.filter((c) =>
       String(c[0]).includes("no logger configured"),
     );
