@@ -14,6 +14,7 @@ function endpointRow(id: string, secret = "whsec_x"): EndpointRow {
     consecutiveFailures: 0,
     disabledAt: null,
     metadata: null,
+    customHeaders: null,
     createdAt: new Date(0),
   };
 }

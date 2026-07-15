@@ -486,6 +486,47 @@ describe.skipIf(!dockerAvailable())("store adapters (integration)", () => {
       expect(reEnabled?.disabledAt).toBeNull();
     });
 
+    it("insertEndpoint + updateEndpoint round-trip custom_headers (the second jsonb column)", async () => {
+      const id = sampleRow().id;
+      await h().store.insertEndpoint({
+        id,
+        url: "https://a.test/hook",
+        secret: "whsec_a",
+        metadata: { team: "payments" },
+        customHeaders: { authorization: "Bearer t", "x-api-key": "k1" },
+      });
+
+      // Both jsonb columns survive the INSERT together (they are cast/stringified per adapter).
+      const created = await h().store.findEndpoint(id);
+      expect(created?.customHeaders).toEqual({ authorization: "Bearer t", "x-api-key": "k1" });
+      expect(created?.metadata).toEqual({ team: "payments" });
+
+      // Patch replaces the whole map, and leaves the other jsonb column alone.
+      await h().store.updateEndpoint(id, { customHeaders: { "x-tenant": "t-1" } });
+      const patched = await h().store.findEndpoint(id);
+      expect(patched?.customHeaders).toEqual({ "x-tenant": "t-1" });
+      expect(patched?.metadata).toEqual({ team: "payments" });
+
+      // Both jsonb columns in one patch.
+      await h().store.updateEndpoint(id, {
+        customHeaders: { "x-a": "1" },
+        metadata: { team: "ops" },
+      });
+      const both = await h().store.findEndpoint(id);
+      expect(both?.customHeaders).toEqual({ "x-a": "1" });
+      expect(both?.metadata).toEqual({ team: "ops" });
+
+      // null clears the map.
+      await h().store.updateEndpoint(id, { customHeaders: null });
+      expect((await h().store.findEndpoint(id))?.customHeaders).toBeNull();
+    });
+
+    it("an endpoint inserted without custom_headers reads back null", async () => {
+      const id = sampleRow().id;
+      await h().store.insertEndpoint({ id, url: "https://a.test/hook", secret: "whsec_a" });
+      expect((await h().store.findEndpoint(id))?.customHeaders).toBeNull();
+    });
+
     it("completeAttempt records the ledger and applies the transition atomically (in_flight guard)", async () => {
       const r = sampleRow();
       await h().enqueue(r);

@@ -202,6 +202,7 @@ describe("delivery hooks", () => {
           consecutiveFailures: 0,
           disabledAt: null,
           metadata: null,
+          customHeaders: null,
           createdAt: new Date(0),
         }),
       disableEndpoint,

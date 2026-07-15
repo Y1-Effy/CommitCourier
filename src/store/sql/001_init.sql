@@ -49,7 +49,7 @@ CREATE TABLE IF NOT EXISTS webhook_delivery_attempts (
   id                    uuid PRIMARY KEY,
   outbox_id             uuid NOT NULL REFERENCES webhook_outbox(id) ON DELETE CASCADE,
   attempt_no            int  NOT NULL,
-  request_headers       jsonb NOT NULL,   -- includes signature headers; never stores the secret itself
+  request_headers       jsonb NOT NULL,   -- includes signature headers; never stores the secret itself. Per-endpoint custom-header values are redacted here (names kept) -- they may carry credentials
   response_status       int  NULL,
   response_body_snippet text NULL,        -- first N KB (default 4KB)
   duration_ms           int  NOT NULL,

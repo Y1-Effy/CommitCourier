@@ -5,7 +5,9 @@
  */
 import { newId } from "../id";
 import { RelayError } from "../core/index";
-import type { DeliveryAttempt, EndpointRow, Status } from "../core/index";
+import type { DeliveryAttempt, DeliveryConfig, EndpointRow, Status } from "../core/index";
+// Direct import: internal to the package and deliberately absent from the core barrel.
+import { validateCustomHeaders } from "../core/headers";
 import {
   ALL_STATUSES,
   clampReplayLimit,
@@ -215,6 +217,39 @@ export async function prune(
   return store.prune({ olderThan: opts.olderThan, statuses, limit: clampPruneLimit(opts.limit) });
 }
 
+/**
+ * What the endpoint admin calls need to know about the relay's own config to validate their input.
+ * Only the transport so far, for the `sink` check in {@link assertCustomHeadersAllowed}.
+ */
+export interface EndpointAdminContext {
+  transport: DeliveryConfig["transport"];
+}
+
+/**
+ * Reject custom headers under the `sink` transport, where CommitCourier hands the event to the
+ * sink/SaaS and never builds the request itself — the headers would be silently dropped.
+ *
+ * This is the `createRelay` fail-fast for a missing sink (`relay.ts`) moved to the earliest point it
+ * can actually run: the transport is relay config, known at startup, but custom headers live on
+ * endpoint rows written at runtime, possibly by another process, so startup cannot see them. Checking
+ * on the way in catches the mistake when the caller is there to be told about it. It deliberately does
+ * not reject *existing* rows that carry headers, so a staged migration from the http transport to the
+ * sink transport is not blocked by leftovers — matching the non-fatal warning `createRelay` already
+ * emits for the other delegated settings.
+ */
+function assertCustomHeadersAllowed(
+  ctx: EndpointAdminContext,
+  customHeaders: Record<string, string> | null | undefined,
+): void {
+  if (ctx.transport === "sink" && customHeaders != null) {
+    throw new RelayError(
+      "CONFIG_INVALID",
+      'delivery.transport "sink" delegates delivery to the sink/SaaS, so per-endpoint custom headers ' +
+        "are never sent; configure them on the sink instead",
+    );
+  }
+}
+
 /** Register a new endpoint (status defaults to `active`). Returns the generated id. */
 export async function registerEndpoint(
   store: EndpointStore,
@@ -222,27 +257,43 @@ export async function registerEndpoint(
     url: string;
     secret: string;
     description?: string | null;
+    customHeaders?: Record<string, string> | null;
     metadata?: Record<string, unknown> | null;
   },
+  ctx: EndpointAdminContext,
 ): Promise<{ id: string }> {
+  assertCustomHeadersAllowed(ctx, input.customHeaders);
   const ep: NewEndpointRow = {
     id: newId(),
     url: input.url,
     secret: input.secret,
     description: input.description ?? null,
+    customHeaders: input.customHeaders == null ? null : validateCustomHeaders(input.customHeaders),
     metadata: input.metadata ?? null,
   };
   await store.insertEndpoint(ep);
   return { id: ep.id };
 }
 
-/** Patch a registered endpoint; only the provided fields change. */
-export function updateEndpoint(
+/**
+ * Patch a registered endpoint; only the provided fields change. `customHeaders` replaces the whole
+ * map (null clears it) and is validated the same way as at registration.
+ *
+ * Async so a validation rejection is delivered through the returned Promise rather than thrown
+ * synchronously, matching the other admin calls.
+ */
+export async function updateEndpoint(
   store: EndpointStore,
   id: string,
   patch: EndpointPatch,
+  ctx: EndpointAdminContext,
 ): Promise<void> {
-  return store.updateEndpoint(id, patch);
+  assertCustomHeadersAllowed(ctx, patch.customHeaders);
+  const next: EndpointPatch =
+    patch.customHeaders == null
+      ? patch
+      : { ...patch, customHeaders: validateCustomHeaders(patch.customHeaders) };
+  await store.updateEndpoint(id, next);
 }
 
 /**

@@ -47,6 +47,7 @@ interface RawEndpointRow {
   consecutive_failures: number;
   disabled_at: Date | null;
   metadata: Record<string, unknown> | null;
+  custom_headers: Record<string, string> | null;
   created_at: Date;
 }
 
@@ -95,6 +96,7 @@ export function mapEndpointRow(r: RawEndpointRow): EndpointRow {
     consecutiveFailures: r.consecutive_failures,
     disabledAt: r.disabled_at,
     metadata: r.metadata,
+    customHeaders: r.custom_headers,
     createdAt: r.created_at,
   };
 }

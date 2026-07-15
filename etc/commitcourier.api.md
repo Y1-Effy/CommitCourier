@@ -176,6 +176,7 @@ export interface EndpointListFilter {
 
 // @public
 export interface EndpointPatch {
+    customHeaders?: Record<string, string> | null;
     // (undocumented)
     description?: string | null;
     // (undocumented)
@@ -196,6 +197,7 @@ export interface EndpointRow {
     consecutiveFailures: number;
     // (undocumented)
     createdAt: Date;
+    customHeaders: Record<string, string> | null;
     // (undocumented)
     description: string | null;
     // (undocumented)
@@ -317,6 +319,7 @@ export interface NewDeliveryAttempt {
 
 // @public
 export interface NewEndpointRow {
+    customHeaders?: Record<string, string> | null;
     // (undocumented)
     description?: string | null;
     // (undocumented)
@@ -487,6 +490,7 @@ export interface PruneOptions {
 
 // @public
 export interface RegisterEndpointInput {
+    customHeaders?: Record<string, string> | null;
     // (undocumented)
     description?: string | null;
     // (undocumented)

@@ -1,11 +1,13 @@
 /**
  * Transparent at-rest encryption for signing secrets, as a {@link Store} decorator.
  *
- * Wrapping a store with {@link createEncryptedStore} encrypts the secret columns
- * (`secretSnapshot`, endpoint `secret`) on the way to the backend and decrypts them on the way
- * back, so every other layer (relay, delivery, admin) keeps seeing plaintext while the value at
- * rest is always ciphertext. All encryption is confined to this one module — the underlying
- * adapter and the rest of the codebase are unchanged.
+ * Wrapping a store with {@link createEncryptedStore} encrypts the secret-bearing columns
+ * (`secretSnapshot`, endpoint `secret`/`secretSecondary`, and each endpoint `customHeaders` value)
+ * on the way to the backend and decrypts them on the way back, so every other layer (relay,
+ * delivery, admin) keeps seeing plaintext while the value at rest is always ciphertext. All
+ * encryption is confined to this one module — the underlying adapter and the rest of the codebase
+ * are unchanged. Custom-header *names* stay plaintext (a header name is not a secret); only the
+ * values are wrapped.
  *
  * Only the secret-bearing methods carry logic; everything else passes straight through.
  *
@@ -54,6 +56,24 @@ async function decryptOutbox(row: OutboxRow, cipher: SecretCipher): Promise<Outb
 }
 
 /**
+ * Map each custom-header VALUE through the cipher, leaving the NAMES plaintext.
+ *
+ * Per value rather than over the serialized map because the decorator has to hand the backend the
+ * same domain type it received (`Record<string, string>`), and there is no string field to park a
+ * single ciphertext blob in. That is also the better shape: a header name is not a secret, so an
+ * operator can still see which headers an endpoint sends, and it lines up with the ledger, which
+ * keeps the names and redacts the values.
+ */
+async function mapHeaderValues(
+  headers: Record<string, string>,
+  fn: (v: string) => Promise<string>,
+): Promise<Record<string, string>> {
+  const entries = Object.entries(headers);
+  const mapped = await Promise.all(entries.map(async ([k, v]) => [k, await fn(v)] as const));
+  return Object.fromEntries(mapped);
+}
+
+/**
  * Data-loss sink for the claim-path quarantine. A quarantined row reaches the terminal `dead`
  * state (the DLQ), which is one of the two critical categories that must stay visible even with no
  * logger configured; `createRelay` wires its critical logger's `dataLoss` here. Optional so a
@@ -90,6 +110,9 @@ export function createEncryptedStore<TTx>(
     },
     async insertEndpoint(ep) {
       const enc: NewEndpointRow = { ...ep, secret: await cipher.encrypt(ep.secret) };
+      if (ep.customHeaders != null) {
+        enc.customHeaders = await mapHeaderValues(ep.customHeaders, (v) => cipher.encrypt(v));
+      }
       await inner.insertEndpoint(enc);
     },
     async updateEndpoint(id, patch) {
@@ -99,6 +122,11 @@ export function createEncryptedStore<TTx>(
       if (typeof patch.secret === "string") enc.secret = await cipher.encrypt(patch.secret);
       if (typeof patch.secretSecondary === "string") {
         enc.secretSecondary = await cipher.encrypt(patch.secretSecondary);
+      }
+      // `!= null` for the same reason the secrets use `typeof === "string"`: `customHeaders: null`
+      // clears the map and must reach the backend untouched, and `undefined` means "not patched".
+      if (patch.customHeaders != null) {
+        enc.customHeaders = await mapHeaderValues(patch.customHeaders, (v) => cipher.encrypt(v));
       }
       await inner.updateEndpoint(id, enc);
     },
@@ -172,6 +200,10 @@ export function createEncryptedStore<TTx>(
           secret: await cipher.decrypt(ep.secret),
           secretSecondary:
             ep.secretSecondary == null ? null : await cipher.decrypt(ep.secretSecondary),
+          customHeaders:
+            ep.customHeaders == null
+              ? null
+              : await mapHeaderValues(ep.customHeaders, (v) => cipher.decrypt(v)),
         };
         return decrypted;
       } catch (cause) {

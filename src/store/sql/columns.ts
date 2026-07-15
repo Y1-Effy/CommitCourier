@@ -93,15 +93,29 @@ export function attemptObject(id: string, a: NewDeliveryAttempt): Record<string,
   };
 }
 
-/** Endpoint columns in INSERT order. `metadata` is the jsonb column. */
-export const ENDPOINT_COLUMNS = ["id", "url", "secret", "description", "metadata"] as const;
+/** Endpoint columns in INSERT order. `metadata`/`custom_headers` are the jsonb columns. */
+export const ENDPOINT_COLUMNS = [
+  "id",
+  "url",
+  "secret",
+  "description",
+  "metadata",
+  "custom_headers",
+] as const;
 
 /** Ordered values matching {@link ENDPOINT_COLUMNS} for a parameterised (pg) INSERT. */
 export function endpointValues(ep: NewEndpointRow): unknown[] {
-  return [ep.id, ep.url, ep.secret, ep.description ?? null, ep.metadata ?? null];
+  return [
+    ep.id,
+    ep.url,
+    ep.secret,
+    ep.description ?? null,
+    ep.metadata ?? null,
+    ep.customHeaders ?? null,
+  ];
 }
 
-/** Object form for a knex INSERT; `metadata` is stringified for the jsonb column. */
+/** Object form for a knex INSERT; the jsonb columns are stringified. */
 export function endpointObject(ep: NewEndpointRow): Record<string, unknown> {
   return {
     id: ep.id,
@@ -109,6 +123,7 @@ export function endpointObject(ep: NewEndpointRow): Record<string, unknown> {
     secret: ep.secret,
     description: ep.description ?? null,
     metadata: ep.metadata != null ? JSON.stringify(ep.metadata) : null,
+    custom_headers: ep.customHeaders != null ? JSON.stringify(ep.customHeaders) : null,
   };
 }
 
@@ -117,13 +132,19 @@ const ENDPOINT_PATCH_COLUMN: Record<keyof EndpointPatch, string> = {
   secret: "secret",
   secretSecondary: "secret_secondary",
   description: "description",
+  customHeaders: "custom_headers",
   metadata: "metadata",
   status: "status",
   disabledAt: "disabled_at",
 };
 
-/** The jsonb column among endpoint patch fields (needs `::jsonb` in pg / stringify in knex). */
-export const ENDPOINT_JSON_COLUMN = "metadata";
+/** The jsonb columns among endpoint fields (need `::jsonb` in pg / stringify in knex). */
+export const ENDPOINT_JSON_COLUMNS: readonly string[] = ["metadata", "custom_headers"];
+
+/** True when `column` is one of the endpoint jsonb columns ({@link ENDPOINT_JSON_COLUMNS}). */
+export function isEndpointJsonColumn(column: string): boolean {
+  return ENDPOINT_JSON_COLUMNS.includes(column);
+}
 
 /** Flatten an {@link EndpointPatch} into columns/raw values to SET (undefined keys skipped) — pg. */
 export function endpointPatchColumns(patch: EndpointPatch): {
@@ -141,14 +162,14 @@ export function endpointPatchColumns(patch: EndpointPatch): {
   return { columns, values };
 }
 
-/** Object form of an {@link EndpointPatch} for a knex UPDATE; `metadata` is stringified. */
+/** Object form of an {@link EndpointPatch} for a knex UPDATE; the jsonb columns are stringified. */
 export function endpointPatchObject(patch: EndpointPatch): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   for (const key of Object.keys(ENDPOINT_PATCH_COLUMN) as (keyof EndpointPatch)[]) {
     const value = patch[key];
     if (value === undefined) continue;
     const column = ENDPOINT_PATCH_COLUMN[key];
-    out[column] = column === ENDPOINT_JSON_COLUMN && value != null ? JSON.stringify(value) : value;
+    out[column] = isEndpointJsonColumn(column) && value != null ? JSON.stringify(value) : value;
   }
   return out;
 }

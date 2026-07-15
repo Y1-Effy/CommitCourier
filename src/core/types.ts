@@ -59,7 +59,10 @@ export interface DeliveryAttempt {
   id: string;
   outboxId: string;
   attemptNo: number;
-  /** Request headers sent; never includes the secret itself. */
+  /**
+   * Request headers sent; never includes the secret itself. Per-endpoint custom headers appear with
+   * their names but their values redacted to `[redacted]`, since they may carry credentials.
+   */
   requestHeaders: Record<string, string>;
   responseStatus: number | null;
   responseBodySnippet: string | null;
@@ -85,6 +88,18 @@ export interface EndpointRow {
   secretSecondary: string | null;
   status: "active" | "disabled";
   description: string | null;
+  /**
+   * Extra HTTP headers sent on every delivery to this endpoint, on top of the signature headers —
+   * for receivers that need their own auth (e.g. an API gateway wanting `x-api-key`). Names are
+   * lowercased; the `webhook-*` namespace and the headers the delivery path sets are reserved.
+   *
+   * Values are secret-bearing: plaintext at this boundary, encrypted at rest when a `cipher` is
+   * configured (names stay plaintext), and redacted from the delivery-attempt ledger. They are NOT
+   * covered by the signature, which spans `id.timestamp.body` only (Standard Webhooks).
+   *
+   * Null when the endpoint has none.
+   */
+  customHeaders: Record<string, string> | null;
   /** Auto-disable counter; only the registered-endpoint workflow tracks this. */
   consecutiveFailures: number;
   disabledAt: Date | null;
