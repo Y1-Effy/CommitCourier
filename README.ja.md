@@ -7,9 +7,11 @@
 [![license](https://img.shields.io/github/license/Y1-Effy/CommitCourier)](./LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)](https://nodejs.org)
 
-🇬🇧 English: **[README.md](./README.md)**（こちらがメインです） · 🔒 [セキュリティポリシー](./SECURITY.ja.md)
+🇬🇧 English: **[README.md](./README.md)**（こちらがメインです） · 🎬 [ライブデモ](https://commitcourier-demo.xvps.jp/) · 🔒 [セキュリティポリシー](./SECURITY.ja.md)
 
 CommitCourier は、既存の Node.js / TypeScript アプリに信頼性のある Outbound Webhook を**後付け**するライブラリです。フレームワーク非依存で、**追加インフラは不要**（すでに動かしている Postgres だけ）。webhook の `enqueue` を**あなた自身の業務トランザクションの中**で行うため、業務の書き込みと原子的に commit / rollback されます。バックグラウンドの dispatcher が、その後を Standard Webhooks 署名・リトライ・DLQ・配信台帳・SSRF 防御・複数インスタンスでの単一配信まで一貫して担います。
+
+> 🎬 **[ライブデモを試す](https://commitcourier-demo.xvps.jp/)** — 実際の Postgres 上で動いている稼働インスタンスです。トランザクション内でイベントを enqueue し、dispatcher を走らせて、署名・リトライ・DLQ・リプレイが起きる様子をそのまま観察できます。配信先を不安定な受信側（遅延・タイムアウト・`500`・恒久失敗）に切り替えれば、各経路の挙動も確認できます。インストール不要。
 
 > ⚠️ **プレリリース**です。API およびパッケージ名は `1.0.0` までに変更される可能性があります。
 

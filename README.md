@@ -7,9 +7,11 @@
 [![license](https://img.shields.io/github/license/Y1-Effy/CommitCourier)](./LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)](https://nodejs.org)
 
-🇯🇵 日本語版: **[README.ja.md](./README.ja.md)** · 🔒 [Security policy](./SECURITY.md)
+🇯🇵 日本語版: **[README.ja.md](./README.ja.md)** · 🎬 [Live demo](https://commitcourier-demo.xvps.jp/) · 🔒 [Security policy](./SECURITY.md)
 
 CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeScript app — framework-agnostic, with **no extra infrastructure** (just the Postgres you already run). You `enqueue` a webhook **inside your own business transaction**, so it commits or rolls back atomically with your business write. The background dispatcher then delivers it with Standard Webhooks signing, retries, a DLQ, a full delivery ledger, SSRF protection, and single-delivery across instances.
+
+> 🎬 **[Try the live demo](https://commitcourier-demo.xvps.jp/)** — a running instance backed by a real Postgres. Enqueue an event inside a transaction, run the dispatcher, and watch signing, retries, the DLQ and replay as they happen. Point delivery at a flaky receiver (slow, timeout, `500`, permanently failing) to see each path play out. Nothing to install.
 
 > ⚠️ **Pre-release**. The API and the package name may still change before `1.0.0`.
 
