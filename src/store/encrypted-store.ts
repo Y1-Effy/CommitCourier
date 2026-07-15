@@ -207,10 +207,21 @@ export function createEncryptedStore<TTx>(
         };
         return decrypted;
       } catch (cause) {
-        // Normalise to CONFIG_INVALID so the delivery path routes an undecryptable registered-endpoint
-        // secret straight to `dead` (matching the inline `claimDue` quarantine), regardless of what a
-        // custom SecretCipher throws — the built-in cipher already throws CONFIG_INVALID.
-        throw new RelayError("CONFIG_INVALID", "endpoint secret decryption failed", cause);
+        // Normalise to CONFIG_INVALID so the delivery path routes an undecryptable secret-bearing field
+        // straight to `dead` (matching the inline `claimDue` quarantine), regardless of what a custom
+        // SecretCipher throws — the built-in cipher already throws CONFIG_INVALID.
+        //
+        // The message names both candidates rather than just the secret: the fields are decrypted in
+        // source order, so `secret` throws first on a wholly-unencrypted row and naming it alone would
+        // be right there — but a row whose secret decrypts and whose headers do not (a partial
+        // re-encryption, or a write through a store adapter) would otherwise send an operator to the
+        // wrong column. This message is what `endpoints.get` surfaces; the delivery path only ever
+        // reports the code (secretFreeSummary discards the message).
+        throw new RelayError(
+          "CONFIG_INVALID",
+          "endpoint secret or custom-header decryption failed",
+          cause,
+        );
       }
     },
 
