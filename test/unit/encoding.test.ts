@@ -24,8 +24,9 @@ describe("encoding", () => {
   });
 
   it("throws on base64 containing characters outside the alphabet", () => {
-    // atob rejects "@" (not a base64 character); the contract is to surface that, not silently truncate.
-    expect(() => base64ToBytes("@@@@")).toThrow();
+    // atob rejects "@" (not a base64 character); the contract is to surface that, not silently
+    // truncate. Pinning the DOMException keeps it distinct from a TypeError out of the copy loop.
+    expect(() => base64ToBytes("@@@@")).toThrow(DOMException);
   });
 
   it("emits and round-trips standard padding for non-3-multiple lengths", () => {

@@ -169,8 +169,9 @@ describe("createDispatcher", () => {
           return Promise.resolve();
         },
         config,
-        // Large idle interval: if full batches slept, draining 9 would take >1s.
-        options: { batchSize: 3, pollIntervalMs: 1000 },
+        // Large idle interval: if full batches slept, draining 9 would take >60s. Kept far above
+        // the assertion below so a loaded machine cannot drift into the gap.
+        options: { batchSize: 3, pollIntervalMs: 60_000 },
       }),
     );
     await d.start();
