@@ -11,7 +11,7 @@
 
 CommitCourier bolts reliable outbound webhooks onto an existing Node.js / TypeScript app — framework-agnostic, with **no extra infrastructure** (just the Postgres you already run). You `enqueue` a webhook **inside your own business transaction**, so it commits or rolls back atomically with your business write. The background dispatcher then delivers it with Standard Webhooks signing, retries, a DLQ, a full delivery ledger, SSRF protection, and single-delivery across instances.
 
-> 🎬 **[Try the live demo](https://commitcourier-demo.xvps.jp/)** — a running instance backed by a real Postgres. Enqueue an event inside a transaction, run the dispatcher, and watch signing, retries, the DLQ and replay as they happen. Point delivery at a flaky receiver (slow, timeout, `500`, permanently failing) to see each path play out. Nothing to install.
+> 🎬 **[Try the live demo](https://commitcourier-demo.xvps.jp/)** — a running instance backed by a real Postgres. Enqueue an event inside a transaction, run the dispatcher, and watch signing, retries, the DLQ and replay as they happen. Point delivery at a flaky receiver (slow, timeout, `500`, permanently failing) to see each path play out. Nothing to install — and its [source](https://github.com/Y1-Effy/CommitCourier-demo) is a complete working integration you can read end to end.
 
 > ⚠️ **Pre-release**. The API and the package name may still change before `1.0.0`.
 
@@ -168,7 +168,7 @@ await knex.transaction(async (trx) => {
 });
 ```
 
-> Prefer a runnable file? See [`examples/basic-pg`](./examples/basic-pg) for the full migrate → enqueue → dispatch flow against a throwaway Postgres.
+> Prefer a runnable file? See [`examples/basic-pg`](./examples/basic-pg) for the full migrate → enqueue → dispatch flow against a throwaway Postgres. For a deployed app rather than a script, [`CommitCourier-demo`](https://github.com/Y1-Effy/CommitCourier-demo) is the site behind the [live demo](https://commitcourier-demo.xvps.jp/) — it installs `commitcourier` from npm and wires up the store, relay, dispatcher, and a signature-verifying receiver.
 
 ## Use cases
 
