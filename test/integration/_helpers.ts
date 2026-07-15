@@ -1,7 +1,8 @@
 /**
  * Integration-test harness: spin up a real Postgres via testcontainers and expose both the pg
  * and knex adapters behind a uniform interface so the same suite proves identical semantics
- * (06-testing section 4). Requires Docker; suites skip themselves when it is unavailable.
+ * (06-testing section 4). Requires Docker: suites skip themselves without it locally, but fail
+ * under CI, where a skip would mean the run proved nothing -- see {@link dockerAvailable}.
  */
 import { existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -35,11 +36,26 @@ let dockerProbe: boolean | undefined;
  * exposes a named pipe (`\\.\pipe\dockerDesktopLinuxEngine`) that `existsSync` cannot stat, so we
  * fall back to asking the Docker CLI whether a daemon is actually reachable — `docker info` exits
  * non-zero when the daemon is down, which keeps suites skipping (not failing) without Docker.
+ *
+ * Where Docker is mandatory the probe must not be allowed to fail soft: the suites gated on it
+ * cover single delivery, at-least-once and enqueue atomicity, and `describe.skipIf` turns a
+ * negative probe into a green run that collected zero tests. So under CI (or an explicit
+ * COMMITCOURIER_REQUIRE_DOCKER=1) a negative probe throws instead of skipping.
  */
 export function dockerAvailable(): boolean {
-  if (dockerProbe !== undefined) return dockerProbe;
-  dockerProbe = probeDocker();
+  if (dockerProbe === undefined) dockerProbe = probeDocker();
+  if (!dockerProbe && dockerRequired()) {
+    throw new Error(
+      "Docker is required here (CI or COMMITCOURIER_REQUIRE_DOCKER=1) but no daemon is reachable. " +
+        "These suites carry single delivery, at-least-once and enqueue atomicity — skipping them " +
+        "would pass the run without testing any of it.",
+    );
+  }
   return dockerProbe;
+}
+
+function dockerRequired(): boolean {
+  return Boolean(process.env.CI) || process.env.COMMITCOURIER_REQUIRE_DOCKER === "1";
 }
 
 function probeDocker(): boolean {
@@ -51,7 +67,15 @@ function probeDocker(): boolean {
       timeout: 15_000,
     });
     return true;
-  } catch {
+  } catch (err) {
+    // A timeout is not the same as "no Docker": the CLI is installed but the daemon never answered,
+    // which is exactly how a still-starting Docker Desktop looks. Say so rather than let a slow
+    // daemon read as a clean skip.
+    if ((err as { code?: string }).code === "ETIMEDOUT") {
+      console.warn(
+        "[integration] `docker info` timed out after 15s; treating Docker as unavailable.",
+      );
+    }
     return false;
   }
 }
@@ -131,7 +155,8 @@ export function newPgPool(conn: PgConn): Pool {
 /** Sentinel thrown to force a knex transaction to roll back. */
 class RollbackSignal extends Error {}
 
-const TRUNCATE_SQL =
+/** Reset every table the suites write to. Exported so DB suites outside this file share one truth. */
+export const TRUNCATE_SQL =
   "TRUNCATE webhook_delivery_attempts, webhook_outbox, webhook_endpoints RESTART IDENTITY CASCADE";
 
 /** pg-backed harness. */
