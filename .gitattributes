@@ -1,0 +1,11 @@
+# Normalize text to LF in the index and in the working tree. Git for Windows ships a system-level
+# `core.autocrlf=true`, so without this file the repo only stays LF because a per-user ~/.gitconfig
+# happens to override it. A fresh clone on a stock Windows install would check out CRLF everywhere
+# and fail `format:check`, since prettier is pinned to endOfLine: "lf". Linux CI can never catch
+# that, so pin the rule to the repo rather than leave it to each machine's git config.
+* text=auto eol=lf
+
+# API Extractor writes this report with CRLF (its default newlineKind) and `api:check` compares the
+# file byte for byte, so normalizing it to LF would make the check fail against the tool's own
+# output. Keep it byte-exact instead.
+/etc/commitcourier.api.md -text
