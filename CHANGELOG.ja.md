@@ -9,6 +9,31 @@
 
 ## [Unreleased]
 
+### Added（追加）
+
+- **エンドポイント単位のカスタム HTTP ヘッダ。** `relay.endpoints.register` ／ `relay.endpoints.update` が
+  `customHeaders` を受け取るようになった。署名ヘッダに加えて、そのエンドポイント宛の全配信に付与される
+  （API Gateway が `x-api-key` を要求する、ingress が `authorization: Bearer …` を要求する等、署名とは別に
+  受信側が独自の認証を必要とするケース向け）。読み出しは `relay.endpoints.get`。
+  - **値は秘密情報として扱う。** `cipher` 設定時は保管時暗号化される。**値ごと**に暗号化するため、ヘッダ
+    **名**は DB 上で可読のままで、どのヘッダを送るのかは運用者が確認できる。`cipher` 未設定なら `secret` と
+    同じく平文で、既存の起動時 PLAINTEXT 警告の対象。
+  - **配信台帳では redact される。** `webhook_delivery_attempts.request_headers` はヘッダ**名**を残しつつ、
+    カスタムヘッダの値を `[redacted]` として記録する。認証情報を溜め込まずに、失敗配信のデバッグ可能性を保つ。
+  - **カスタムヘッダは署名の対象外**（署名は Standard Webhooks 準拠で `id.timestamp.body` のみ）。受信側は
+    署名からヘッダの真正性を導けない。
+  - **登録時に fail-closed で検証**（`INVALID_ARGUMENT`）し、配信時に黙って捨てることはしない。`webhook-*`
+    名前空間・`content-type`・`idempotency-key`・hop-by-hop / framing 系ヘッダは予約。値の CR/LF・NUL・制御
+    文字・非 ASCII は拒否（ヘッダインジェクション対策）。空値と前後の空白は trim せず拒否。名前は小文字化し、
+    大文字小文字違いの衝突は拒否。上限は 16 本 / 8 KiB。
+  - `delivery.transport: "sink"` では使用不可（リクエストは sink／SaaS 側が組み立てるため）。`register` ／
+    `update` が `CONFIG_INVALID` を投げる。既存行は拒否しないので、http → sink の段階移行が残存データで
+    妨げられることはない。
+  - `relay.endpoints.list` ／ `EndpointSummary` には出さない（この面は構造的に secret-free を保つ）。
+  - 追加 API：`EndpointRow.customHeaders`、`RegisterEndpointInput` ／ `NewEndpointRow` ／ `EndpointPatch`
+    の `customHeaders`。マイグレーション `004_endpoint_custom_headers`
+    （`webhook_endpoints.custom_headers jsonb`）を追加 — `store.migrate()` を実行。
+
 ## [0.4.0] - 2026-07-14
 
 ### Fixed（修正）

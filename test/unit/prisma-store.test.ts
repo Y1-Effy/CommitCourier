@@ -159,6 +159,7 @@ describe("prismaStore", () => {
     expect(all).toContain("CREATE TABLE IF NOT EXISTS webhook_outbox");
     expect(all).toContain("secret_secondary");
     expect(all).toContain("ix_outbox_ep_head");
+    expect(all).toContain("custom_headers");
   });
 
   it("listOutbox selects a secret-free column set and normalises the BigInt seq to a string cursor", async () => {

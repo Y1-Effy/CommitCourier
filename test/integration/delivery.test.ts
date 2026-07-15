@@ -160,6 +160,57 @@ describe("deliverOne (integration)", () => {
     expect(captured.transitions[0]?.t.status).toBe("delivered");
   });
 
+  it("sends an endpoint's custom headers over the wire but redacts their values in the ledger", async () => {
+    // End-to-end through the real undici client: what the receiver actually reads off the socket vs
+    // what the ledger keeps. Drives the whole chain rather than trusting buildHeaders in isolation.
+    const seen: { auth?: string; sig?: string; keys: string[] } = { keys: [] };
+    const srv = await startServer((req, res) => {
+      seen.auth = req.headers["authorization"];
+      seen.sig = req.headers["webhook-signature"] as string | undefined;
+      seen.keys = Object.keys(req.headers);
+      res.writeHead(200);
+      res.end("ok");
+    });
+    const config = resolveConfig({ ssrf: { allowlist: ["127.0.0.1"] } });
+    const endpointId = randomUUID();
+    const { store, captured } = fakeStore({
+      findEndpoint: () =>
+        Promise.resolve({
+          id: endpointId,
+          url: srv.url(),
+          secret: "whsec_dGVzdA",
+          secretSecondary: null,
+          status: "active" as const,
+          description: null,
+          consecutiveFailures: 0,
+          disabledAt: null,
+          metadata: null,
+          customHeaders: { authorization: "Bearer real-token", "x-api-key": "sk-live-1" },
+          createdAt: new Date(NOW),
+        }),
+    });
+
+    await deliverOne(
+      outboxRow({ endpointId, targetUrl: null, secretSnapshot: null }),
+      makeDeps(store, config),
+    );
+
+    // The receiver got the credential and the signature.
+    expect(seen.auth).toBe("Bearer real-token");
+    expect(seen.sig).toMatch(/^v1,/);
+    // Exactly one signature header on the wire (a duplicate would make verification undefined).
+    expect(seen.keys.filter((k) => k === "webhook-signature")).toHaveLength(1);
+
+    // The ledger kept the names but none of the credentials.
+    const headers = captured.attempts[0]?.requestHeaders ?? {};
+    expect(headers["authorization"]).toBe("[redacted]");
+    expect(headers["x-api-key"]).toBe("[redacted]");
+    expect(headers["webhook-signature"]).toBe(seen.sig);
+    expect(JSON.stringify(headers)).not.toContain("real-token");
+    expect(JSON.stringify(headers)).not.toContain("sk-live-1");
+    expect(captured.transitions[0]?.t.status).toBe("delivered");
+  });
+
   it("delivers to a hostname target under network-family autoselection (no ERR_INVALID_IP_ADDRESS)", async () => {
     // Regression: on Node 20+ `autoSelectFamily` is on by default, so `net.connect` invokes the
     // guarded lookup with `all: true` and expects an ADDRESS ARRAY. A single-address callback made

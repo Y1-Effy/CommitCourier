@@ -15,6 +15,8 @@ import {
   RelayError,
 } from "../core/index";
 import type { OutboxRow, RelayConfig, Clock, SignatureHeaders } from "../core/index";
+// Direct import: these are internal to the package and deliberately absent from the core barrel.
+import { sanitizeCustomHeaders, REDACTED_HEADER_VALUE } from "../core/headers";
 import type { DispatchStore, EndpointStore, NewDeliveryAttempt } from "../store/store";
 import type { createHttpClient } from "./http";
 import type { Sink, SinkResult } from "../forward/index";
@@ -134,8 +136,16 @@ function hostOf(url: string | null): string | null {
   }
 }
 
-type Resolved =
-  { ok: true; url: string; secrets: string[]; halfOpen: boolean } | { ok: false; error: string };
+/** A resolved destination: everything the HTTP path needs after the target/secret lookup. */
+interface ResolvedTarget {
+  url: string;
+  secrets: string[];
+  halfOpen: boolean;
+  /** The endpoint's custom headers (plaintext here), or null — an inline target has no endpoint. */
+  customHeaders: Record<string, string> | null;
+}
+
+type Resolved = ({ ok: true } & ResolvedTarget) | { ok: false; error: string };
 
 /** Prefix the http client uses for an SSRF-blocked failure summary (e.g. `"SSRF_BLOCKED:metadata"`). */
 const SSRF_BLOCKED_PREFIX = "SSRF_BLOCKED:";
@@ -230,6 +240,7 @@ async function resolveTarget(
     if (!ep) return { ok: false, error: "ENDPOINT_NOT_FOUND" };
     // Dual-sign with the secondary key too during a rotation window (current key first).
     const secrets = ep.secretSecondary == null ? [ep.secret] : [ep.secret, ep.secretSecondary];
+    const customHeaders = ep.customHeaders;
     if (ep.status === "disabled") {
       const { cooldownMs, now } = recovery;
       const dueForTrial =
@@ -237,22 +248,58 @@ async function resolveTarget(
         ep.disabledAt != null &&
         ep.disabledAt.getTime() + cooldownMs <= now.getTime();
       if (!dueForTrial) return { ok: false, error: "ENDPOINT_DISABLED" };
-      return { ok: true, url: ep.url, secrets, halfOpen: true };
+      return { ok: true, url: ep.url, secrets, halfOpen: true, customHeaders };
     }
-    return { ok: true, url: ep.url, secrets, halfOpen: false };
+    return { ok: true, url: ep.url, secrets, halfOpen: false, customHeaders };
   }
   if (row.targetUrl != null) {
     if (row.secretSnapshot == null) return { ok: false, error: "MISSING_SECRET" };
-    return { ok: true, url: row.targetUrl, secrets: [row.secretSnapshot], halfOpen: false };
+    // An inline target is not a registered endpoint, so there are no custom headers to send.
+    return {
+      ok: true,
+      url: row.targetUrl,
+      secrets: [row.secretSnapshot],
+      halfOpen: false,
+      customHeaders: null,
+    };
   }
   return { ok: false, error: "ENQUEUE_NO_TARGET" };
 }
 
-/** Signature headers plus content-type and the optional idempotency key (never the secret). */
-function buildHeaders(sig: SignatureHeaders, row: OutboxRow): Record<string, string> {
-  const headers: Record<string, string> = { ...sig, "content-type": "application/json" };
-  if (row.idempotencyKey != null) headers["idempotency-key"] = row.idempotencyKey;
-  return headers;
+/** The two header maps for one attempt: what goes on the wire, and what is safe to persist. */
+interface BuiltHeaders {
+  /** Sent on the request. */
+  wire: Record<string, string>;
+  /** Written to the delivery-attempt ledger: the same key set, with custom values redacted. */
+  ledger: Record<string, string>;
+}
+
+/**
+ * Build the request headers: the endpoint's custom headers, then the signature headers, content-type
+ * and the optional idempotency key (never the secret).
+ *
+ * Custom headers are spread first so the headers this library owns always win, and are passed through
+ * {@link sanitizeCustomHeaders} first so a name that only *differs in case* (`Webhook-Signature`)
+ * cannot slip past that precedence and reach the wire as a second signature header once undici
+ * lowercases it. Registration already rejects such a name; this covers a row written straight through
+ * a store adapter, which is public API.
+ *
+ * The ledger copy redacts every custom value unconditionally — the column is secret-bearing by
+ * definition, so guessing which values are credentials would be the wrong question. The names are
+ * kept, which is what makes a failed delivery debuggable. Because `safe`'s key set is disjoint from
+ * the headers added after it, the two maps always share one key set and differ only in those values.
+ */
+function buildHeaders(
+  sig: SignatureHeaders,
+  row: OutboxRow,
+  custom: Record<string, string> | null,
+): BuiltHeaders {
+  const safe = sanitizeCustomHeaders(custom);
+  const wire: Record<string, string> = { ...safe, ...sig, "content-type": "application/json" };
+  if (row.idempotencyKey != null) wire["idempotency-key"] = row.idempotencyKey;
+  const ledger: Record<string, string> = { ...wire };
+  for (const name of Object.keys(safe)) ledger[name] = REDACTED_HEADER_VALUE;
+  return { wire, ledger };
 }
 
 /** A ledger row for a failure that never reached HTTP (e.g. endpoint missing, signing error). */
@@ -507,13 +554,9 @@ async function noteHalfOpenOutcome(ctx: Ctx, success: boolean): Promise<void> {
 }
 
 /** Run the POST, then write the ledger row and apply the success/failure transition in one round trip. */
-async function deliverHttp(
-  ctx: Ctx,
-  url: string,
-  secrets: string[],
-  halfOpen: boolean,
-): Promise<void> {
+async function deliverHttp(ctx: Ctx, target: ResolvedTarget): Promise<void> {
   const { row, now } = ctx;
+  const { url, secrets, halfOpen, customHeaders } = target;
   // Refine the instrumentation host now that the destination is resolved (registered endpoints
   // only have their URL after findEndpoint).
   ctx.host = hostOf(url);
@@ -524,14 +567,14 @@ async function deliverHttp(
     body,
     secrets,
   });
-  const headers = buildHeaders(sig, row);
-  const res = await ctx.deps.http.post({ url, headers, body });
+  const headers = buildHeaders(sig, row, customHeaders);
+  const res = await ctx.deps.http.post({ url, headers: headers.wire, body });
   const success = isSuccess(res.status);
   const failure = res.error ?? `HTTP ${String(res.status)}`;
   const attempt: NewDeliveryAttempt = {
     outboxId: row.id,
     attemptNo: row.attempts + 1,
-    requestHeaders: headers,
+    requestHeaders: headers.ledger,
     responseStatus: res.status,
     responseBodySnippet: res.bodySnippet,
     durationMs: res.durationMs,
@@ -722,7 +765,7 @@ export async function deliverOne(row: OutboxRow, deps: DeliverDeps): Promise<voi
       }
       return;
     }
-    await deliverHttp(ctx, resolved.url, resolved.secrets, resolved.halfOpen);
+    await deliverHttp(ctx, resolved);
   } catch (err) {
     const summary = secretFreeSummary(err);
     deps.config.logger.error("deliverOne failed", { id: row.id, error: summary });

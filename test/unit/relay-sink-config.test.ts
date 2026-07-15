@@ -88,6 +88,68 @@ describe("createRelay sink-transport wiring", () => {
   });
 });
 
+describe("custom headers under sink transport", () => {
+  // The transport is startup config, but custom headers live on endpoint rows written at runtime, so
+  // createRelay cannot see them. The check lands on the admin calls instead — the earliest point where
+  // both facts are known, and where the caller is still there to be told.
+  function endpointStore(): Store {
+    return {
+      diagnose: () => Promise.resolve({ ok: true, missingTables: [] }),
+      insertEndpoint: () => Promise.resolve(),
+      updateEndpoint: () => Promise.resolve(),
+    } as unknown as Store;
+  }
+
+  async function sinkRelay() {
+    return createRelay({
+      store: endpointStore(),
+      delivery: { transport: "sink" },
+      sink: noopSink,
+      logger: spyLogger(),
+    });
+  }
+
+  it("rejects register with custom headers (the sink would never send them)", async () => {
+    const relay = await sinkRelay();
+    await expect(
+      relay.endpoints.register({
+        url: "https://x.test/hook",
+        secret: "whsec_dGVzdA",
+        customHeaders: { authorization: "Bearer t" },
+      }),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("rejects update with custom headers", async () => {
+    const relay = await sinkRelay();
+    await expect(
+      relay.endpoints.update("ep-1", { customHeaders: { authorization: "Bearer t" } }),
+    ).rejects.toMatchObject({ code: "CONFIG_INVALID" });
+  });
+
+  it("allows register/update without custom headers, so a staged migration is not blocked", async () => {
+    const relay = await sinkRelay();
+    await expect(
+      relay.endpoints.register({ url: "https://x.test/hook", secret: "whsec_dGVzdA" }),
+    ).resolves.toMatchObject({ id: expect.any(String) as unknown as string });
+    await expect(
+      relay.endpoints.update("ep-1", { url: "https://y.test" }),
+    ).resolves.toBeUndefined();
+  });
+
+  it("allows custom headers under the default http transport", async () => {
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    const relay = await createRelay({ store: endpointStore() });
+    await expect(
+      relay.endpoints.register({
+        url: "https://x.test/hook",
+        secret: "whsec_dGVzdA",
+        customHeaders: { authorization: "Bearer t" },
+      }),
+    ).resolves.toMatchObject({ id: expect.any(String) as unknown as string });
+  });
+});
+
 describe("createRelay sink-transport enqueue (system flow)", () => {
   it("enqueues a target-less row in sink mode without an endpoint", async () => {
     const captured: { row: NewOutboxRow | null } = { row: null };

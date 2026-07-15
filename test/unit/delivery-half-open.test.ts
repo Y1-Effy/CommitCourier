@@ -28,6 +28,7 @@ function disabledEndpoint(over: Partial<EndpointRow> = {}): EndpointRow {
     consecutiveFailures: 3,
     disabledAt: DISABLED_AT,
     metadata: null,
+    customHeaders: null,
     createdAt: new Date(0),
     ...over,
   };

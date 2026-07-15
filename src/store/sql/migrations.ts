@@ -9,6 +9,7 @@
 import initSql from "./001_init.sql";
 import sinkTargetlessSql from "./002_sink_targetless.sql";
 import listPruneIndexesSql from "./003_list_prune_indexes.sql";
+import endpointCustomHeadersSql from "./004_endpoint_custom_headers.sql";
 
 export const MIGRATIONS_TABLE = "commitcourier_migrations";
 
@@ -53,6 +54,8 @@ export const MIGRATIONS: readonly Migration[] = [
   { name: "002_sink_targetless", sql: sinkTargetlessSql },
   // 003: partial indexes over terminal rows for the admin list (listOutbox) and retention prune.
   { name: "003_list_prune_indexes", sql: listPruneIndexesSql },
+  // 004: per-endpoint custom HTTP headers (webhook_endpoints.custom_headers).
+  { name: "004_endpoint_custom_headers", sql: endpointCustomHeadersSql },
 ];
 
 /**

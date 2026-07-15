@@ -34,7 +34,8 @@ import {
   OUTBOX_COLUMNS,
   ATTEMPT_COLUMNS,
   ENDPOINT_COLUMNS,
-  ENDPOINT_JSON_COLUMN,
+  ENDPOINT_JSON_COLUMNS,
+  isEndpointJsonColumn,
   outboxValues,
   outboxValuesStringified,
   attemptValues,
@@ -115,7 +116,11 @@ export function createSqlStore<TTx>(
 ): Store<TTx> {
   const INSERT_OUTBOX_SQL = insertClause(OUTBOX_TABLE, OUTBOX_COLUMNS, "payload");
   const INSERT_ATTEMPT_SQL = insertClause(ATTEMPTS_TABLE, ATTEMPT_COLUMNS, "request_headers");
-  const INSERT_ENDPOINT_SQL = insertClause(ENDPOINTS_TABLE, ENDPOINT_COLUMNS, ENDPOINT_JSON_COLUMN);
+  const INSERT_ENDPOINT_SQL = insertClause(
+    ENDPOINTS_TABLE,
+    ENDPOINT_COLUMNS,
+    ENDPOINT_JSON_COLUMNS,
+  );
 
   // Pick the ordered-value builder per the executor's jsonb binding convention.
   const outboxVals = exec.jsonAsText ? outboxValuesStringified : outboxValues;
@@ -283,7 +288,7 @@ export function createSqlStore<TTx>(
       const { columns, values: rawValues } = endpointPatchColumns(patch);
       if (columns.length === 0) return; // no-op patch
       const set = columns
-        .map((c, i) => `${c} = $${String(i + 2)}${c === ENDPOINT_JSON_COLUMN ? "::jsonb" : ""}`)
+        .map((c, i) => `${c} = $${String(i + 2)}${isEndpointJsonColumn(c) ? "::jsonb" : ""}`)
         .join(", ");
       const values = exec.jsonAsText
         ? columns.map((c) => endpointPatchObject(patch)[c])

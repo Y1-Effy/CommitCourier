@@ -201,6 +201,7 @@ It isn't the only embedded library in this space — [Postel](https://postel.sh)
 - **Cancel** — stop a not-yet-sent row before it leaves (`relay.cancel(id)`); already-sent / in-flight rows are untouched.
 - **Serverless / cron friendly** — `relay.dispatchOnce()` drains the queue once and returns, so you can deliver from a Lambda or cron tick without a long-lived process.
 - **Endpoint circuit breaker** — optionally auto-disable a registered endpoint after N consecutive failures, so a permanently-down destination stops being hammered with HTTP retries (and, with `cooldownMs`, recovers on its own via a half-open probe).
+- **Per-endpoint custom headers** — attach extra headers (e.g. `authorization: Bearer …`) for receivers that need their own auth on top of the signature. Treated as secrets: encrypted at rest with your `cipher` and redacted from the ledger.
 - **Built-in retention** — `relay.prune({ olderThan })` deletes old terminal rows in bounded batches (active rows are never touched), so tables don't grow forever.
 - **SSRF protection on by default** — common private, loopback, link-local, cloud-metadata, and other non-public network targets (shared/CGNAT, multicast, broadcast, reserved/documentation ranges) are blocked, against both the parsed URL host and every DNS-resolved IP, with the vetted IP pinned at connect time.
 - **Single delivery across instances** via `FOR UPDATE SKIP LOCKED`; at-least-once via visibility-timeout reclaim.
@@ -417,6 +418,48 @@ Once an endpoint has been disabled for at least `cooldownMs`, the dispatcher let
 
 > **Trial concurrency.** The probe is a single delivery only under `ordering: "per-endpoint"` (with one dispatcher instance), which serialises to at most one in-flight delivery per endpoint. Under the default `ordering: "none"` every currently-due `pending` row for the endpoint is admitted as a trial at once, so a still-fragile endpoint can see a burst on recovery — use `"per-endpoint"` ordering if you need the recovery probe to be a single request.
 
+### Per-endpoint custom headers
+
+Some receivers need their own auth on top of the signature — an API gateway that wants an `x-api-key`, an ingress that wants an `authorization` header, a tenant-routing header. Attach them to the registered endpoint and every delivery to it carries them:
+
+```ts
+await relay.endpoints.register({
+  url: "https://api.customer.example/hooks/orders",
+  secret: "whsec_...",
+  customHeaders: { authorization: "Bearer cust_live_abc123" },
+});
+```
+
+Header names are lowercased. Reading them back is `relay.endpoints.get(endpointId)`; they are deliberately **not** on `relay.endpoints.list()`, which is the secret-free surface (see below).
+
+> **Custom headers are not signed.** The signature covers `id.timestamp.body` only, per Standard Webhooks. A receiver cannot infer a header's authenticity from `webhook-signature`, so a custom header is a bearer credential in the ordinary sense: it is only as safe as the TLS connection carrying it. Send them to `https://` destinations only.
+
+**They are treated as secrets.** Values are encrypted at rest when a `cipher` is configured — per value, so the *names* stay readable in the database and you can still see which headers an endpoint sends. Without a `cipher` they are stored in plaintext, exactly like `secret`, and the startup PLAINTEXT warning covers them.
+
+In the delivery-attempt ledger the **names are kept and every value is redacted** to `[redacted]`, so a failed delivery still shows which headers were sent without archiving the credential:
+
+```jsonc
+// relay.attempts({ outboxId })[0].requestHeaders
+{
+  "webhook-id": "018f…",
+  "webhook-signature": "v1,k8s…",
+  "content-type": "application/json",
+  "authorization": "[redacted]",
+}
+```
+
+Validation is fail-closed at `register`/`update` (`INVALID_ARGUMENT`) rather than a silent drop at delivery time:
+
+| Rule                | Detail                                                                                                          |
+| ------------------- | --------------------------------------------------------------------------------------------------------------- |
+| Reserved names      | The whole `webhook-*` namespace, `content-type`, `idempotency-key`, and hop-by-hop/framing headers (`host`, `connection`, `transfer-encoding`, …). |
+| Value characters    | Printable ASCII plus tab. CR/LF (header injection), NUL, control and non-ASCII characters are rejected.          |
+| Value shape         | No empty values and no leading/trailing whitespace — rejected, never trimmed.                                    |
+| Case                | Names are lowercased; two names that collide once lowercased are rejected rather than one silently winning.      |
+| Size                | Up to 16 headers, 8 KiB serialized.                                                                             |
+
+Not available under `delivery.transport: "sink"` (`CONFIG_INVALID` from `register`/`update`) — there the sink/SaaS builds the request, so configure headers on its side instead.
+
 ### Logging & observability
 
 The dispatch path is **fail-open**: delivery, claim, and reclaim failures are never thrown — they are sent to the **logger**, which **defaults to a no-op**. If you don't inject a logger, routine delivery problems are silent, so `createRelay` prints a one-time startup warning when none is set. The two critical categories are an exception: a **security event** (an SSRF block) and **data loss** (a message reaching the DLQ) fall back to `console.warn`/`console.error` even with no logger configured — and say so — so a config slip can never silence them. In production, always pass a logger anyway to capture everything. The bundled `createConsoleLogger()` is a safe copy-paste default:
@@ -563,11 +606,11 @@ Every error the library throws is a `RelayError` with a stable, machine-readable
 
 | Code                      | Thrown by                                                         | Meaning                                                                                                      |
 | ------------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `CONFIG_INVALID`          | `createRelay` (startup)                                           | Invalid configuration (fail-fast).                                                                           |
+| `CONFIG_INVALID`          | `createRelay` (startup); `endpoints.register` / `endpoints.update` | Invalid configuration (fail-fast). From the endpoint calls: `customHeaders` under `transport: "sink"`.       |
 | `MISSING_TABLES`          | `createRelay` (startup)                                           | Core tables are absent — run `store.migrate()`.                                                              |
 | `ENQUEUE_NO_TARGET`       | `enqueue` / `enqueueUnsafe`                                       | Neither `{ url, secret }` nor `{ endpointId }` was provided.                                                 |
 | `ENQUEUE_INVALID_PAYLOAD` | `enqueue` / `enqueueUnsafe`                                       | Payload is not JSON-serializable (circular reference, `BigInt`, …) or exceeds `maxPayloadBytes`.             |
-| `INVALID_ARGUMENT`        | `list` / `get` / `cancel` / `replay` / `prune` / `endpoints.list` | An argument was malformed (e.g. a non-numeric `cursor`, unknown `status`, a non-uuid id, a bad `olderThan`). |
+| `INVALID_ARGUMENT`        | `list` / `get` / `cancel` / `replay` / `prune` / `endpoints.list` / `endpoints.register` / `endpoints.update` | An argument was malformed (e.g. a non-numeric `cursor`, unknown `status`, a non-uuid id, a bad `olderThan`, a reserved or malformed `customHeaders` entry). |
 | `SSRF_BLOCKED`            | dispatch (recorded, not thrown)                                   | Destination resolved to a blocked range.                                                                     |
 | `ENDPOINT_NOT_FOUND`      | dispatch (recorded, not thrown)                                   | `endpointId` is not registered.                                                                              |
 | `ENDPOINT_DISABLED`       | dispatch (recorded, not thrown)                                   | The registered endpoint is disabled.                                                                         |
@@ -633,7 +676,7 @@ It returns `false` (never throws) for a stale timestamp (default tolerance 300s,
 | --------------------------- | -------------------------------------------------------------------------- | -------------------------------------------------- |
 | `webhook_outbox`            | The queue + source of truth; one row per enqueued event.                   | Prune terminal rows with `relay.prune`.            |
 | `webhook_delivery_attempts` | Append-only delivery ledger; one row per attempt (cascades from outbox).   | Removed with its outbox row (`ON DELETE CASCADE`). |
-| `webhook_endpoints`         | Optional registered-endpoint registry (only the registered-endpoint flow). | Long-lived config; not pruned.                     |
+| `webhook_endpoints`         | Optional registered-endpoint registry (only the registered-endpoint flow). Holds each endpoint's URL, signing secret(s) and custom headers. | Long-lived config; not pruned.                     |
 | `commitcourier_migrations`  | Tracks which migrations have been applied. Not your data — never pruned.   | Permanent.                                         |
 
 Policy:
@@ -717,7 +760,7 @@ CommitCourier is pre-1.0 (`0.x`). During `0.x`, a **minor** release may contain 
 | Stability                                                 | Surface                                                                                                                                                                                                                              |
 | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **Stable**                                                | Transactional `enqueue`, the HTTP dispatcher, the `pg` / Knex / Drizzle / Prisma stores, retry / backoff / jitter, the delivery-attempts ledger, the DLQ, Standard Webhooks signing, SSRF protection, and at-rest secret encryption. |
-| **Beta** — may change in a minor                          | The registered-endpoint admin API, the circuit breaker, the registered-endpoint cache, the OpenTelemetry adapter, the LISTEN/NOTIFY accelerator, replay, retention/pruning, `cancel`, and the `doctor` CLI.                          |
+| **Beta** — may change in a minor                          | The registered-endpoint admin API (including per-endpoint custom headers), the circuit breaker, the registered-endpoint cache, the OpenTelemetry adapter, the LISTEN/NOTIFY accelerator, replay, retention/pruning, `cancel`, and the `doctor` CLI. |
 | **Experimental** — may change in a minor (opt-in subpath) | The generic `sink` transport (`commitcourier/forward`) and the Svix sample adapter (`commitcourier/forward/svix`).                                                                                                                   |
 
 ## Compatibility & support

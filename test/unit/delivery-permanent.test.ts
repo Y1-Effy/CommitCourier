@@ -150,6 +150,7 @@ describe("pre-HTTP permanent classification", () => {
       consecutiveFailures: 0,
       disabledAt: new Date(0),
       metadata: null,
+      customHeaders: null,
       createdAt: new Date(0),
     };
     const s = store({ findEndpoint: () => Promise.resolve(ep) });

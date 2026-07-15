@@ -65,14 +65,16 @@ export function completeAttemptSql(
 UPDATE ${OUTBOX_TABLE} SET ${set} WHERE id = ${ph(idPos)} AND status = 'in_flight'${lockGuard}`;
 }
 
-/** Build `INSERT INTO t (cols) VALUES ($1, $2, ...)`, casting the named jsonb column to `::jsonb`. */
+/** Build `INSERT INTO t (cols) VALUES ($1, $2, ...)`, casting the named jsonb column(s) to `::jsonb`. */
 export function insertClause(
   table: string,
   columns: readonly string[],
-  jsonColumn: string,
+  jsonColumn: string | readonly string[],
 ): string {
+  const isJson = (c: string): boolean =>
+    typeof jsonColumn === "string" ? c === jsonColumn : jsonColumn.includes(c);
   const placeholders = columns
-    .map((c, i) => (c === jsonColumn ? `$${String(i + 1)}::jsonb` : `$${String(i + 1)}`))
+    .map((c, i) => (isJson(c) ? `$${String(i + 1)}::jsonb` : `$${String(i + 1)}`))
     .join(", ");
   return `INSERT INTO ${table} (${columns.join(", ")}) VALUES (${placeholders})`;
 }

@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-endpoint custom HTTP headers.** `relay.endpoints.register` / `relay.endpoints.update` now take
+  `customHeaders`, sent on every delivery to that endpoint in addition to the signature headers — for
+  receivers that need their own auth on top of the signature (an API gateway wanting `x-api-key`, an
+  ingress wanting `authorization: Bearer …`). Read them back with `relay.endpoints.get`.
+  - **Values are treated as secrets.** They are encrypted at rest when a `cipher` is configured —
+    per value, so header *names* stay readable in the database and an operator can still see which
+    headers an endpoint sends. Without a `cipher` they are plaintext, like `secret`, and the existing
+    startup PLAINTEXT warning covers them.
+  - **Redacted from the delivery ledger.** `webhook_delivery_attempts.request_headers` keeps every
+    header *name* but records each custom value as `[redacted]`, so a failed delivery stays debuggable
+    without archiving the credential.
+  - **Custom headers are NOT covered by the webhook signature**, which spans `id.timestamp.body` only
+    (Standard Webhooks). A receiver cannot infer a header's authenticity from it.
+  - **Validated fail-closed at registration** (`INVALID_ARGUMENT`), never silently dropped at delivery:
+    the `webhook-*` namespace, `content-type`, `idempotency-key` and hop-by-hop/framing headers are
+    reserved; CR/LF, NUL, control and non-ASCII characters in a value are rejected (header injection);
+    empty values and surrounding whitespace are rejected rather than trimmed; names are lowercased and
+    a collision between two spellings is rejected; the map is capped at 16 entries / 8 KiB.
+  - Not available under `delivery.transport: "sink"`, where the sink/SaaS builds the request:
+    `register` / `update` throw `CONFIG_INVALID`. Existing rows are not rejected, so a staged
+    http → sink migration is not blocked by leftovers.
+  - Not exposed on `relay.endpoints.list` / `EndpointSummary`, which stay secret-free by construction.
+  - New: `EndpointRow.customHeaders`, plus `customHeaders` on `RegisterEndpointInput` /
+    `NewEndpointRow` / `EndpointPatch`. Adds migration `004_endpoint_custom_headers`
+    (`webhook_endpoints.custom_headers jsonb`) — run `store.migrate()`.
+
 ## [0.4.0] - 2026-07-14
 
 ### Fixed

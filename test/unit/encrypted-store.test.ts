@@ -49,6 +49,7 @@ function endpointRow(secret: string, secretSecondary: string | null = null): End
     consecutiveFailures: 0,
     disabledAt: null,
     metadata: null,
+    customHeaders: null,
     createdAt: new Date(0),
   };
 }
@@ -165,6 +166,78 @@ describe("createEncryptedStore", () => {
     const stored = rec.written.outbox[0]!.secretSnapshot!;
     expect(stored.startsWith("ccsec.v1.")).toBe(true);
     expect(await cipher.decrypt(stored)).toBe(PLAINTEXT);
+  });
+});
+
+describe("createEncryptedStore custom headers", () => {
+  const TOKEN = "Bearer topsecret-token";
+
+  it("encrypts each header value on insert but leaves the names plaintext", async () => {
+    const rec = recorder();
+    const enc = createEncryptedStore(rec.store, cipher);
+    await enc.insertEndpoint({
+      id: "ep-1",
+      url: "https://x.test",
+      secret: PLAINTEXT,
+      customHeaders: { authorization: TOKEN, "x-api-key": "k1" },
+    });
+    const stored = rec.written.endpoint[0]!.customHeaders!;
+    // Names readable (a header name is not a secret, and the operator needs to see them)...
+    expect(Object.keys(stored).sort()).toEqual(["authorization", "x-api-key"]);
+    // ...values are ciphertext.
+    expect(stored["authorization"]!.startsWith("ccsec.v1.")).toBe(true);
+    expect(stored["x-api-key"]!.startsWith("ccsec.v1.")).toBe(true);
+    expect(JSON.stringify(stored)).not.toContain(TOKEN);
+    expect(await cipher.decrypt(stored["authorization"]!)).toBe(TOKEN);
+  });
+
+  it("decrypts header values on findEndpoint", async () => {
+    const rec = recorder();
+    const enc = createEncryptedStore(rec.store, cipher);
+    rec.reads.endpoint = {
+      ...endpointRow(await cipher.encrypt(PLAINTEXT)),
+      customHeaders: { authorization: await cipher.encrypt(TOKEN) },
+    };
+    const found = await enc.findEndpoint("ep-1");
+    expect(found!.customHeaders).toEqual({ authorization: TOKEN });
+  });
+
+  it("leaves null customHeaders untouched on insert and read", async () => {
+    const rec = recorder();
+    const enc = createEncryptedStore(rec.store, cipher);
+    await enc.insertEndpoint({
+      id: "ep-1",
+      url: "https://x.test",
+      secret: PLAINTEXT,
+      customHeaders: null,
+    });
+    expect(rec.written.endpoint[0]!.customHeaders).toBeNull();
+
+    rec.reads.endpoint = endpointRow(await cipher.encrypt(PLAINTEXT));
+    expect((await enc.findEndpoint("ep-1"))!.customHeaders).toBeNull();
+  });
+
+  it("encrypts header values supplied in a patch", async () => {
+    const rec = recorder();
+    const enc = createEncryptedStore(rec.store, cipher);
+    await enc.updateEndpoint("ep-1", { customHeaders: { authorization: TOKEN } });
+    const patched = rec.written.patch[0]!.customHeaders!;
+    expect(patched["authorization"]!.startsWith("ccsec.v1.")).toBe(true);
+    expect(await cipher.decrypt(patched["authorization"]!)).toBe(TOKEN);
+  });
+
+  it("passes a null customHeaders patch through unencrypted (it clears the map)", async () => {
+    const rec = recorder();
+    const enc = createEncryptedStore(rec.store, cipher);
+    await enc.updateEndpoint("ep-1", { customHeaders: null });
+    expect(rec.written.patch[0]!.customHeaders).toBeNull();
+  });
+
+  it("does not add customHeaders to a patch that has none", async () => {
+    const rec = recorder();
+    const enc = createEncryptedStore(rec.store, cipher);
+    await enc.updateEndpoint("ep-1", { status: "disabled" });
+    expect(rec.written.patch[0]!.customHeaders).toBeUndefined();
   });
 });
 

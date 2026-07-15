@@ -1,0 +1,19 @@
+-- 004: per-endpoint custom HTTP headers, sent on every delivery to the endpoint in addition to the
+-- signature headers (e.g. `authorization: Bearer ...` for a receiver behind a gateway that wants its
+-- own auth). A jsonb map of lowercased header name -> value; NULL means the endpoint has none.
+--
+-- Header VALUES are secret-bearing and are treated exactly like `secret`: ciphertext when a cipher is
+-- configured (createAesGcmCipher), otherwise plaintext and at-rest encryption is the DB's
+-- responsibility. Header NAMES are always plaintext -- a name is not a secret, and keeping it readable
+-- lets an operator see which headers an endpoint sends (and mirrors the ledger, which records the
+-- names and redacts the values). Encryption is per value, since the store decorator preserves the
+-- domain type across the boundary.
+--
+-- A separate file rather than an ALTER appended to 001_init.sql: 001_init is already recorded as
+-- applied on every existing deployment, so an append there would never run again. (secret_secondary
+-- could be appended only because the tracking table was new at the time, which made 001_init look
+-- unapplied once.)
+--
+-- Idempotent (ADD COLUMN IF NOT EXISTS) so migrate() can re-run. No index: the column is never
+-- filtered or ordered on, only read as part of the endpoint row.
+ALTER TABLE webhook_endpoints ADD COLUMN IF NOT EXISTS custom_headers jsonb NULL;

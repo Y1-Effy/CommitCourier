@@ -31,6 +31,12 @@ describe("list column sets are secret-free", () => {
     expect(ENDPOINT_LIST_COLUMNS).toContain("url");
     expect(ENDPOINT_LIST_COLUMNS).toContain("status");
   });
+
+  it("never selects custom_headers, which the list surface could not decrypt", () => {
+    // The list path deliberately skips the encrypted-store decorator's decryption (that is what makes
+    // it safe to pass through). Selecting this secret-bearing column here would hand back ciphertext.
+    expect(ENDPOINT_LIST_COLUMNS).not.toContain("custom_headers");
+  });
 });
 
 describe("buildOutboxListQuery", () => {

@@ -54,9 +54,13 @@ export interface OutboxListFilter {
 }
 
 /**
- * A registered endpoint without its signing secrets: an {@link EndpointRow} minus `secret` and
- * `secretSecondary`, so the list surface never exposes secrets. The encrypted-store decorator
- * passes it through without decryption.
+ * A registered endpoint without its secret-bearing fields: an {@link EndpointRow} minus `secret`,
+ * `secretSecondary` and `customHeaders`, so the list surface never exposes secrets. The
+ * encrypted-store decorator passes it through without decryption.
+ *
+ * `customHeaders` is omitted for that same reason and not merely for tidiness: because this surface
+ * skips decryption, listing the column would hand back ciphertext. Read it via `endpoints.get`
+ * (findEndpoint), which does decrypt.
  */
 export interface EndpointSummary {
   id: string;
@@ -102,7 +106,10 @@ export interface NewOutboxRow {
 export interface NewDeliveryAttempt {
   outboxId: string;
   attemptNo: number;
-  /** Request headers sent; never includes the secret itself. */
+  /**
+   * Request headers sent; never includes the secret itself. Per-endpoint custom headers appear with
+   * their names but their values redacted to `[redacted]`, since they may carry credentials.
+   */
   requestHeaders: Record<string, string>;
   responseStatus: number | null;
   responseBodySnippet: string | null;
@@ -127,6 +134,8 @@ export interface NewEndpointRow {
   url: string;
   secret: string;
   description?: string | null;
+  /** Validated, lowercased custom headers (see {@link EndpointRow.customHeaders}); omitted/null = none. */
+  customHeaders?: Record<string, string> | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -137,6 +146,8 @@ export interface EndpointPatch {
   /** Secondary signing secret for key rotation; set to a value to dual-sign, or null to finalize. */
   secretSecondary?: string | null;
   description?: string | null;
+  /** Replaces the whole custom-header map (see {@link EndpointRow.customHeaders}); null clears it. */
+  customHeaders?: Record<string, string> | null;
   metadata?: Record<string, unknown> | null;
   status?: EndpointRow["status"];
   disabledAt?: Date | null;

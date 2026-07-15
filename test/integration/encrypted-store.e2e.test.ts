@@ -71,4 +71,33 @@ describe.skipIf(!dockerAvailable())("encrypted-store decryption isolation (integ
     );
     expect((inflight.rows[0] as { n: number }).n).toBe(2);
   });
+
+  it("stores custom-header values as ciphertext and names as plaintext, and round-trips them", async () => {
+    const enc = createEncryptedStore(postgresStore({ pool }), cipher);
+    const id = randomUUID();
+    await enc.insertEndpoint({
+      id,
+      url: "https://x.test/hook",
+      secret: "whsec_ep",
+      customHeaders: { authorization: "Bearer topsecret", "x-api-key": "sk-live-1" },
+    });
+
+    // What actually landed on disk: names readable, values enveloped, no credential in the clear.
+    const raw = await pool.query("SELECT custom_headers FROM webhook_endpoints WHERE id = $1", [
+      id,
+    ]);
+    const stored = (raw.rows[0] as { custom_headers: Record<string, string> }).custom_headers;
+    expect(Object.keys(stored).sort()).toEqual(["authorization", "x-api-key"]);
+    expect(stored["authorization"]?.startsWith("ccsec.v1.")).toBe(true);
+    expect(stored["x-api-key"]?.startsWith("ccsec.v1.")).toBe(true);
+    expect(JSON.stringify(stored)).not.toContain("topsecret");
+    expect(JSON.stringify(stored)).not.toContain("sk-live-1");
+
+    // The delivery path's view is plaintext again.
+    const found = await enc.findEndpoint(id);
+    expect(found?.customHeaders).toEqual({
+      authorization: "Bearer topsecret",
+      "x-api-key": "sk-live-1",
+    });
+  });
 });

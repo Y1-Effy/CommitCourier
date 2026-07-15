@@ -62,13 +62,32 @@ import {
   rotateEndpointSecret as adminRotate,
   finalizeRotation as adminFinalizeRotation,
 } from "./admin/admin";
-import type { PruneOptions } from "./admin/admin";
+import type { PruneOptions, EndpointAdminContext } from "./admin/admin";
 
 /** Input to {@link EndpointAdmin.register}. */
 export interface RegisterEndpointInput {
   url: string;
   secret: string;
   description?: string | null;
+  /**
+   * Extra HTTP headers sent on every delivery to this endpoint, on top of the signature headers —
+   * for a receiver that needs its own auth (e.g. an API gateway wanting `x-api-key`).
+   *
+   * Values are treated as secret-bearing: encrypted at rest when a `cipher` is configured (names stay
+   * plaintext) and redacted from the delivery-attempt ledger, which keeps the names. They are **not**
+   * covered by the webhook signature, which spans `id.timestamp.body` only (Standard Webhooks), so a
+   * receiver cannot infer a header's authenticity from it.
+   *
+   * Names are lowercased and validated fail-closed (`INVALID_ARGUMENT`): the `webhook-*` namespace,
+   * `content-type`, `idempotency-key` and hop-by-hop/framing headers are reserved, values may not
+   * contain CR/LF/control/non-ASCII characters or surrounding whitespace, and the map is capped at 16
+   * entries / 8 KiB. Not available under `delivery.transport: "sink"` (`CONFIG_INVALID`), where the
+   * sink/SaaS builds the request.
+   *
+   * Readable back via {@link EndpointAdmin.get}, but not {@link EndpointAdmin.list}, which is
+   * secret-free.
+   */
+  customHeaders?: Record<string, string> | null;
   metadata?: Record<string, unknown> | null;
 }
 
@@ -510,7 +529,7 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
     list(filter) {
       return adminListOutbox(store, filter);
     },
-    endpoints: endpointAdmin(store),
+    endpoints: endpointAdmin(store, { transport: resolved.delivery.transport }),
     stats() {
       return store.stats();
     },
@@ -518,10 +537,10 @@ export async function createRelay<TTx>(config: RelayInit<TTx>): Promise<Relay<TT
 }
 
 /** Compose the registered-endpoint admin surface over the store. */
-function endpointAdmin(store: Store): EndpointAdmin {
+function endpointAdmin(store: Store, ctx: EndpointAdminContext): EndpointAdmin {
   return {
-    register: (input) => adminRegister(store, input),
-    update: (id, patch) => adminUpdate(store, id, patch),
+    register: (input) => adminRegister(store, input, ctx),
+    update: (id, patch) => adminUpdate(store, id, patch, ctx),
     enable: (id) => adminEnable(store, id),
     disable: (id) => adminDisable(store, id),
     get: (id) => adminGet(store, id),
