@@ -68,6 +68,19 @@ export default defineConfig({
           // Longer timeouts to account for testcontainers startup.
           testTimeout: 60_000,
           hookTimeout: 120_000,
+          // Every file here starts its own Postgres container, so running files in parallel means
+          // ~15 simultaneous container starts. Docker Desktop's named pipe on Windows cannot
+          // sustain that and testcontainers fails with an opaque "Cannot read properties of
+          // undefined (reading 'config')", which makes the documented `npm test` unusable there.
+          // Serialising costs no coverage: each file owns its container and database, so nothing
+          // is proven by running two of them at once -- the concurrency guarantees come from
+          // dispatchers racing *inside* a single file.
+          //
+          // This leaves `maxWorkers` differing from the `unit` project, which vitest rejects for
+          // two projects sharing a `sequence.groupOrder`. It passes only because `isolate` is true
+          // and `groupOrder` is 0 here, which routes these specs into their own sequential group;
+          // setting `isolate: false` would trip that error.
+          fileParallelism: false,
         },
       },
     ],
