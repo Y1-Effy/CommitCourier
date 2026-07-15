@@ -153,7 +153,7 @@
     "smoke:pack": "node scripts/smoke-pack.mjs",
     "api:check": "api-extractor run",
     "api:update": "api-extractor run --local",
-    "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run test:unit",
+    "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run format:check && npm run test:unit",
     "prepublishOnly": "npm run check && npm run build && npm run lint:publish && npm run api:check"
   },
   "dependencies": {

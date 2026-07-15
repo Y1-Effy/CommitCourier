@@ -16,11 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   receivers that need their own auth on top of the signature (an API gateway wanting `x-api-key`, an
   ingress wanting `authorization: Bearer …`). Read them back with `relay.endpoints.get`.
   - **Values are treated as secrets.** They are encrypted at rest when a `cipher` is configured —
-    per value, so header *names* stay readable in the database and an operator can still see which
+    per value, so header _names_ stay readable in the database and an operator can still see which
     headers an endpoint sends. Without a `cipher` they are plaintext, like `secret`, and the existing
     startup PLAINTEXT warning covers them.
   - **Redacted from the delivery ledger.** `webhook_delivery_attempts.request_headers` keeps every
-    header *name* but records each custom value as `[redacted]`, so a failed delivery stays debuggable
+    header _name_ but records each custom value as `[redacted]`, so a failed delivery stays debuggable
     without archiving the credential.
   - **Custom headers are NOT covered by the webhook signature**, which spans `id.timestamp.body` only
     (Standard Webhooks). A receiver cannot infer a header's authenticity from it.
