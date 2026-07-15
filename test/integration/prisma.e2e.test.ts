@@ -260,6 +260,41 @@ describe.skipIf(!dockerAvailable() || !prismaClientAvailable)(
       expect(found).not.toHaveProperty("secret");
     });
 
+    it("round-trips both endpoint jsonb columns over Prisma (insert, patch, and null clear)", async () => {
+      // The pg/knex/drizzle contract suite covers this, but Prisma is not one of its harnesses, and no
+      // other Prisma test passes a jsonb column to an endpoint write — they all register with just
+      // { url, secret }, so Prisma has only ever bound NULL into `$5::jsonb, $6::jsonb`. Two paths are
+      // otherwise unproven on the Prisma exec seam: binding a NON-NULL endpoint jsonb, and the
+      // `SET custom_headers = $n::jsonb` UPDATE. (No cipher here — what is under test is the binding,
+      // not the encryption.)
+      const { id } = await api.endpoints.register({
+        url: "https://x.test/h",
+        secret: "whsec_x",
+        customHeaders: { authorization: "Bearer t" },
+        metadata: { team: "payments" },
+      });
+
+      // INSERT: both jsonb columns bound non-null in one statement.
+      const created = await api.endpoints.get(id);
+      expect(created?.customHeaders).toEqual({ authorization: "Bearer t" });
+      expect(created?.metadata).toEqual({ team: "payments" });
+
+      // UPDATE: replaces the whole map and leaves the other jsonb column untouched.
+      await api.endpoints.update(id, { customHeaders: { "x-api-key": "k1" } });
+      const patched = await api.endpoints.get(id);
+      expect(patched?.customHeaders).toEqual({ "x-api-key": "k1" });
+      expect(patched?.metadata).toEqual({ team: "payments" });
+
+      // null clears the map. Must be SQL NULL, not the jsonb literal `null` — the latter would read
+      // back as a non-null value, so assert against the column itself and not just the mapped row.
+      await api.endpoints.update(id, { customHeaders: null });
+      expect((await api.endpoints.get(id))?.customHeaders).toBeNull();
+      const raw = await admin.query("SELECT custom_headers FROM webhook_endpoints WHERE id = $1", [
+        id,
+      ]);
+      expect((raw.rows[0] as { custom_headers: unknown }).custom_headers).toBeNull();
+    });
+
     it("completeAttempt is guarded by locked_by over Prisma: a stale worker appends the ledger but does not transition", async () => {
       // The locked_by guard's transitionApplied result comes from Prisma's `$executeRawUnsafe` affected
       // count on the CTE UPDATE — a path the pg/knex/drizzle contract suite covers but the Prisma exec
