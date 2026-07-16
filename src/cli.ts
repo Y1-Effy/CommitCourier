@@ -478,7 +478,9 @@ export async function main(argv: string[]): Promise<number> {
 }
 
 // Execute only when run as the CLI entry (not when imported by tests): compare this module's URL to
-// the invoked script (the canonical ESM "is main" check).
+// the invoked script (the canonical ESM "is main" check). Excluded from coverage: this branch only
+// runs when the file is the process entry, which never happens under the (import-based) test run.
+/* v8 ignore start */
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
   main(process.argv.slice(2))
@@ -490,3 +492,4 @@ if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
       process.exitCode = 1;
     });
 }
+/* v8 ignore stop */
