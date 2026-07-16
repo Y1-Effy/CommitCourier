@@ -7,9 +7,11 @@
 [![license](https://img.shields.io/github/license/Y1-Effy/CommitCourier)](./LICENSE)
 [![node](https://img.shields.io/badge/node-%3E%3D22.19-brightgreen)](https://nodejs.org)
 
-🇬🇧 English: **[README.md](./README.md)**（こちらがメインです） · 🔒 [セキュリティポリシー](./SECURITY.ja.md)
+🇬🇧 English: **[README.md](./README.md)**（こちらがメインです） · 🎬 [ライブデモ](https://commitcourier-demo.xvps.jp/) · 🔒 [セキュリティポリシー](./SECURITY.ja.md)
 
 CommitCourier は、既存の Node.js / TypeScript アプリに信頼性のある Outbound Webhook を**後付け**するライブラリです。フレームワーク非依存で、**追加インフラは不要**（すでに動かしている Postgres だけ）。webhook の `enqueue` を**あなた自身の業務トランザクションの中**で行うため、業務の書き込みと原子的に commit / rollback されます。バックグラウンドの dispatcher が、その後を Standard Webhooks 署名・リトライ・DLQ・配信台帳・SSRF 防御・複数インスタンスでの単一配信まで一貫して担います。
+
+> 🎬 **[ライブデモを試す](https://commitcourier-demo.xvps.jp/)** — 実際の Postgres 上で動いている稼働インスタンスです。enqueue して commit すれば署名付きで配信されるのが見え、enqueue して rollback すればトランザクションごと行が消えるのが見えます。受信側を `500` やタイムアウトに切り替えれば、リトライが積み上がって DLQ に落ちるまでを追え、そこからリプレイもできます。インストール不要。[ソース](https://github.com/Y1-Effy/CommitCourier-demo)は、そのまま通して読める完全な統合例です。
 
 > ⚠️ **プレリリース**です。API およびパッケージ名は `1.0.0` までに変更される可能性があります。
 
@@ -166,7 +168,7 @@ await knex.transaction(async (trx) => {
 });
 ```
 
-> 実行可能なファイルが欲しい場合は [`examples/basic-pg`](./examples/basic-pg) を参照（使い捨て Postgres に対する migrate → enqueue → dispatch の一連の流れ）。
+> 実行可能なファイルが欲しい場合は [`examples/basic-pg`](./examples/basic-pg) を参照（使い捨て Postgres に対する migrate → enqueue → dispatch の一連の流れ）。スクリプトではなく実際にデプロイされたアプリを見たい場合は [`CommitCourier-demo`](https://github.com/Y1-Effy/CommitCourier-demo) — [ライブデモ](https://commitcourier-demo.xvps.jp/)の中身そのもので、npm から `commitcourier` を入れて store・relay・dispatcher・署名検証する受信側までを配線しています。
 
 ## ユースケース
 
