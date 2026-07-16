@@ -15,7 +15,33 @@ permissions:
   id-token: write # required for npm provenance
 
 jobs:
+  # Re-run the full coverage + integration gate on the tagged commit before publishing. prepublishOnly
+  # only runs check (unit) + build + lint:publish + api:check, so without this a tag pushed from a
+  # commit that never passed CI could publish while skipping the coverage thresholds and the real-
+  # Postgres integration / concurrency / fault suites. The ubuntu runner ships Docker, so
+  # testcontainers-backed integration tests run here just like in ci.yml.
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22.19.0"
+          cache: npm
+
+      - run: npm ci
+
+      # The Prisma adapter e2e suite self-skips without a generated client, which would drop coverage
+      # below threshold — generate it first (mirrors ci.yml).
+      - name: Generate Prisma client
+        run: npm run test:prisma:gen
+
+      - name: Test (coverage + integration)
+        run: npm run test:coverage
+
   publish:
+    needs: verify
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
