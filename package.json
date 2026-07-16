@@ -151,8 +151,8 @@
     "test:watch": "vitest",
     "lint:publish": "publint && attw --pack . --ignore-rules no-resolution",
     "smoke:pack": "node scripts/smoke-pack.mjs",
-    "api:check": "api-extractor run",
-    "api:update": "api-extractor run --local",
+    "api:check": "node scripts/api-check.mjs",
+    "api:update": "node scripts/api-check.mjs --local",
     "check": "npm run typecheck && npm run lint && npm run lint:lang && npm run format:check && npm run test:unit",
     "prepublishOnly": "npm run check && npm run build && npm run lint:publish && npm run api:check"
   },
