@@ -7,6 +7,10 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+**Breaking changes** are recorded under a `### BREAKING` heading in the affected release section.
+During `0.x`, a breaking change may ship in a minor release (per SemVer for `0.x`); once stabilised at
+`1.0.0`, breaking changes are reserved for major releases.
+
 ## [Unreleased]
 
 ### Added
