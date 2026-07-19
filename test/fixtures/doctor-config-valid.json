@@ -1,0 +1,4 @@
+{
+  "mode": "observe",
+  "circuitBreaker": { "failureThreshold": 5 }
+}

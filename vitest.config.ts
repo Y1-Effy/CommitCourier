@@ -35,6 +35,15 @@ export default defineConfig({
           functions: 95,
           branches: 90,
         },
+        // The doctor CLI's pure surface (config readiness + formatting + argv dispatch) is unit-
+        // tested Docker-free; hold it to the global bar per-file so it can't silently decay behind
+        // the aggregate (the DB-inspection path is covered separately in the integration suite).
+        "src/cli.ts": {
+          lines: 80,
+          statements: 80,
+          functions: 80,
+          branches: 80,
+        },
       },
     },
     // Per 06-testing: run the pure core fast in "unit" (no Docker); isolate real
